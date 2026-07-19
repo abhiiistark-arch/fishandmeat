@@ -23,13 +23,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / 'data'
-UPLOAD_DIR = BASE_DIR / 'uploads' / 'products'
-CONTENT_UPLOAD_DIR = BASE_DIR / 'uploads' / 'content'
-REPORT_DIR = BASE_DIR / 'reports_out'
+IS_VERCEL = bool(os.getenv('VERCEL') or os.getenv('VERCEL_ENV'))
+# Vercel functions are read-only except /tmp; keep writable paths there.
+RUNTIME_DIR = Path('/tmp/fishandmeat') if IS_VERCEL else BASE_DIR
+DATA_DIR = RUNTIME_DIR / 'data'
+UPLOAD_DIR = RUNTIME_DIR / 'uploads' / 'products'
+CONTENT_UPLOAD_DIR = RUNTIME_DIR / 'uploads' / 'content'
+REPORT_DIR = RUNTIME_DIR / 'reports_out'
 
 for d in (DATA_DIR, UPLOAD_DIR, CONTENT_UPLOAD_DIR, REPORT_DIR):
-    d.mkdir(parents=True, exist_ok=True)
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        # Ignore read-only filesystem errors during import on serverless hosts.
+        pass
 
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'FISHANDMEATTEST')
 MONGO_URI = os.getenv('MONGO_URI', '').strip()
@@ -43,7 +50,10 @@ app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB uploads
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
-    SESSION_COOKIE_SECURE=os.getenv('SESSION_COOKIE_SECURE', '').lower() == 'true',
+    SESSION_COOKIE_SECURE=(
+        IS_VERCEL
+        or os.getenv('SESSION_COOKIE_SECURE', '').lower() == 'true'
+    ),
     SESSION_PERMANENT=False,
 )
 
@@ -118,13 +128,14 @@ def _connect_mongo():
     try:
         from pymongo import MongoClient, ASCENDING
         # Longer timeouts tolerate flaky home-network SRV/DNS lookups;
-        # maxPoolSize supports concurrent requests under load.
+        # shorter timeouts keep Vercel cold starts from hanging too long.
+        timeout_ms = 8000 if IS_VERCEL else 20000
         _mongo_client = MongoClient(
             MONGO_URI,
-            serverSelectionTimeoutMS=20000,
-            connectTimeoutMS=20000,
-            socketTimeoutMS=20000,
-            maxPoolSize=100,
+            serverSelectionTimeoutMS=timeout_ms,
+            connectTimeoutMS=timeout_ms,
+            socketTimeoutMS=timeout_ms,
+            maxPoolSize=50 if IS_VERCEL else 100,
             retryWrites=True,
         )
         # Retry the ping a few times — SRV resolution can time out transiently
@@ -848,6 +859,37 @@ def ensure_media_assets():
 
 seed_if_empty()
 ensure_media_assets()
+
+
+@app.before_request
+def _vercel_mongo_guard():
+    """On Vercel, require MongoDB so the app does not depend on ephemeral /tmp JSON."""
+    if not IS_VERCEL or _use_mongo:
+        return None
+    if (request.path or '').startswith('/api/health'):
+        return None
+    if MONGO_URI:
+        message = (
+            'MongoDB connection failed. Check MONGO_URI in Vercel Environment Variables '
+            'and that Atlas Network Access allows Vercel (0.0.0.0/0).'
+        )
+    else:
+        message = (
+            'MONGO_URI is missing. Add MONGO_URI, MONGO_DB_NAME, SECRET_KEY and ADMIN_PASSWORD '
+            'in Vercel Project Settings → Environment Variables, then redeploy.'
+        )
+    body = (
+        '<!doctype html><html><head><meta charset="utf-8"><title>Setup required</title>'
+        '<style>body{font-family:system-ui,sans-serif;background:#FBF6EC;color:#20241F;'
+        'max-width:640px;margin:80px auto;padding:0 20px;line-height:1.5}'
+        'h1{font-size:28px;margin-bottom:12px}code{background:#F1EADC;padding:2px 6px;'
+        'border-radius:4px}</style></head><body>'
+        '<h1>Fish and Meat needs MongoDB on Vercel</h1>'
+        f'<p>{message}</p>'
+        '<p>Local development can still use JSON files; production on Vercel must use Atlas.</p>'
+        '</body></html>'
+    )
+    return make_response(body, 503)
 
 
 # ---------------------------------------------------------------------------
