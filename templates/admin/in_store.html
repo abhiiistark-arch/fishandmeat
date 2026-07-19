@@ -1,0 +1,62 @@
+{% extends 'admin/base.html' %}
+{% block title %}In-Store Billing{% endblock %}
+{% block heading %}In-Store Billing{% endblock %}
+{% block content %}
+<div class="pos-layout">
+  <section class="panel pos-catalog-panel">
+    <div class="panel-head">
+      <div><h2>Products</h2><p class="muted">Prices and stock are live for the selected store.</p></div>
+      <select id="pos-store" class="select-dark"></select>
+    </div>
+    <div class="pos-search-row">
+      <input id="pos-search" type="search" placeholder="Search product or SKU…" autocomplete="off">
+      <select id="pos-category"><option value="">All categories</option></select>
+    </div>
+    <div id="pos-products" class="pos-products"></div>
+  </section>
+
+  <aside class="panel pos-bill-panel">
+    <div class="panel-head"><h2>Current Bill</h2><button class="btn btn-sm btn-outline" id="pos-clear" type="button">Clear</button></div>
+    <div id="pos-cart" class="pos-cart"></div>
+    <div class="pos-customer">
+      <div class="form-grid">
+        <div class="field"><label>Customer Name</label><input id="pos-customer-name" placeholder="Walk-in Customer"></div>
+        <div class="field"><label>Phone (optional)</label><input id="pos-customer-phone" inputmode="numeric" placeholder="10-digit number"></div>
+        <div class="field"><label>Staff Name</label><input id="pos-staff-name" placeholder="Billing staff"></div>
+        <div class="field"><label>Payment</label><select id="pos-payment"><option value="cash">Cash</option><option value="card">Card</option><option value="upi">UPI</option></select></div>
+        <div class="field"><label>Discount (₹)</label><input id="pos-discount" type="number" min="0" step="1" value="0"></div>
+        <div class="field full"><label>Notes</label><input id="pos-notes" placeholder="Optional note"></div>
+      </div>
+    </div>
+    <div class="pos-totals">
+      <div><span>Subtotal</span><strong id="pos-subtotal">₹0</strong></div>
+      <div><span>Discount</span><strong id="pos-discount-total">−₹0</strong></div>
+      <div class="pos-grand"><span>Total</span><strong id="pos-total">₹0</strong></div>
+    </div>
+    <div id="pos-error" class="error-text"></div>
+    <button id="pos-checkout" class="btn btn-gold full-width" type="button">Complete Sale &amp; Create Bill</button>
+  </aside>
+</div>
+
+<section class="panel">
+  <div class="panel-head"><h2>Recent In-Store Bills</h2><span class="muted">Saved in MongoDB and reflected in inventory immediately.</span></div>
+  <div class="table-wrap">
+    <table class="data-table" id="pos-recent">
+      <thead><tr><th>Bill</th><th>Time</th><th>Store</th><th>Customer</th><th>Payment</th><th>Total</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<dialog id="pos-success-modal" class="modal">
+  <div class="modal-card">
+    <h2>Sale Completed</h2>
+    <p id="pos-success-copy"></p>
+    <div class="modal-actions">
+      <button class="btn btn-outline" id="pos-success-close" type="button">New Sale</button>
+      <a class="btn btn-dark" id="pos-invoice" target="_blank">Download Invoice</a>
+    </div>
+  </div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script>AdminPOS.init();</script>{% endblock %}

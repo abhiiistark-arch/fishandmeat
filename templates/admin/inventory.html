@@ -1,0 +1,22 @@
+{% extends 'admin/base.html' %}
+{% block title %}Inventory{% endblock %}
+{% block heading %}Inventory &amp; Pricing{% endblock %}
+{% block top_actions %}
+<select id="inv-store-filter" class="select-dark"></select>
+{% endblock %}
+{% block content %}
+<section class="panel">
+  <p class="muted panel-intro">Store-wise stock and pricing. Same product can have different prices across stores (e.g. Lokhandwala ₹299 · Kurla ₹279 · Thane ₹289).</p>
+  <div class="table-wrap">
+    <table class="data-table" id="inv-table">
+      <thead>
+        <tr>
+          <th>Product</th><th>Variant</th><th>SKU</th><th>Store</th><th>Price (₹)</th><th>Stock</th><th></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}<script>AdminInventory.init();</script>{% endblock %}

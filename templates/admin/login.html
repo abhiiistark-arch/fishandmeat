@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <title>Admin Login — Fish and Meat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='admin/admin.css') }}?v={{ cache_bust }}" />
+</head>
+<body class="login-body">
+  <div class="login-wrap">
+    <div class="login-hero">
+      <img src="/assets/fish-and-meat-logo.png" alt="Fish and Meat" class="login-logo" />
+      <div class="brand-name login-brand"><span class="c-gold">FISH</span> <span class="c-white">AND</span> <span class="c-gold">MEAT</span></div>
+      <p class="login-tag">Admin Portal · Inventory · Orders · Stores</p>
+    </div>
+    <form method="post" class="login-card" autocomplete="off">
+      <div class="eyebrow c-red">SECURE ACCESS</div>
+      <h1>Admin Login</h1>
+      <p class="muted">Enter the admin password to manage catalog, inventory and orders.</p>
+      <label>Password</label>
+      <input type="password" name="password" placeholder="Admin password" autofocus required autocomplete="current-password" />
+      {% if error %}
+      <div class="error-banner">{{ error }}</div>
+      {% endif %}
+      <button type="submit" class="btn btn-gold full">Enter Admin Portal</button>
+      <a href="/" class="back-store">← Back to storefront</a>
+    </form>
+  </div>
+  <script>
+    // If the browser restores this page from back/forward cache, force a fresh load.
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) window.location.reload();
+    });
+  </script>
+</body>
+</html>

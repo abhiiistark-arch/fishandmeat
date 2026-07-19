@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Fish and Meat — Fresh Meat, Fish &amp; Veg Delivered</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="header">
+  <div class="header-inner">
+    <div class="brand" id="logo-home">
+      <img src="assets/fish-and-meat-logo.png" alt="Fish and Meat" class="brand-logo" />
+      <div>
+        <div class="brand-name"><span class="c-green">FISH</span> <span class="c-gold">AND</span> <span class="c-red">MEAT</span></div>
+        <div class="brand-tagline">FROZEN MEAT &middot; CHICKEN &middot; FISH &middot; VEG</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <div class="nav-links">
+        <span class="nav-link" id="nav-home">Home</span>
+        <span class="nav-link" id="nav-shop">Shop</span>
+        <span class="nav-link" id="nav-locations">Locations</span>
+      </div>
+      <span class="nav-link account-link" id="nav-account"></span>
+      <span class="nav-link cart-link" id="nav-cart">Cart (0)</span>
+    </nav>
+  </div>
+</header>
+
+<!-- HOME PAGE -->
+<main id="page-home" class="page">
+  <section class="hero" data-storefront-section="hero">
+    <div class="hero-inner">
+      <div>
+        <div class="pill" id="home-hero-pill">NOW DELIVERING &middot; ANDHERI &middot; KHARGHAR &middot; THANE</div>
+        <h1 class="hero-title"><span id="home-hero-line1">Farm Fresh Meat.</span><br /><span class="c-gold" id="home-hero-accent">Ocean Fresh Fish.</span><br /><span id="home-hero-line3">Delivered Cold.</span></h1>
+        <p class="hero-copy" id="home-hero-description">Hand-cut chicken and mutton, day-fresh fish, and ready-to-cook packs — sourced daily and frozen at peak freshness. Pay cash on delivery, every time.</p>
+        <div class="hero-actions">
+          <button class="btn btn-gold" id="hero-shop">Shop Now</button>
+          <button class="btn btn-outline-white" id="hero-locations">Find a Store</button>
+        </div>
+      </div>
+      <div class="placeholder placeholder-dark" id="home-hero-visual" style="height:420px;">
+        <div class="placeholder-label placeholder-label-light">[ hero photo: fresh fish, chicken cuts and mutton arranged on ice, top-down studio shot ]</div>
+      </div>
+    </div>
+  </section>
+
+  <section class="trust-strip" data-storefront-section="trust">
+    <div class="trust-strip-inner" id="home-trust-items">
+      <span>&#10003; FSSAI Certified</span>
+      <span>&#10003; Frozen at Peak Freshness</span>
+      <span>&#10003; Cash on Delivery</span>
+      <span>&#10003; Same-Day Delivery</span>
+      <span>&#10003; No Preservatives</span>
+    </div>
+  </section>
+
+  <section class="section why-us" data-storefront-section="why_us">
+    <div>
+      <div class="eyebrow c-red" id="home-why-eyebrow">WHY FISH AND MEAT</div>
+      <h2 class="h2" id="home-why-title">Freshness You Can Actually See.</h2>
+      <p class="lead" id="home-why-description">No compromises between fresh and convenient. We give you both, sourced daily and delivered cold to your door.</p>
+      <div class="feature-list" id="home-why-features">
+        <div class="feature-row"><div class="feature-num num-green">1</div><div><div class="feature-title">Cut Fresh, Not Days Old</div><div class="feature-desc">Chicken and mutton hand-cut same day — never previously frozen unless clearly marked.</div></div></div>
+        <div class="feature-row"><div class="feature-num num-gold">2</div><div><div class="feature-title">Sourced Daily, Locally</div><div class="feature-desc">Fish from local docks, meat from trusted regional suppliers — nothing sits in storage.</div></div></div>
+        <div class="feature-row"><div class="feature-num num-red">3</div><div><div class="feature-title">Frozen at Peak, Ready Fast</div><div class="feature-desc">Our marinated and ready-to-cook range locks in freshness the moment it's prepared.</div></div></div>
+        <div class="feature-row"><div class="feature-num num-green">4</div><div><div class="feature-title">Cash on Delivery, Always</div><div class="feature-desc">No prepayment required. Inspect your order, then pay when it arrives.</div></div></div>
+      </div>
+    </div>
+    <div class="placeholder placeholder-light" id="home-why-visual" style="height:480px;">
+      <div class="placeholder-label">[ photo: butcher hand-cutting fresh chicken in front of customer ]</div>
+    </div>
+  </section>
+
+  <section class="range-section" data-storefront-section="product_range">
+    <div class="section-inner">
+      <div class="eyebrow c-gold" id="home-range-eyebrow">WHAT WE OFFER</div>
+      <h2 class="h2 c-white" id="home-range-title">Our Product Range</h2>
+      <p class="lead c-light" id="home-range-description">From live-cut fresh meat and day-fresh fish, to marinated ready-to-cook packs and farm veg.</p>
+      <div class="tile-grid" id="category-tiles"></div>
+    </div>
+  </section>
+
+  <section class="section" data-storefront-section="favourites">
+    <div class="section-header">
+      <div>
+        <div class="eyebrow c-red" id="home-fav-eyebrow">BESTSELLERS</div>
+        <h2 class="h2-sm" id="home-fav-title">Customer Favourites</h2>
+      </div>
+      <span class="link-cta" id="view-all-link">View All Products &rarr;</span>
+    </div>
+    <div class="product-grid" id="featured-products"></div>
+  </section>
+
+  <section class="promise-section" data-storefront-section="promise">
+    <div class="promise-inner">
+      <div>
+        <div class="eyebrow c-red" id="home-promise-eyebrow">OUR PROMISE</div>
+        <h2 class="h2" id="home-promise-title">Order Fresh in Three Steps.</h2>
+        <div class="step-list" id="home-promise-steps">
+          <div class="step-row"><div class="step-num">1</div><div><strong>Choose your cut and quantity</strong> — fresh, frozen or ready-to-cook.</div></div>
+          <div class="step-row"><div class="step-num">2</div><div><strong>We hand-pick and pack it same day</strong>, cold-chain sealed for delivery.</div></div>
+          <div class="step-row"><div class="step-num">3</div><div><strong>Pay cash when it arrives</strong> at your door. Inspect before you pay.</div></div>
+        </div>
+      </div>
+      <div class="promise-card promise-card-visual">
+        <img src="assets/promise-delivery.png" alt="Fish and Meat delivery at your door — inspect before you pay" class="promise-visual" />
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="store-locations" data-storefront-section="locations">
+    <div class="eyebrow c-red" id="home-locations-eyebrow">FIND US</div>
+    <h2 class="h2" id="home-locations-title">Three Locations. One Standard.</h2>
+    <div class="location-grid" id="location-grid" style="margin-top:40px;"></div>
+  </section>
+
+  <section class="cta-banner" data-storefront-section="cta">
+    <div class="cta-inner">
+      <div>
+        <h2 class="h2-sm" id="home-cta-title" style="color:#1E3A22;">Craving Fresh? Order Tonight.</h2>
+        <div class="cta-copy" id="home-cta-description">Delivered cold. Pay cash when it arrives.</div>
+      </div>
+      <button class="btn btn-dark" id="cta-shop">Shop Now</button>
+    </div>
+  </section>
+</main>
+
+<!-- CATALOG PAGE -->
+<main id="page-catalog" class="page hidden">
+  <div class="page-container">
+    <div class="eyebrow c-red">SHOP</div>
+    <h1 class="h1">All Products</h1>
+    <div class="category-tabs" id="category-tabs"></div>
+    <div class="product-grid" id="catalog-products"></div>
+  </div>
+</main>
+
+<!-- PRODUCT DETAIL PAGE -->
+<main id="page-product" class="page hidden">
+  <div class="page-container narrow">
+    <span class="back-link" id="product-back">&larr; Back to Shop</span>
+    <div id="product-detail"></div>
+    <div class="related-section">
+      <h2 class="h2-sm">You Might Also Like</h2>
+      <div class="product-grid" id="related-products"></div>
+    </div>
+  </div>
+</main>
+
+<!-- CART PAGE -->
+<main id="page-cart" class="page hidden">
+  <div class="page-container narrower">
+    <h1 class="h1">Your Cart</h1>
+    <div id="cart-content"></div>
+  </div>
+</main>
+
+<!-- CHECKOUT PAGE -->
+<main id="page-checkout" class="page hidden">
+  <div class="page-container narrower">
+    <h1 class="h1">Checkout</h1>
+    <form id="checkout-form" class="checkout-grid">
+      <div class="card">
+        <h3 class="h3">Delivery Details</h3>
+        <div class="form-stack">
+          <div class="field"><label>Order Type</label>
+            <div class="area-options" id="checkout-mode">
+              <span class="area-option selected" data-mode="delivery">Home Delivery</span>
+              <span class="area-option" data-mode="pickup">Store Pickup</span>
+            </div>
+          </div>
+          <div class="field"><label>Full Name</label><input type="text" id="checkout-name" placeholder="Your name" /></div>
+          <div class="field"><label>Phone Number</label><input type="tel" id="checkout-phone" placeholder="10-digit mobile number" /></div>
+          <div class="field" id="checkout-address-field"><label>Delivery Address</label><input type="text" id="checkout-address" placeholder="Flat, building, street" /></div>
+          <div class="field"><label>Area</label><div class="area-options" id="checkout-areas"></div></div>
+          <div class="field" id="checkout-pincode-field"><label>Pincode (optional)</label><input type="text" id="checkout-pincode" placeholder="e.g. 400053" /></div>
+          <div class="field"><label>Special Instructions (optional)</label><input type="text" id="checkout-instructions" placeholder="e.g. extra cleaning, small cuts" /></div>
+        </div>
+        <h3 class="h3" style="margin-top:30px;">Payment Method</h3>
+        <div class="payment-options">
+          <label class="payment-option selected"><input type="radio" checked readonly /><span>Cash on Delivery (COD)</span></label>
+          <label class="payment-option disabled"><input type="radio" disabled /><span>Online Payment (Coming Soon)</span></label>
+        </div>
+        <div class="error-text" id="checkout-error"></div>
+        <button type="submit" class="btn btn-dark full-width" style="margin-top:22px;">Place Order (Pay on Delivery)</button>
+      </div>
+      <div class="card">
+        <h3 class="h3">Order Summary</h3>
+        <div id="checkout-summary-lines" class="summary-lines"></div>
+        <div class="field" style="margin:14px 0;">
+          <label>Coupon Code</label>
+          <div style="display:flex;gap:8px;">
+            <input type="text" id="checkout-coupon" placeholder="e.g. FAM10" style="flex:1;" />
+            <button type="button" class="btn btn-outline" id="checkout-apply-coupon">Apply</button>
+          </div>
+          <div id="checkout-coupon-msg" style="font-size:13px;margin-top:6px;"></div>
+        </div>
+        <div class="summary-row"><span>Subtotal</span><span id="checkout-subtotal">&#8377;0</span></div>
+        <div class="summary-row hidden" id="checkout-discount-row"><span>Discount</span><span id="checkout-discount">&#8377;0</span></div>
+        <div class="summary-row"><span>Delivery Fee</span><span id="checkout-delivery">&#8377;0</span></div>
+        <div class="summary-row total"><span>Total</span><span id="checkout-total">&#8377;0</span></div>
+        <div id="checkout-minorder-note" style="font-size:12px;color:#A5342A;margin-top:8px;"></div>
+      </div>
+    </form>
+  </div>
+</main>
+
+<!-- CONFIRMATION PAGE -->
+<main id="page-confirmation" class="page hidden">
+  <div class="page-container confirm">
+    <div class="check-circle">&#10003;</div>
+    <h1 class="h1-sm">Order Placed!</h1>
+    <p class="confirm-copy" id="confirm-text"></p>
+    <div class="confirm-actions">
+      <button class="btn btn-dark" id="confirm-view-order">View Order</button>
+      <button class="btn btn-outline-dark" id="confirm-continue">Continue Shopping</button>
+    </div>
+  </div>
+</main>
+
+<!-- LOGIN PAGE -->
+<main id="page-login" class="page hidden">
+  <div class="page-container auth">
+    <h1 class="h1-sm center">Welcome Back</h1>
+    <p class="auth-sub">Log in to track your orders.</p>
+    <form id="login-form" class="card form-stack">
+      <div class="field"><label>Phone Number</label><input type="tel" id="login-phone" placeholder="10-digit mobile number" /></div>
+      <div class="field"><label>Password</label><input type="password" id="login-password" placeholder="Password" /></div>
+      <div class="error-text" id="login-error"></div>
+      <button type="submit" class="btn btn-dark full-width">Log In</button>
+      <div class="auth-switch">New here? <span class="link-cta" id="go-signup">Create an account</span></div>
+    </form>
+  </div>
+</main>
+
+<!-- SIGNUP PAGE -->
+<main id="page-signup" class="page hidden">
+  <div class="page-container auth">
+    <h1 class="h1-sm center">Create Account</h1>
+    <p class="auth-sub">Order fresh in a few taps.</p>
+    <form id="signup-form" class="card form-stack">
+      <div class="field"><label>Full Name</label><input type="text" id="signup-name" placeholder="Your name" /></div>
+      <div class="field"><label>Phone Number</label><input type="tel" id="signup-phone" placeholder="10-digit mobile number" /></div>
+      <div class="field"><label>Email (optional)</label><input type="email" id="signup-email" placeholder="you@example.com" /></div>
+      <div class="field"><label>Password</label><input type="password" id="signup-password" placeholder="Create a password" /></div>
+      <div class="error-text" id="signup-error"></div>
+      <button type="submit" class="btn btn-dark full-width">Create Account</button>
+      <div class="auth-switch">Already have an account? <span class="link-cta" id="go-login">Log in</span></div>
+    </form>
+  </div>
+</main>
+
+<!-- ACCOUNT PAGE -->
+<main id="page-account" class="page hidden">
+  <div class="page-container narrow">
+    <div id="account-content"></div>
+  </div>
+</main>
+
+<!-- FOOTER -->
+<footer class="footer">
+  <div class="footer-inner">
+    <div class="footer-grid">
+      <div>
+        <div class="footer-brand">FISH AND MEAT</div>
+        <div class="footer-copy" id="home-footer-description">Frozen meat, chicken, fish and veg, sourced fresh and delivered cold across Andheri, Kharghar and Thane.</div>
+      </div>
+      <div>
+        <div class="footer-heading">SHOP</div>
+        <div class="footer-links" id="footer-shop-links"></div>
+      </div>
+      <div>
+        <div class="footer-heading">ACCOUNT</div>
+        <div class="footer-links">
+          <span id="footer-account">My Account</span>
+          <span id="footer-cart">Cart</span>
+          <span id="footer-locations">Locations</span>
+        </div>
+      </div>
+    </div>
+    <div class="footer-bottom">
+      <span>&copy; 2026 Fish and Meat. All rights reserved.</span>
+      <span id="home-footer-compliance">FSSAI Compliant &middot; Cash on Delivery</span>
+    </div>
+  </div>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>

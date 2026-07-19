@@ -1,0 +1,56 @@
+{% extends 'admin/base.html' %}
+{% block title %}Categories{% endblock %}
+{% block heading %}Categories{% endblock %}
+{% block top_actions %}
+<button class="btn btn-gold" id="btn-add-cat">+ Add Category</button>
+{% endblock %}
+{% block content %}
+<section class="panel">
+  <div id="focus-bar" class="focus-bar hidden"></div>
+  <p class="muted panel-intro">Fresh Meat, Frozen Food, Ready-To-Cook, Marinades — or create future categories. Toggle enable/disable and manage SEO &amp; banners.</p>
+  <div class="table-wrap">
+    <table class="data-table" id="cats-table">
+      <thead>
+        <tr>
+          <th>Image</th><th>Name</th><th>Slug</th><th>SEO Title</th><th>Order</th><th>Enabled</th><th></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<dialog id="cat-modal" class="modal">
+  <form method="dialog" id="cat-form" class="modal-card">
+    <h2 id="cat-modal-title">Add Category</h2>
+    <input type="hidden" id="cat-id" />
+    <div class="form-grid">
+      <div class="field"><label>Name</label><input id="cat-name" required /></div>
+      <div class="field"><label>Slug</label><input id="cat-slug" placeholder="auto from name" /></div>
+      <div class="field"><label>Sort Order</label><input id="cat-order" type="number" value="99" /></div>
+      <div class="field"><label>Enabled</label>
+        <select id="cat-enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select>
+      </div>
+      <div class="field full"><label>SEO Title</label><input id="cat-seo-title" /></div>
+      <div class="field full"><label>SEO Description</label><input id="cat-seo-desc" /></div>
+      <div class="field full">
+        <label>Category Image / Banner</label>
+        <input id="cat-banner" type="hidden" />
+        <div class="cms-image-picker" id="cat-image-picker">
+          <div class="cms-image-preview" id="cat-image-preview"></div>
+          <label class="btn btn-outline btn-sm cms-upload-btn">
+            Upload Image
+            <input id="cat-image-file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden />
+          </label>
+          <button type="button" class="btn btn-outline btn-sm hidden" id="cat-image-remove">Remove Image</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline" id="cat-cancel">Cancel</button>
+      <button type="submit" class="btn btn-dark">Save Category</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}<script>AdminCategories.init();</script>{% endblock %}

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Cache-Control" content="no-store, no-cache, must-revalidate, max-age=0" />
+  <meta http-equiv="Pragma" content="no-cache" />
+  <meta http-equiv="Expires" content="0" />
+  <title>{% block title %}Admin{% endblock %} — Fish and Meat</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='admin/admin.css') }}?v={{ cache_bust }}" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <div class="admin-shell">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <img src="/assets/fish-and-meat-logo.png" alt="Fish and Meat" />
+        <div>
+          <div class="sb-name"><span class="c-gold">FISH</span> AND <span class="c-gold">MEAT</span></div>
+          <div class="sb-sub">Admin Portal</div>
+        </div>
+      </div>
+      <nav class="sidebar-nav">
+        <div class="nav-group-label">Overview</div>
+        <a href="{{ url_for('admin_dashboard') }}" class="nav-item {% if page == 'dashboard' %}active{% endif %}">Dashboard</a>
+        <a href="{{ url_for('admin_reports') }}" class="nav-item {% if page == 'reports' %}active{% endif %}">Reports &amp; Analytics</a>
+
+        <div class="nav-group-label">Operations</div>
+        <a href="{{ url_for('admin_in_store') }}" class="nav-item {% if page == 'in_store' %}active{% endif %}">In-Store Billing</a>
+        <a href="{{ url_for('admin_orders') }}" class="nav-item {% if page == 'orders' %}active{% endif %}">Orders <span class="nav-badge hidden" id="badge-orders"></span></a>
+        <a href="{{ url_for('admin_inventory') }}" class="nav-item {% if page == 'inventory' %}active{% endif %}">Inventory &amp; Pricing <span class="nav-badge red hidden" id="badge-inventory"></span></a>
+        <a href="{{ url_for('admin_stores') }}" class="nav-item {% if page == 'stores' %}active{% endif %}">Stores</a>
+
+        <div class="nav-group-label">Catalog</div>
+        <a href="{{ url_for('admin_storefront') }}" class="nav-item {% if page == 'storefront' %}active{% endif %}">Storefront Content</a>
+        <a href="{{ url_for('admin_products') }}" class="nav-item {% if page == 'products' %}active{% endif %}">Products</a>
+        <a href="{{ url_for('admin_categories') }}" class="nav-item {% if page == 'categories' %}active{% endif %}">Categories</a>
+        <a href="{{ url_for('admin_coupons') }}" class="nav-item {% if page == 'coupons' %}active{% endif %}">Coupons</a>
+
+        <div class="nav-group-label">Management</div>
+        <a href="{{ url_for('admin_customers') }}" class="nav-item {% if page == 'customers' %}active{% endif %}">Customers</a>
+        <a href="{{ url_for('admin_staff') }}" class="nav-item {% if page == 'staff' %}active{% endif %}">Staff</a>
+        <a href="{{ url_for('admin_settings') }}" class="nav-item {% if page == 'settings' %}active{% endif %}">Settings</a>
+      </nav>
+      <div class="sidebar-foot">
+        <a href="/" class="nav-item subtle" target="_blank">View Storefront</a>
+        <a href="{{ url_for('admin_logout') }}" class="nav-item logout">Logout</a>
+      </div>
+    </aside>
+    <main class="admin-main">
+      <div class="admin-topbar">
+        <div class="topbar-greeting" id="topbar-greeting">Welcome, Admin</div>
+        <div class="topbar-search">
+          <input type="search" id="global-search" placeholder="Search orders, products, customers…" autocomplete="off" />
+          <div class="search-results hidden" id="global-search-results"></div>
+        </div>
+        <div class="topbar-right">
+          <select id="global-store-filter" class="select-dark" title="Store scope"></select>
+          <a href="/admin/in-store" class="btn btn-gold btn-sm" id="btn-new-order">+ In-Store Sale</a>
+        </div>
+      </div>
+      <header class="admin-top">
+        <div>
+          <div class="eyebrow">ADMIN</div>
+          <h1>{% block heading %}Dashboard{% endblock %}</h1>
+        </div>
+        <div class="top-actions">
+          {% block top_actions %}{% endblock %}
+        </div>
+      </header>
+      {% block content %}{% endblock %}
+      <div class="footer-bar">
+        <span>Fish and Meat Admin · &copy; 2026</span>
+        <span class="footer-status">
+          <span class="f-status"><span class="f-dot green"></span><span id="fs-system">All Systems OK</span></span>
+          <span class="f-status"><span class="f-dot gold"></span><span id="fs-stock">Stock: checking…</span></span>
+          <span class="f-status"><span class="f-dot green"></span><span id="fs-stores">Stores: checking…</span></span>
+        </span>
+      </div>
+    </main>
+  </div>
+  <div id="toast" class="toast hidden"></div>
+  <script src="{{ url_for('static', filename='admin/admin.js') }}?v={{ cache_bust }}"></script>
+  {% block scripts %}{% endblock %}
+  <script>
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) window.location.reload();
+    });
+  </script>
+</body>
+</html>

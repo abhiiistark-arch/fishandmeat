@@ -1,0 +1,1784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quick Platter — Admin Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Serif+Display:ital@0;1&display=swap" rel="stylesheet">
+<style>
+/* ─── RESET & VARIABLES ─────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --navy:     #0B1929;
+  --navy2:    #112236;
+  --navy3:    #162c45;
+  --blue:     #1A4080;
+  --mid:      #2563B0;
+  --gold:     #D4972A;
+  --amber:    #F0C040;
+  --copper:   #8B5A10;
+  --cream:    #F4F0E8;
+  --green:    #16A34A;
+  --lgreen:   #DCFCE7;
+  --red:      #DC2626;
+  --lred:     #FEE2E2;
+  --orange:   #EA580C;
+  --lorange:  #FFEDD5;
+  --purple:   #7C3AED;
+  --lpurple:  #EDE9FE;
+  --white:    #FFFFFF;
+  --text:     #E2E8F0;
+  --text2:    #94A3B8;
+  --border:   rgba(255,255,255,0.07);
+  --card:     rgba(255,255,255,0.04);
+  --hover:    rgba(255,255,255,0.06);
+  --sidebar-w: 240px;
+  --header-h:  60px;
+}
+
+body {
+  font-family: 'DM Sans', sans-serif;
+  background: var(--navy);
+  color: var(--text);
+  min-height: 100vh;
+  display: flex;
+  overflow-x: hidden;
+}
+
+/* ─── SIDEBAR ───────────────────────────────────────────────────── */
+.sidebar {
+  width: var(--sidebar-w);
+  height: 100vh;
+  background: var(--navy2);
+  border-right: 1px solid var(--border);
+  position: fixed;
+  top: 0; left: 0;
+  display: flex;
+  flex-direction: column;
+  z-index: 50;
+  overflow-y: auto;
+}
+
+.sidebar-brand {
+  padding: 20px 20px 16px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.brand-icon {
+  width: 34px; height: 34px;
+  background: linear-gradient(135deg, var(--gold), var(--copper));
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'DM Serif Display', serif;
+  font-size: 14px;
+  color: var(--navy);
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.brand-text { flex: 1; }
+.brand-name {
+  font-family: 'DM Serif Display', serif;
+  font-size: 15px;
+  color: var(--amber);
+  line-height: 1.1;
+  letter-spacing: -0.3px;
+}
+.brand-sub {
+  font-size: 9.5px;
+  color: var(--text2);
+  letter-spacing: 0.5px;
+  margin-top: 1px;
+}
+
+.sidebar-section {
+  padding: 16px 12px 4px;
+}
+
+.sidebar-section-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--text2);
+  padding: 0 8px;
+  margin-bottom: 6px;
+  opacity: 0.5;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: background 0.15s;
+  margin-bottom: 2px;
+  text-decoration: none;
+  color: var(--text2);
+  font-size: 13px;
+  font-weight: 500;
+  position: relative;
+}
+.nav-item:hover { background: var(--hover); color: var(--text); }
+.nav-item.active {
+  background: rgba(212,151,42,0.12);
+  color: var(--amber);
+}
+.nav-item.active::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 20%; bottom: 20%;
+  width: 3px;
+  background: var(--gold);
+  border-radius: 0 2px 2px 0;
+}
+
+.nav-icon {
+  width: 18px; height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.nav-badge {
+  margin-left: auto;
+  background: var(--red);
+  color: white;
+  font-size: 9px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 10px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.nav-badge.gold {
+  background: rgba(212,151,42,0.2);
+  color: var(--amber);
+}
+
+.sidebar-footer {
+  margin-top: auto;
+  padding: 16px 12px;
+  border-top: 1px solid var(--border);
+}
+
+.user-pill {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--hover);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.user-pill:hover { background: rgba(255,255,255,0.09); }
+
+.user-avatar {
+  width: 32px; height: 32px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--blue), var(--mid));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  font-weight: 700;
+  color: white;
+  flex-shrink: 0;
+}
+
+.user-info { flex: 1; min-width: 0; }
+.user-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.user-role {
+  font-size: 10px;
+  color: var(--text2);
+}
+
+/* ─── MAIN ──────────────────────────────────────────────────────── */
+.main {
+  margin-left: var(--sidebar-w);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* ─── TOPBAR ────────────────────────────────────────────────────── */
+.topbar {
+  height: var(--header-h);
+  background: var(--navy2);
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 28px;
+  gap: 16px;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+}
+
+.topbar-title {
+  font-family: 'DM Serif Display', serif;
+  font-size: 18px;
+  color: var(--text);
+  flex: 1;
+}
+
+.topbar-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 14px;
+  width: 220px;
+  transition: border-color 0.2s;
+}
+.topbar-search:focus-within { border-color: rgba(212,151,42,0.4); }
+
+.topbar-search input {
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 13px;
+  font-family: 'DM Sans', sans-serif;
+  width: 100%;
+}
+.topbar-search input::placeholder { color: var(--text2); }
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.icon-btn {
+  width: 36px; height: 36px;
+  border-radius: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--text2);
+  font-size: 15px;
+  transition: all 0.15s;
+  position: relative;
+}
+.icon-btn:hover { background: var(--hover); color: var(--text); }
+
+.notif-dot {
+  position: absolute;
+  top: 6px; right: 6px;
+  width: 7px; height: 7px;
+  background: var(--red);
+  border-radius: 50%;
+  border: 1.5px solid var(--navy2);
+}
+
+.store-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 14px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text);
+  transition: border-color 0.2s;
+}
+.store-selector:hover { border-color: rgba(212,151,42,0.3); }
+
+.store-dot {
+  width: 8px; height: 8px;
+  background: var(--green);
+  border-radius: 50%;
+  animation: pulse-dot 2s infinite;
+}
+@keyframes pulse-dot {
+  0%,100% { box-shadow: 0 0 0 0 rgba(22,163,74,0.4); }
+  50%      { box-shadow: 0 0 0 4px rgba(22,163,74,0); }
+}
+
+.btn-primary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--gold);
+  color: var(--navy);
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-size: 12.5px;
+  font-weight: 700;
+  font-family: 'DM Sans', sans-serif;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+  white-space: nowrap;
+}
+.btn-primary:hover { background: var(--amber); transform: translateY(-1px); }
+
+/* ─── CONTENT ───────────────────────────────────────────────────── */
+.content {
+  padding: 24px 28px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* ─── DATE STRIP ────────────────────────────────────────────────── */
+.date-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 22px;
+}
+
+.date-text {
+  font-size: 12.5px;
+  color: var(--text2);
+}
+
+.date-text strong { color: var(--text); }
+
+.period-tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.period-tab {
+  padding: 5px 14px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--text2);
+  transition: all 0.15s;
+}
+.period-tab.active {
+  background: var(--gold);
+  color: var(--navy);
+}
+
+/* ─── KPI GRID ──────────────────────────────────────────────────── */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.kpi-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 18px 20px;
+  position: relative;
+  overflow: hidden;
+  transition: border-color 0.2s, transform 0.2s;
+}
+.kpi-card:hover {
+  border-color: rgba(212,151,42,0.25);
+  transform: translateY(-2px);
+}
+
+.kpi-card::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  border-radius: 12px 12px 0 0;
+}
+
+.kpi-card.k-revenue::before  { background: linear-gradient(to right, var(--gold), var(--amber)); }
+.kpi-card.k-orders::before   { background: linear-gradient(to right, var(--mid), #60A5FA); }
+.kpi-card.k-meat::before     { background: linear-gradient(to right, var(--green), #4ADE80); }
+.kpi-card.k-margin::before   { background: linear-gradient(to right, var(--purple), #A78BFA); }
+
+.kpi-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.kpi-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text2);
+  letter-spacing: 0.3px;
+  text-transform: uppercase;
+}
+
+.kpi-icon {
+  width: 34px; height: 34px;
+  border-radius: 9px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+}
+
+.kpi-icon.k-revenue { background: rgba(212,151,42,0.12); }
+.kpi-icon.k-orders  { background: rgba(37,99,176,0.15); }
+.kpi-icon.k-meat    { background: rgba(22,163,74,0.12); }
+.kpi-icon.k-margin  { background: rgba(124,58,237,0.12); }
+
+.kpi-value {
+  font-family: 'DM Serif Display', serif;
+  font-size: 28px;
+  color: var(--text);
+  line-height: 1;
+  margin-bottom: 6px;
+  letter-spacing: -0.5px;
+}
+
+.kpi-change {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.kpi-change.up   { color: var(--green); }
+.kpi-change.down { color: var(--red); }
+
+.kpi-sub {
+  font-size: 10.5px;
+  color: var(--text2);
+  margin-top: 2px;
+}
+
+/* ─── MAIN GRID ─────────────────────────────────────────────────── */
+.main-grid {
+  display: grid;
+  grid-template-columns: 1fr 340px;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+/* ─── CARDS ─────────────────────────────────────────────────────── */
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+}
+
+.card-title {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.card-subtitle {
+  font-size: 11px;
+  color: var(--text2);
+  margin-top: 1px;
+}
+
+.card-action {
+  font-size: 11.5px;
+  color: var(--gold);
+  cursor: pointer;
+  font-weight: 600;
+  transition: opacity 0.15s;
+}
+.card-action:hover { opacity: 0.7; }
+
+.card-body { padding: 20px; }
+
+/* ─── REVENUE CHART ─────────────────────────────────────────────── */
+.chart-area {
+  width: 100%;
+  height: 200px;
+  position: relative;
+  overflow: visible;
+}
+
+.chart-area svg { width: 100%; height: 100%; }
+
+/* ─── STORE BREAKDOWN ───────────────────────────────────────────── */
+.store-breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 20px;
+}
+
+.store-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.store-dot-color {
+  width: 9px; height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.store-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+}
+
+.store-bar-wrap {
+  flex: 2;
+  height: 6px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.store-bar-fill {
+  height: 100%;
+  border-radius: 10px;
+  transition: width 1s ease;
+}
+
+.store-rev {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+  min-width: 58px;
+  text-align: right;
+}
+
+.store-change {
+  font-size: 10.5px;
+  font-weight: 600;
+  min-width: 40px;
+  text-align: right;
+}
+
+/* ─── ORDERS TABLE ──────────────────────────────────────────────── */
+.table-wrap {
+  overflow-x: auto;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+thead th {
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--text2);
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  padding: 10px 16px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+tbody tr {
+  border-bottom: 1px solid var(--border);
+  transition: background 0.12s;
+  cursor: pointer;
+}
+tbody tr:last-child { border-bottom: none; }
+tbody tr:hover { background: var(--hover); }
+
+tbody td {
+  padding: 12px 16px;
+  font-size: 12.5px;
+  color: var(--text);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.order-id {
+  font-family: 'DM Serif Display', serif;
+  font-size: 13px;
+  color: var(--amber);
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-radius: 100px;
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.status-pill::before {
+  content: '';
+  width: 5px; height: 5px;
+  border-radius: 50%;
+}
+
+.status-pill.delivered  { background: var(--lgreen); color: var(--green); }
+.status-pill.delivered::before  { background: var(--green); }
+.status-pill.processing { background: var(--lorange); color: var(--orange); }
+.status-pill.processing::before { background: var(--orange); }
+.status-pill.pending    { background: var(--lpurple); color: var(--purple); }
+.status-pill.pending::before    { background: var(--purple); }
+.status-pill.cancelled  { background: var(--lred); color: var(--red); }
+.status-pill.cancelled::before  { background: var(--red); }
+
+.channel-tag {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  background: rgba(255,255,255,0.06);
+  color: var(--text2);
+}
+
+/* ─── RIGHT COLUMN ──────────────────────────────────────────────── */
+.right-col {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* ─── LIVE ACTIVITY ─────────────────────────────────────────────── */
+.activity-feed {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0 20px;
+}
+
+.activity-item {
+  display: flex;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  align-items: flex-start;
+}
+.activity-item:last-child { border-bottom: none; }
+
+.activity-dot-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin-top: 3px;
+}
+
+.activity-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.activity-content { flex: 1; min-width: 0; }
+
+.activity-text {
+  font-size: 12.5px;
+  color: var(--text);
+  line-height: 1.4;
+}
+
+.activity-time {
+  font-size: 10.5px;
+  color: var(--text2);
+  margin-top: 2px;
+}
+
+/* ─── INVENTORY STATUS ──────────────────────────────────────────── */
+.inventory-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0 20px;
+}
+
+.inv-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 0;
+  border-bottom: 1px solid var(--border);
+}
+.inv-item:last-child { border-bottom: none; }
+
+.inv-name {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text);
+  flex: 1;
+}
+
+.inv-stock {
+  font-size: 12px;
+  color: var(--text2);
+  min-width: 50px;
+  text-align: right;
+}
+
+.inv-bar-wrap {
+  width: 80px;
+  height: 5px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.inv-bar {
+  height: 100%;
+  border-radius: 10px;
+}
+
+.inv-bar.high   { background: var(--green); }
+.inv-bar.medium { background: var(--amber); }
+.inv-bar.low    { background: var(--red); animation: blink 1.5s infinite; }
+
+@keyframes blink {
+  0%,100% { opacity: 1; }
+  50%      { opacity: 0.4; }
+}
+
+.inv-alert {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: var(--red);
+  background: var(--lred);
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+/* ─── BOTTOM GRID ───────────────────────────────────────────────── */
+.bottom-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 14px;
+}
+
+/* ─── PRODUCT PERFORMANCE ───────────────────────────────────────── */
+.product-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.12s;
+  cursor: pointer;
+}
+.product-row:hover { background: var(--hover); }
+.product-row:last-child { border-bottom: none; }
+
+.product-rank {
+  font-family: 'DM Serif Display', serif;
+  font-size: 16px;
+  color: var(--text2);
+  min-width: 22px;
+}
+
+.product-info { flex: 1; min-width: 0; }
+
+.product-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.product-cat {
+  font-size: 10.5px;
+  color: var(--text2);
+  margin-top: 1px;
+}
+
+.product-units {
+  font-size: 12px;
+  color: var(--text2);
+  min-width: 45px;
+  text-align: right;
+}
+
+.product-rev {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--amber);
+  min-width: 60px;
+  text-align: right;
+}
+
+/* ─── STAFF ─────────────────────────────────────────────────────── */
+.staff-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.staff-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 20px;
+  border-bottom: 1px solid var(--border);
+}
+.staff-row:last-child { border-bottom: none; }
+
+.staff-avatar {
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--navy);
+  flex-shrink: 0;
+}
+
+.staff-info { flex: 1; min-width: 0; }
+
+.staff-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.staff-role {
+  font-size: 10.5px;
+  color: var(--text2);
+}
+
+.staff-status {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+}
+
+.staff-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+}
+
+.staff-status.on  { color: var(--green); }
+.staff-status.on  .staff-dot { background: var(--green); }
+.staff-status.off { color: var(--text2); }
+.staff-status.off .staff-dot { background: var(--text2); }
+
+/* ─── QUICK ACTIONS ─────────────────────────────────────────────── */
+.quick-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 16px 20px;
+}
+
+.qa-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  padding: 14px 10px;
+  border-radius: 10px;
+  background: var(--hover);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all 0.15s;
+  text-align: center;
+}
+.qa-btn:hover {
+  background: rgba(212,151,42,0.1);
+  border-color: rgba(212,151,42,0.3);
+  transform: translateY(-2px);
+}
+
+.qa-icon {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.qa-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text2);
+  line-height: 1.3;
+}
+.qa-btn:hover .qa-label { color: var(--amber); }
+
+/* ─── FOOTER BAR ────────────────────────────────────────────────── */
+.footer-bar {
+  height: 40px;
+  background: var(--navy2);
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  padding: 0 28px;
+  justify-content: space-between;
+}
+
+.footer-text {
+  font-size: 11px;
+  color: var(--text2);
+}
+
+.footer-status {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.f-status-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  color: var(--text2);
+}
+
+.f-dot { width: 6px; height: 6px; border-radius: 50%; }
+
+/* ─── SCROLLBAR ─────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+/* ─── DONUT CHART ───────────────────────────────────────────────── */
+.donut-wrap {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 16px 20px;
+}
+
+.donut-legend {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend-dot {
+  width: 8px; height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.legend-label {
+  font-size: 11.5px;
+  color: var(--text2);
+  flex: 1;
+}
+
+.legend-pct {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* ─── ANIMATIONS ────────────────────────────────────────────────── */
+.kpi-card, .card {
+  animation: fadeUp 0.4s ease both;
+}
+
+.kpi-card:nth-child(1) { animation-delay: 0.05s; }
+.kpi-card:nth-child(2) { animation-delay: 0.10s; }
+.kpi-card:nth-child(3) { animation-delay: 0.15s; }
+.kpi-card:nth-child(4) { animation-delay: 0.20s; }
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+</style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════
+     SIDEBAR
+═══════════════════════════════════ -->
+<aside class="sidebar">
+
+  <div class="sidebar-brand">
+    <div class="brand-icon">QP</div>
+    <div class="brand-text">
+      <div class="brand-name">Quick Platter</div>
+      <div class="brand-sub">Admin Dashboard</div>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-label">Overview</div>
+    <div class="nav-item active">
+      <div class="nav-icon">📊</div> Dashboard
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">📈</div> Analytics
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">📅</div> Reports
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-label">Operations</div>
+    <div class="nav-item">
+      <div class="nav-icon">🛒</div> Orders
+      <div class="nav-badge">12</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">🥩</div> Inventory
+      <div class="nav-badge">3</div>
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">🏪</div> Stores
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">🚚</div> Deliveries
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">❄️</div> Cold Chain
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-label">Revenue</div>
+    <div class="nav-item">
+      <div class="nav-icon">💰</div> Sales
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">📦</div> Products
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">🏨</div> HoReCa B2B
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">🔁</div> Subscriptions
+      <div class="nav-badge gold">14</div>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-section-label">Management</div>
+    <div class="nav-item">
+      <div class="nav-icon">👥</div> Staff
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">🤝</div> Vendors
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">👤</div> Customers
+    </div>
+    <div class="nav-item">
+      <div class="nav-icon">⚙️</div> Settings
+    </div>
+  </div>
+
+  <div class="sidebar-footer">
+    <div class="user-pill">
+      <div class="user-avatar">MZ</div>
+      <div class="user-info">
+        <div class="user-name">Mohd Zaman</div>
+        <div class="user-role">Co-Founder</div>
+      </div>
+      <span style="color:var(--text2); font-size:12px;">⋮</span>
+    </div>
+  </div>
+
+</aside>
+
+<!-- ═══════════════════════════════════
+     MAIN CONTENT
+═══════════════════════════════════ -->
+<div class="main">
+
+  <!-- TOPBAR -->
+  <div class="topbar">
+    <div class="topbar-title">Good morning, Zaman 👋</div>
+
+    <div class="topbar-search">
+      <span style="color:var(--text2); font-size:13px;">🔍</span>
+      <input type="text" placeholder="Search orders, products, customers…">
+    </div>
+
+    <div class="topbar-actions">
+
+      <div class="store-selector">
+        <div class="store-dot"></div>
+        All Stores ▾
+      </div>
+
+      <div class="icon-btn">
+        🔔
+        <div class="notif-dot"></div>
+      </div>
+      <div class="icon-btn">📋</div>
+      <div class="icon-btn">🌙</div>
+
+      <button class="btn-primary">+ New Order</button>
+    </div>
+  </div>
+
+  <!-- CONTENT -->
+  <div class="content">
+
+    <!-- Date strip -->
+    <div class="date-strip">
+      <div class="date-text">
+        <strong>Thursday, 29 May 2025</strong> &nbsp;·&nbsp; Last updated 2 min ago
+      </div>
+      <div class="period-tabs">
+        <div class="period-tab">Today</div>
+        <div class="period-tab active">Week</div>
+        <div class="period-tab">Month</div>
+        <div class="period-tab">Year</div>
+      </div>
+    </div>
+
+    <!-- KPI GRID -->
+    <div class="kpi-grid">
+
+      <div class="kpi-card k-revenue">
+        <div class="kpi-header">
+          <div>
+            <div class="kpi-label">Weekly Revenue</div>
+          </div>
+          <div class="kpi-icon k-revenue">💰</div>
+        </div>
+        <div class="kpi-value">₹4.83L</div>
+        <div class="kpi-change up">↑ 14.2% <span style="font-weight:400; color:var(--text2);">vs last week</span></div>
+        <div class="kpi-sub">Target: ₹5.07L/week</div>
+      </div>
+
+      <div class="kpi-card k-orders">
+        <div class="kpi-header">
+          <div>
+            <div class="kpi-label">Total Orders</div>
+          </div>
+          <div class="kpi-icon k-orders">🛒</div>
+        </div>
+        <div class="kpi-value">1,247</div>
+        <div class="kpi-change up">↑ 8.6% <span style="font-weight:400; color:var(--text2);">vs last week</span></div>
+        <div class="kpi-sub">12 pending · 3 cancelled</div>
+      </div>
+
+      <div class="kpi-card k-meat">
+        <div class="kpi-header">
+          <div>
+            <div class="kpi-label">Meat Sold (kg)</div>
+          </div>
+          <div class="kpi-icon k-meat">🥩</div>
+        </div>
+        <div class="kpi-value">842<span style="font-size:16px;">kg</span></div>
+        <div class="kpi-change up">↑ 11.3% <span style="font-weight:400; color:var(--text2);">vs last week</span></div>
+        <div class="kpi-sub">612kg chicken · 230kg mutton</div>
+      </div>
+
+      <div class="kpi-card k-margin">
+        <div class="kpi-header">
+          <div>
+            <div class="kpi-label">Blended Margin</div>
+          </div>
+          <div class="kpi-icon k-margin">📊</div>
+        </div>
+        <div class="kpi-value">38.4<span style="font-size:16px;">%</span></div>
+        <div class="kpi-change up">↑ 2.1% <span style="font-weight:400; color:var(--text2);">vs last week</span></div>
+        <div class="kpi-sub">Target: 70% by Month 24</div>
+      </div>
+
+    </div>
+
+    <!-- MAIN TWO-COLUMN GRID -->
+    <div class="main-grid">
+
+      <!-- LEFT: Revenue Chart + Orders -->
+      <div style="display:flex; flex-direction:column; gap:14px;">
+
+        <!-- Revenue Chart Card -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Revenue Overview</div>
+              <div class="card-subtitle">Weekly breakdown by store</div>
+            </div>
+            <div style="display:flex; gap:16px; align-items:center;">
+              <div style="display:flex; gap:12px;">
+                <div style="display:flex; align-items:center; gap:5px; font-size:11px; color:var(--text2);">
+                  <div style="width:8px;height:8px;border-radius:2px;background:#D4972A;"></div>Lokhandwala
+                </div>
+                <div style="display:flex; align-items:center; gap:5px; font-size:11px; color:var(--text2);">
+                  <div style="width:8px;height:8px;border-radius:2px;background:#2563B0;"></div>Kurla
+                </div>
+                <div style="display:flex; align-items:center; gap:5px; font-size:11px; color:var(--text2);">
+                  <div style="width:8px;height:8px;border-radius:2px;background:#16A34A;"></div>Thane
+                </div>
+                <div style="display:flex; align-items:center; gap:5px; font-size:11px; color:var(--text2);">
+                  <div style="width:8px;height:8px;border-radius:2px;background:#7C3AED;"></div>Seawoods
+                </div>
+              </div>
+              <div class="card-action">Export ↗</div>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="chart-area">
+              <svg viewBox="0 0 700 180" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+                <defs>
+                  <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#D4972A" stop-opacity="0.25"/>
+                    <stop offset="100%" stop-color="#D4972A" stop-opacity="0"/>
+                  </linearGradient>
+                  <linearGradient id="g2" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#2563B0" stop-opacity="0.2"/>
+                    <stop offset="100%" stop-color="#2563B0" stop-opacity="0"/>
+                  </linearGradient>
+                  <linearGradient id="g3" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#16A34A" stop-opacity="0.18"/>
+                    <stop offset="100%" stop-color="#16A34A" stop-opacity="0"/>
+                  </linearGradient>
+                  <linearGradient id="g4" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stop-color="#7C3AED" stop-opacity="0.18"/>
+                    <stop offset="100%" stop-color="#7C3AED" stop-opacity="0"/>
+                  </linearGradient>
+                </defs>
+
+                <!-- Grid lines -->
+                <line x1="0" y1="20" x2="700" y2="20" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
+                <line x1="0" y1="60" x2="700" y2="60" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
+                <line x1="0" y1="100" x2="700" y2="100" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
+                <line x1="0" y1="140" x2="700" y2="140" stroke="rgba(255,255,255,0.05)" stroke-width="1"/>
+
+                <!-- Y labels -->
+                <text x="0" y="18" fill="rgba(148,163,184,0.6)" font-size="10" font-family="DM Sans">80K</text>
+                <text x="0" y="58" fill="rgba(148,163,184,0.6)" font-size="10" font-family="DM Sans">60K</text>
+                <text x="0" y="98" fill="rgba(148,163,184,0.6)" font-size="10" font-family="DM Sans">40K</text>
+                <text x="0" y="138" fill="rgba(148,163,184,0.6)" font-size="10" font-family="DM Sans">20K</text>
+
+                <!-- X labels -->
+                <text x="68"  y="175" fill="rgba(148,163,184,0.6)" font-size="10" font-family="DM Sans" text-anchor="middle">Mon</text>
+                <text x="168" y="175" fill="rgba(148,163,184,0.6)" font-size="10" font-family="DM Sans" text-anchor="middle">Tue</text>
+                <text x="268" y="175" fill="rgba(148,163,184,0.6)" font-size="10" font-family="DM Sans" text-anchor="middle">Wed</text>
+                <text x="368" y="175" fill="rgba(148,163,184,0.6)" font-size="10" font-family="DM Sans" text-anchor="middle">Thu</text>
+                <text x="468" y="175" fill="rgba(148,163,184,0.6)" font-size="10" font-family="DM Sans" text-anchor="middle">Fri</text>
+                <text x="568" y="175" fill="rgba(148,163,184,0.6)" font-size="10" font-family="DM Sans" text-anchor="middle">Sat</text>
+                <text x="650" y="175" fill="rgba(148,163,184,0.6)" font-size="10" font-family="DM Sans" text-anchor="middle">Sun</text>
+
+                <!-- Lokhandwala area + line -->
+                <path d="M 30 110 L 68 95 L 168 80 L 268 70 L 368 55 L 468 48 L 568 35 L 650 42 L 650 160 L 30 160 Z" fill="url(#g1)"/>
+                <path d="M 30 110 L 68 95 L 168 80 L 268 70 L 368 55 L 468 48 L 568 35 L 650 42" fill="none" stroke="#D4972A" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+
+                <!-- Kurla area + line -->
+                <path d="M 30 90 L 68 75 L 168 60 L 268 50 L 368 38 L 468 30 L 568 22 L 650 28 L 650 160 L 30 160 Z" fill="url(#g2)"/>
+                <path d="M 30 90 L 68 75 L 168 60 L 268 50 L 368 38 L 468 30 L 568 22 L 650 28" fill="none" stroke="#2563B0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+
+                <!-- Thane line -->
+                <path d="M 30 130 L 68 120 L 168 108 L 268 100 L 368 92 L 468 85 L 568 75 L 650 80" fill="none" stroke="#16A34A" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="5 3"/>
+
+                <!-- Seawoods line -->
+                <path d="M 30 140 L 68 132 L 168 122 L 268 115 L 368 108 L 468 102 L 568 95 L 650 98" fill="none" stroke="#7C3AED" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="5 3"/>
+
+                <!-- Dot markers on latest point -->
+                <circle cx="650" cy="42" r="4" fill="#D4972A" stroke="var(--navy)" stroke-width="2"/>
+                <circle cx="650" cy="28" r="4" fill="#2563B0" stroke="var(--navy)" stroke-width="2"/>
+                <circle cx="650" cy="80" r="4" fill="#16A34A" stroke="var(--navy)" stroke-width="2"/>
+                <circle cx="650" cy="98" r="4" fill="#7C3AED" stroke="var(--navy)" stroke-width="2"/>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recent Orders Table -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Recent Orders</div>
+              <div class="card-subtitle">1,247 orders this week</div>
+            </div>
+            <div class="card-action">View all →</div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Order ID</th>
+                  <th>Customer</th>
+                  <th>Store</th>
+                  <th>Items</th>
+                  <th>Amount</th>
+                  <th>Channel</th>
+                  <th>Status</th>
+                  <th>Time</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="order-id">#QP-4821</span></td>
+                  <td>Salma Ansari</td>
+                  <td>Kurla</td>
+                  <td>Chicken 1.5kg + Tikka Kit</td>
+                  <td style="font-weight:700; color:var(--amber);">₹648</td>
+                  <td><span class="channel-tag">Blinkit</span></td>
+                  <td><span class="status-pill delivered">Delivered</span></td>
+                  <td style="color:var(--text2);">9:14 AM</td>
+                </tr>
+                <tr>
+                  <td><span class="order-id">#QP-4820</span></td>
+                  <td>Rohan Mehta</td>
+                  <td>Lokhandwala</td>
+                  <td>QP Frozen — Malvani x3</td>
+                  <td style="font-weight:700; color:var(--amber);">₹447</td>
+                  <td><span class="channel-tag">Zepto</span></td>
+                  <td><span class="status-pill processing">Processing</span></td>
+                  <td style="color:var(--text2);">9:08 AM</td>
+                </tr>
+                <tr>
+                  <td><span class="order-id">#QP-4819</span></td>
+                  <td>Fatima Sheikh</td>
+                  <td>Kurla</td>
+                  <td>Mutton 2kg — Raan cut</td>
+                  <td style="font-weight:700; color:var(--amber);">₹1,600</td>
+                  <td><span class="channel-tag">Store</span></td>
+                  <td><span class="status-pill delivered">Delivered</span></td>
+                  <td style="color:var(--text2);">8:55 AM</td>
+                </tr>
+                <tr>
+                  <td><span class="order-id">#QP-4818</span></td>
+                  <td>Priya Nair</td>
+                  <td>Seawoods</td>
+                  <td>Masala Kit x2 + Chicken 1kg</td>
+                  <td style="font-weight:700; color:var(--amber);">₹596</td>
+                  <td><span class="channel-tag">Instamart</span></td>
+                  <td><span class="status-pill pending">Pending</span></td>
+                  <td style="color:var(--text2);">8:44 AM</td>
+                </tr>
+                <tr>
+                  <td><span class="order-id">#QP-4817</span></td>
+                  <td>Amir Khan</td>
+                  <td>Thane</td>
+                  <td>Subscription Box — Monthly</td>
+                  <td style="font-weight:700; color:var(--amber);">₹999</td>
+                  <td><span class="channel-tag">D2C</span></td>
+                  <td><span class="status-pill delivered">Delivered</span></td>
+                  <td style="color:var(--text2);">8:30 AM</td>
+                </tr>
+                <tr>
+                  <td><span class="order-id">#QP-4816</span></td>
+                  <td>Spice Garden (B2B)</td>
+                  <td>Kurla</td>
+                  <td>Tandoori Chicken Marinated 8kg</td>
+                  <td style="font-weight:700; color:var(--amber);">₹3,280</td>
+                  <td><span class="channel-tag">HoReCa</span></td>
+                  <td><span class="status-pill delivered">Delivered</span></td>
+                  <td style="color:var(--text2);">6:15 AM</td>
+                </tr>
+                <tr>
+                  <td><span class="order-id">#QP-4815</span></td>
+                  <td>Neha Patil</td>
+                  <td>Thane</td>
+                  <td>Kolhapuri Masala Kit x1</td>
+                  <td style="font-weight:700; color:var(--amber);">₹179</td>
+                  <td><span class="channel-tag">Store</span></td>
+                  <td><span class="status-pill cancelled">Cancelled</span></td>
+                  <td style="color:var(--text2);">8:10 AM</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- RIGHT COLUMN -->
+      <div class="right-col">
+
+        <!-- Live Activity -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Live Activity</div>
+              <div class="card-subtitle" style="display:flex; align-items:center; gap:5px;">
+                <div class="store-dot" style="width:6px;height:6px;"></div> Real-time
+              </div>
+            </div>
+            <div class="card-action">View all →</div>
+          </div>
+          <div class="activity-feed">
+            <div class="activity-item">
+              <div class="activity-dot-wrap">
+                <div class="activity-dot" style="background:var(--green);"></div>
+              </div>
+              <div class="activity-content">
+                <div class="activity-text"><strong style="color:var(--text);">Order #QP-4821</strong> delivered via Blinkit · Kurla</div>
+                <div class="activity-time">2 min ago</div>
+              </div>
+            </div>
+            <div class="activity-item">
+              <div class="activity-dot-wrap">
+                <div class="activity-dot" style="background:var(--amber);"></div>
+              </div>
+              <div class="activity-content">
+                <div class="activity-text">🌡️ Temp alert — Seawoods freezer: <strong style="color:var(--amber);">-16°C</strong> (below -18°C)</div>
+                <div class="activity-time">5 min ago</div>
+              </div>
+            </div>
+            <div class="activity-item">
+              <div class="activity-dot-wrap">
+                <div class="activity-dot" style="background:var(--mid);"></div>
+              </div>
+              <div class="activity-content">
+                <div class="activity-text">New B2B order — Spice Garden placed ₹3,280 order</div>
+                <div class="activity-time">12 min ago</div>
+              </div>
+            </div>
+            <div class="activity-item">
+              <div class="activity-dot-wrap">
+                <div class="activity-dot" style="background:var(--red);"></div>
+              </div>
+              <div class="activity-content">
+                <div class="activity-text">⚠️ Low stock — Mutton (Kurla) <strong style="color:var(--red);">8kg remaining</strong></div>
+                <div class="activity-time">18 min ago</div>
+              </div>
+            </div>
+            <div class="activity-item">
+              <div class="activity-dot-wrap">
+                <div class="activity-dot" style="background:var(--green);"></div>
+              </div>
+              <div class="activity-content">
+                <div class="activity-text">✅ 14 subscription boxes dispatched — Thane route</div>
+                <div class="activity-time">24 min ago</div>
+              </div>
+            </div>
+            <div class="activity-item">
+              <div class="activity-dot-wrap">
+                <div class="activity-dot" style="background:var(--purple);"></div>
+              </div>
+              <div class="activity-content">
+                <div class="activity-text">New review ⭐⭐⭐⭐⭐ — Lokhandwala via Blinkit</div>
+                <div class="activity-time">31 min ago</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Inventory Status -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Inventory Status</div>
+              <div class="card-subtitle">All stores · Live</div>
+            </div>
+            <div class="card-action">Reorder →</div>
+          </div>
+          <div class="inventory-list">
+            <div class="inv-item">
+              <div class="inv-name">Live Chicken</div>
+              <div class="inv-bar-wrap"><div class="inv-bar high" style="width:72%;"></div></div>
+              <div class="inv-stock" style="color:var(--green); font-weight:700;">72 birds</div>
+            </div>
+            <div class="inv-item">
+              <div class="inv-name">Live Mutton</div>
+              <div class="inv-bar-wrap"><div class="inv-bar low" style="width:14%;"></div></div>
+              <div class="inv-stock">8 kg</div>
+              <div class="inv-alert">Low!</div>
+            </div>
+            <div class="inv-item">
+              <div class="inv-name">QP Malvani Frozen</div>
+              <div class="inv-bar-wrap"><div class="inv-bar medium" style="width:45%;"></div></div>
+              <div class="inv-stock">124 units</div>
+            </div>
+            <div class="inv-item">
+              <div class="inv-name">Masala Kits</div>
+              <div class="inv-bar-wrap"><div class="inv-bar high" style="width:80%;"></div></div>
+              <div class="inv-stock">240 units</div>
+            </div>
+            <div class="inv-item">
+              <div class="inv-name">McCain (Frozen)</div>
+              <div class="inv-bar-wrap"><div class="inv-bar medium" style="width:38%;"></div></div>
+              <div class="inv-stock">386 units</div>
+            </div>
+            <div class="inv-item">
+              <div class="inv-name">Bone Broth Packs</div>
+              <div class="inv-bar-wrap"><div class="inv-bar low" style="width:18%;"></div></div>
+              <div class="inv-stock">22 units</div>
+              <div class="inv-alert">Low!</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- BOTTOM GRID -->
+    <div class="bottom-grid">
+
+      <!-- Store Performance -->
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Store Performance</div>
+            <div class="card-subtitle">Weekly revenue by location</div>
+          </div>
+          <div class="card-action">Details →</div>
+        </div>
+        <div class="store-breakdown">
+          <div class="store-row">
+            <div class="store-dot-color" style="background:#D4972A;"></div>
+            <div class="store-name">Kurla</div>
+            <div class="store-bar-wrap"><div class="store-bar-fill" style="width:85%; background:linear-gradient(to right,#D4972A,#F0C040);"></div></div>
+            <div class="store-rev">₹1.84L</div>
+            <div class="store-change" style="color:var(--green);">↑18%</div>
+          </div>
+          <div class="store-row">
+            <div class="store-dot-color" style="background:#2563B0;"></div>
+            <div class="store-name">Lokhandwala</div>
+            <div class="store-bar-wrap"><div class="store-bar-fill" style="width:62%; background:linear-gradient(to right,#2563B0,#60A5FA);"></div></div>
+            <div class="store-rev">₹1.27L</div>
+            <div class="store-change" style="color:var(--green);">↑11%</div>
+          </div>
+          <div class="store-row">
+            <div class="store-dot-color" style="background:#16A34A;"></div>
+            <div class="store-name">Thane</div>
+            <div class="store-bar-wrap"><div class="store-bar-fill" style="width:50%; background:linear-gradient(to right,#16A34A,#4ADE80);"></div></div>
+            <div class="store-rev">₹1.03L</div>
+            <div class="store-change" style="color:var(--green);">↑9%</div>
+          </div>
+          <div class="store-row">
+            <div class="store-dot-color" style="background:#7C3AED;"></div>
+            <div class="store-name">Seawoods</div>
+            <div class="store-bar-wrap"><div class="store-bar-fill" style="width:34%; background:linear-gradient(to right,#7C3AED,#A78BFA);"></div></div>
+            <div class="store-rev">₹0.69L</div>
+            <div class="store-change" style="color:var(--red);">↓3%</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Top Products -->
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <div class="card-title">Top Products</div>
+            <div class="card-subtitle">By revenue this week</div>
+          </div>
+          <div class="card-action">All products →</div>
+        </div>
+        <div>
+          <div class="product-row">
+            <div class="product-rank">1</div>
+            <div class="product-info">
+              <div class="product-name">Fresh Chicken</div>
+              <div class="product-cat">Live Slaughter</div>
+            </div>
+            <div class="product-units" style="color:var(--text2);">612 kg</div>
+            <div class="product-rev">₹1.35L</div>
+          </div>
+          <div class="product-row">
+            <div class="product-rank">2</div>
+            <div class="product-info">
+              <div class="product-name">QP Malvani Frozen</div>
+              <div class="product-cat">Own Brand Frozen</div>
+            </div>
+            <div class="product-units">486 u</div>
+            <div class="product-rev">₹0.72L</div>
+          </div>
+          <div class="product-row">
+            <div class="product-rank">3</div>
+            <div class="product-info">
+              <div class="product-name">Tandoori Marinade</div>
+              <div class="product-cat">Value Added Meat</div>
+            </div>
+            <div class="product-units">142 kg</div>
+            <div class="product-rev">₹0.58L</div>
+          </div>
+          <div class="product-row">
+            <div class="product-rank">4</div>
+            <div class="product-info">
+              <div class="product-name">Masala Kits</div>
+              <div class="product-cat">Own Brand IP</div>
+            </div>
+            <div class="product-units">310 u</div>
+            <div class="product-rev">₹0.46L</div>
+          </div>
+          <div class="product-row">
+            <div class="product-rank">5</div>
+            <div class="product-info">
+              <div class="product-name">Fresh Mutton</div>
+              <div class="product-cat">Live Slaughter</div>
+            </div>
+            <div class="product-units">230 kg</div>
+            <div class="product-rev">₹0.44L</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Staff + Quick Actions -->
+      <div style="display:flex; flex-direction:column; gap:14px;">
+
+        <!-- Staff On Duty -->
+        <div class="card">
+          <div class="card-header">
+            <div>
+              <div class="card-title">Staff On Duty</div>
+              <div class="card-subtitle">Today · 6 active</div>
+            </div>
+            <div class="card-action">Manage →</div>
+          </div>
+          <div class="staff-list">
+            <div class="staff-row">
+              <div class="staff-avatar" style="background:linear-gradient(135deg,#D4972A,#8B5A10);">IK</div>
+              <div class="staff-info">
+                <div class="staff-name">Ibrahim Khan</div>
+                <div class="staff-role">Head Butcher · Kurla</div>
+              </div>
+              <div class="staff-status on"><div class="staff-dot"></div> On duty</div>
+            </div>
+            <div class="staff-row">
+              <div class="staff-avatar" style="background:linear-gradient(135deg,#2563B0,#1A4080);">SP</div>
+              <div class="staff-info">
+                <div class="staff-name">Sunita Pawar</div>
+                <div class="staff-role">Store Manager · Lokhandwala</div>
+              </div>
+              <div class="staff-status on"><div class="staff-dot"></div> On duty</div>
+            </div>
+            <div class="staff-row">
+              <div class="staff-avatar" style="background:linear-gradient(135deg,#16A34A,#0F6E3A);">RJ</div>
+              <div class="staff-info">
+                <div class="staff-name">Raju Jadhav</div>
+                <div class="staff-role">Production · Taloja</div>
+              </div>
+              <div class="staff-status on"><div class="staff-dot"></div> On duty</div>
+            </div>
+            <div class="staff-row">
+              <div class="staff-avatar" style="background:linear-gradient(135deg,#7C3AED,#5B21B6);">AD</div>
+              <div class="staff-info">
+                <div class="staff-name">Aisha Desai</div>
+                <div class="staff-role">Store Staff · Seawoods</div>
+              </div>
+              <div class="staff-status off"><div class="staff-dot"></div> Off shift</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Quick Actions -->
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">Quick Actions</div>
+          </div>
+          <div class="quick-actions">
+            <div class="qa-btn">
+              <div class="qa-icon">📦</div>
+              <div class="qa-label">New Order</div>
+            </div>
+            <div class="qa-btn">
+              <div class="qa-icon">🛒</div>
+              <div class="qa-label">Reorder Stock</div>
+            </div>
+            <div class="qa-btn">
+              <div class="qa-icon">🌡️</div>
+              <div class="qa-label">Cold Chain Log</div>
+            </div>
+            <div class="qa-btn">
+              <div class="qa-icon">📄</div>
+              <div class="qa-label">Daily Report</div>
+            </div>
+            <div class="qa-btn">
+              <div class="qa-icon">🧾</div>
+              <div class="qa-label">Invoice</div>
+            </div>
+            <div class="qa-btn">
+              <div class="qa-icon">📲</div>
+              <div class="qa-label">Send SMS</div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+  </div>
+
+  <!-- FOOTER BAR -->
+  <div class="footer-bar">
+    <div class="footer-text">Quick Platter Admin v1.0 · © 2025 Quick Platter Pvt Ltd</div>
+    <div class="footer-status">
+      <div class="f-status-item">
+        <div class="f-dot" style="background:var(--green);"></div>
+        All Systems Operational
+      </div>
+      <div class="f-status-item">
+        <div class="f-dot" style="background:var(--amber);"></div>
+        Cold Chain: 1 Alert
+      </div>
+      <div class="f-status-item">
+        <div class="f-dot" style="background:var(--green);"></div>
+        4/4 Stores Online
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// Period tab switching
+document.querySelectorAll('.period-tab').forEach(tab => {
+  tab.addEventListener('click', function() {
+    document.querySelectorAll('.period-tab').forEach(t => t.classList.remove('active'));
+    this.classList.add('active');
+  });
+});
+
+// Nav item switching
+document.querySelectorAll('.nav-item').forEach(item => {
+  item.addEventListener('click', function() {
+    document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+    this.classList.add('active');
+  });
+});
+</script>
+
+</body>
+</html>

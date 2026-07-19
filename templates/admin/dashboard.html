@@ -1,0 +1,81 @@
+{% extends 'admin/base.html' %}
+{% block title %}Dashboard{% endblock %}
+{% block heading %}Dashboard{% endblock %}
+{% block top_actions %}
+  <div class="report-slicer dashboard-slicer">
+    <div class="seg">
+      <button type="button" class="seg-btn" data-period="day">Day</button>
+      <button type="button" class="seg-btn active" data-period="month">Month</button>
+      <button type="button" class="seg-btn" data-period="quarter">Quarter</button>
+      <button type="button" class="seg-btn" data-period="year">Year</button>
+    </div>
+    <div class="report-anchor" id="dashboard-anchor-wrap"></div>
+  </div>
+{% endblock %}
+{% block content %}
+  <div class="date-strip">
+    <span id="dash-date"></span>
+    <span class="muted" id="dash-updated"></span>
+  </div>
+
+  <div class="kpi-grid" id="kpi-grid"></div>
+
+  <div class="grid-2">
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Revenue Overview</h2>
+        <span class="muted" id="chart-caption">Last 14 days</span>
+      </div>
+      <div class="chart-box"><canvas id="salesChart"></canvas></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Live Activity</h2>
+        <span class="live-dot-label"><span class="live-dot"></span>Real-time</span>
+      </div>
+      <div class="activity-feed" id="activity-feed"></div>
+    </section>
+  </div>
+
+  <div class="grid-2">
+    <section class="panel">
+      <div class="panel-head"><h2>Recent Orders</h2><a href="/admin/orders" class="link">View all</a></div>
+      <div class="table-wrap"><table class="data-table" id="recent-orders"><thead>
+        <tr><th>Order</th><th>Customer</th><th>Store</th><th>Total</th><th>Status</th></tr>
+      </thead><tbody></tbody></table></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Inventory Status</h2><a href="/admin/inventory" class="link">Manage</a></div>
+      <div class="inv-health" id="inventory-health"></div>
+    </section>
+  </div>
+
+  <div class="grid-3">
+    <section class="panel">
+      <div class="panel-head"><h2>Store Performance</h2><a href="/admin/stores" class="link">Details</a></div>
+      <div class="store-breakdown" id="store-performance"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Top Products</h2><a href="/admin/products" class="link">All products</a></div>
+      <div id="top-products"></div>
+    </section>
+    <section class="panel">
+      <div class="panel-head"><h2>Staff On Duty</h2><a href="/admin/staff" class="link">Manage</a></div>
+      <div class="staff-list" id="staff-on-duty"></div>
+      <div class="panel-head" style="margin-top:18px"><h2>Quick Actions</h2></div>
+      <div class="quick-actions">
+        <a class="qa-btn" href="/admin/orders">Orders</a>
+        <a class="qa-btn" href="/admin/inventory">Restock</a>
+        <a class="qa-btn" href="/api/admin/reports/pdf" target="_blank">Daily Report</a>
+        <a class="qa-btn" href="/admin/coupons">Coupons</a>
+        <a class="qa-btn" href="/api/admin/reports/xlsx" target="_blank">Excel Export</a>
+        <a class="qa-btn" href="/admin/settings">Settings</a>
+      </div>
+    </section>
+  </div>
+{% endblock %}
+{% block scripts %}
+<script>
+  AdminDashboard.init();
+</script>
+{% endblock %}

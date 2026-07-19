@@ -1,0 +1,34 @@
+{% extends 'admin/base.html' %}
+{% block title %}Customers{% endblock %}
+{% block heading %}Customers{% endblock %}
+{% block top_actions %}
+<input type="search" id="customer-search" class="search-input" placeholder="Search name, phone, email…" />
+{% endblock %}
+{% block content %}
+<section class="panel">
+  <div id="focus-bar" class="focus-bar hidden"></div>
+  <p class="muted panel-intro">Customer records with order history. List is paginated so large customer counts stay fast.</p>
+  <div class="table-wrap">
+    <table class="data-table" id="customers-table">
+      <thead>
+        <tr>
+          <th>Name</th><th>Phone</th><th>Email</th><th>Account</th><th>Orders</th><th>Lifetime Value</th><th>Joined</th><th>Actions</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+  <div class="pager" id="customers-pager"></div>
+</section>
+
+<dialog id="customer-modal" class="modal">
+  <div class="modal-card wide">
+    <h2 id="customer-modal-title">Customer</h2>
+    <div id="customer-detail"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline" id="customer-close">Close</button>
+    </div>
+  </div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script>AdminCustomers.init();</script>{% endblock %}

@@ -1,0 +1,197 @@
+ Administration Portal
+Supported Roles:
+• Super Admin
+Future Roles:
+• Store Manager
+• Inventory Manager
+• Sales Manager
+• Content Manager
+Role-Based Access Control (RBAC) shall be supported.
+________________________________________
+Reporting & Analytics
+Reports:
+• Sales Report
+• Store Performance Report
+• Product Performance Report
+• Inventory Report
+• Customer Report
+• Lead Report
+• Order Status Report
+Export Formats:
+• Excel
+• PDF
+________________________________________
+SEO & Marketing
+SEO Features:
+• Meta Titles
+• Meta Descriptions
+• SEO Friendly URLs
+• Sitemap
+• Robots.txt
+• Canonical Tags
+Marketing Tracking:
+• Google Analytics
+• Meta Pixel
+• WhatsApp Click Tracking
+Blog Management:
+• Category Management
+• Tag Management
+• SEO Management
+• Content Publishing
+________________________________________
+Legal & Compliance
+Supported:
+• GST
+• Tax Invoices
+• FSSAI Display
+• Halal Certification Display
+• Privacy Policy
+• Terms & Conditions
+________________________________________
+Inventory Management
+Inventory Required:
+YES
+Store-Wise Inventory:
+YES
+Low Stock Alerts:
+YES
+Low Stock Threshold:
+Configurable
+Default Value:
+10 Units
+Inventory Deduction Rule:
+Inventory shall be deducted only after order confirmation.
+________________________________________
+Order Management
+Supported Order Statuses:
+• New
+• Confirmed
+• Ready
+• Out For Delivery
+• Delivered
+• Cancelled
+Future status additions shall be configurable through Admin Portal.
+________________________________________
+Store Management
+Current Stores: Keep the same which are present in current UI
+
+Future stores can be added through Admin Portal.
+Store Configuration:
+• Store Name
+• Store Address
+• Contact Information
+• Operating Hours
+• Delivery Radius
+• Store Status
+• Store Manager
+• Store-Specific Inventory
+• Store-Specific Pricing
+All configurations shall be manageable through the Admin Portal.
+________________________________________
+ Product Catalog Management
+Supported Categories:
+• Fresh Meat
+• Frozen Food
+• Ready-To-Cook
+• Marinades
+• Future Categories
+Admin shall be able to:
+• Create Categories
+• Edit Categories
+• Enable / Disable Categories
+• Configure Category SEO
+• Configure Category Banners
+________________________________________
+Product Management
+Each Product shall support:
+• Product Name
+• Product Description
+• SKU
+• Product Images
+• Category
+• Product Status
+• GST Percentage
+• Expiry Information
+• Nutritional Information
+• SEO Metadata
+• Store Availability
+• Featured Product Tag
+• Bestseller Tag
+________________________________________
+ Variant Management
+The platform shall support product variants.
+Examples:
+Chicken Curry Cut
+• 500 gm
+• 1 kg
+• 2 kg
+• Skinless
+• With Skin
+Inventory Models Supported:
+• Product-Level Inventory
+• Variant-Level Inventory
+Admin shall be able to configure inventory management methodology.
+________________________________________
+Pricing Management
+Pricing shall be maintained manually by Admin.
+The same product may have different prices across stores.
+Example:
+Chicken Curry Cut
+• Lokhandwala – ₹299
+• Kurla – ₹279
+• Thane – ₹289
+Store-wise pricing shall be fully supported.
+________________________________________
+Customer Registration & Login
+Supported Registration Methods:
+• Mobile OTP
+• Email & Password
+Customer login shall be mandatory before placing orders.
+Customer Features:
+• Profile Management
+• Address Management
+• Wishlist
+• Order History
+• Reorder Previous Purchases
+• Saved Addresses
+________________________________________
+ Cart & Checkout
+Supported Features:
+• Add To Cart
+• Update Quantity
+• Remove Product
+• Apply Coupons
+• Delivery / Pickup Selection
+• Save Addresses
+• Special Instructions
+Minimum Order Value:
+₹499
+Delivery Charges:
+Configurable through Admin Panel.
+Default Rule:
+Orders above ₹499 = Free Delivery
+Orders below ₹499 = Configurable Delivery Charges
+________________________________________
+ Delivery Management
+Delivery Modes:
+• Home Delivery
+• Store Pickup
+Delivery Radius:
+Store-wise Configurable
+Default Radius:
+3 KM
+Nearest Store Assignment:
+System shall automatically identify and assign the nearest serviceable store based on configured delivery radius.
+Same-Day Delivery:
+Supported
+Future Scope:
+• Delivery Slot Management
+• Delivery Partner Integrations
+________________________________________
+ Payment Management
+Phase 1
+Supported Payment Methods:
+• Cash On Delivery (COD)
+• WhatsApp Payment Link
+
+

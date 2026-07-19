@@ -1,0 +1,44 @@
+{% extends 'admin/base.html' %}
+{% block title %}Coupons{% endblock %}
+{% block heading %}Coupons{% endblock %}
+{% block top_actions %}
+<button class="btn btn-gold" id="btn-add-coupon">+ Add Coupon</button>
+{% endblock %}
+{% block content %}
+<section class="panel">
+  <p class="muted panel-intro">Create discount codes customers can apply at checkout.</p>
+  <div class="table-wrap">
+    <table class="data-table" id="coupons-table">
+      <thead>
+        <tr><th>Code</th><th>Type</th><th>Value</th><th>Min Order</th><th>Expires</th><th>Status</th><th></th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<dialog id="coupon-modal" class="modal">
+  <form method="dialog" id="coupon-form" class="modal-card">
+    <h2 id="coupon-modal-title">Add Coupon</h2>
+    <input type="hidden" id="coupon-id" />
+    <div class="form-grid">
+      <div class="field"><label>Code</label><input id="cpn-code" placeholder="FAM10" required /></div>
+      <div class="field"><label>Type</label>
+        <select id="cpn-type"><option value="percent">Percent (%)</option><option value="flat">Flat (₹)</option></select>
+      </div>
+      <div class="field"><label>Value</label><input type="number" id="cpn-value" min="0" step="1" required /></div>
+      <div class="field"><label>Max Discount (₹, optional)</label><input type="number" id="cpn-max" min="0" /></div>
+      <div class="field"><label>Min Order Subtotal (₹)</label><input type="number" id="cpn-min" min="0" value="0" /></div>
+      <div class="field"><label>Expires (YYYY-MM-DD, optional)</label><input id="cpn-expiry" placeholder="2026-12-31" /></div>
+      <div class="field"><label>Status</label>
+        <select id="cpn-active"><option value="true">Active</option><option value="false">Inactive</option></select>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline" id="coupon-cancel">Cancel</button>
+      <button type="submit" class="btn btn-dark">Save Coupon</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}<script>AdminCoupons.init();</script>{% endblock %}

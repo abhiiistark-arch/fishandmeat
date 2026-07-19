@@ -1,0 +1,16 @@
+data/
+uploads/products/*
+!uploads/products/.gitkeep
+uploads/content/*
+!uploads/content/.gitkeep
+reports_out/*
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.zip
+.DS_Store
+Thumbs.db

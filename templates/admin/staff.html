@@ -1,0 +1,41 @@
+{% extends 'admin/base.html' %}
+{% block title %}Staff{% endblock %}
+{% block heading %}Staff{% endblock %}
+{% block top_actions %}
+<button class="btn btn-gold" id="btn-add-staff">+ Add Staff</button>
+{% endblock %}
+{% block content %}
+<section class="panel">
+  <div id="focus-bar" class="focus-bar hidden"></div>
+  <p class="muted panel-intro">Staff roster with roles (Super Admin, Store Manager, Inventory Manager, Sales Manager, Content Manager) and duty status. Role-based access control ready.</p>
+  <div class="table-wrap">
+    <table class="data-table" id="staff-table">
+      <thead>
+        <tr><th>Name</th><th>Role</th><th>Store</th><th>Phone</th><th>Duty</th><th></th></tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<dialog id="staff-modal" class="modal">
+  <form method="dialog" id="staff-form" class="modal-card">
+    <h2 id="staff-modal-title">Add Staff</h2>
+    <input type="hidden" id="staff-id" />
+    <div class="form-grid">
+      <div class="field"><label>Name</label><input id="stf-name" required /></div>
+      <div class="field"><label>Role</label><select id="stf-role"></select></div>
+      <div class="field"><label>Store</label><select id="stf-store"></select></div>
+      <div class="field"><label>Phone</label><input id="stf-phone" /></div>
+      <div class="field"><label>Duty Status</label>
+        <select id="stf-duty"><option value="true">On duty</option><option value="false">Off shift</option></select>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline" id="staff-cancel">Cancel</button>
+      <button type="submit" class="btn btn-dark">Save Staff</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}<script>AdminStaff.init();</script>{% endblock %}

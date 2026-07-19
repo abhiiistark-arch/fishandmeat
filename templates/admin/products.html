@@ -1,0 +1,74 @@
+{% extends 'admin/base.html' %}
+{% block title %}Products{% endblock %}
+{% block heading %}Product Catalog{% endblock %}
+{% block top_actions %}
+<button class="btn btn-gold" id="btn-add-product">+ Add Product</button>
+{% endblock %}
+{% block content %}
+<section class="panel">
+  <div id="focus-bar" class="focus-bar hidden"></div>
+  <p class="muted panel-intro">Manage name, SKU, images, variants, SEO, featured/bestseller tags, and store availability. Changes sync to the storefront.</p>
+  <div class="table-wrap">
+    <table class="data-table" id="products-table">
+      <thead>
+        <tr>
+          <th>Product</th><th>SKU</th><th>Category</th><th>Status</th><th>Tags</th><th>Variants</th><th></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</section>
+
+<dialog id="product-modal" class="modal">
+  <form method="dialog" id="product-form" class="modal-card wide">
+    <h2 id="product-modal-title">Add Product</h2>
+    <input type="hidden" id="product-id" />
+    <div class="form-grid">
+      <div class="field"><label>Product Name</label><input id="p-name" required /></div>
+      <div class="field"><label>SKU</label><input id="p-sku" placeholder="Auto if blank" /></div>
+      <div class="field"><label>Category</label><select id="p-category"></select></div>
+      <div class="field"><label>Status</label>
+        <select id="p-status">
+          <option value="available">Available</option>
+          <option value="out_of_stock">Out of Stock</option>
+          <option value="disabled">Disabled</option>
+        </select>
+      </div>
+      <div class="field full"><label>Description</label><textarea id="p-desc" rows="3"></textarea></div>
+      <div class="field"><label>Inventory Model</label>
+        <select id="p-inv-model">
+          <option value="variant">Variant-Level Inventory</option>
+          <option value="product">Product-Level Inventory</option>
+        </select>
+      </div>
+      <div class="field"><label>Default Price (new stores)</label><input id="p-default-price" type="number" min="0" step="1" value="0" /></div>
+      <div class="field"><label>GST Percentage (%)</label><input id="p-gst" type="number" min="0" max="28" step="0.1" value="0" /></div>
+      <div class="field"><label>Featured</label>
+        <select id="p-featured"><option value="false">No</option><option value="true">Yes</option></select>
+      </div>
+      <div class="field"><label>Bestseller</label>
+        <select id="p-bestseller"><option value="false">No</option><option value="true">Yes</option></select>
+      </div>
+      <div class="field full"><label>Expiry Information</label><input id="p-expiry" /></div>
+      <div class="field full"><label>Nutritional Information</label><textarea id="p-nutrition" rows="2"></textarea></div>
+      <div class="field"><label>SEO Title</label><input id="p-seo-title" /></div>
+      <div class="field"><label>SEO Description</label><input id="p-seo-desc" /></div>
+      <div class="field full"><label>Variants (one per line: Label | unit)</label>
+        <textarea id="p-variants" rows="4" placeholder="500 gm | 500g&#10;1 kg | 1kg&#10;Skinless 1 kg | 1kg"></textarea>
+      </div>
+      <div class="field full"><label>Store Availability</label><div id="p-stores" class="check-grid"></div></div>
+      <div class="field full" id="p-image-wrap" style="display:none">
+        <label>Upload Image</label>
+        <input type="file" id="p-image" accept="image/*" />
+        <div id="p-images-preview" class="img-preview"></div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline" id="product-cancel">Cancel</button>
+      <button type="submit" class="btn btn-dark">Save Product</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}<script>AdminProducts.init();</script>{% endblock %}

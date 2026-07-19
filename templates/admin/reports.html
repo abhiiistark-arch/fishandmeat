@@ -1,0 +1,34 @@
+{% extends 'admin/base.html' %}
+{% block title %}Reports{% endblock %}
+{% block heading %}Reports &amp; Downloads{% endblock %}
+{% block content %}
+<section class="panel">
+  <p class="muted panel-intro">Download order history, total sales, store-wise contribution and KPIs as PDF or Excel.</p>
+  <div class="report-actions">
+    <select id="report-store" class="select-dark"></select>
+    <a class="btn btn-gold" id="dl-xlsx" href="/api/admin/reports/xlsx">Download Excel (.xlsx)</a>
+    <a class="btn btn-dark" id="dl-pdf" href="/api/admin/reports/pdf">Download PDF</a>
+  </div>
+</section>
+<section class="panel">
+  <div class="panel-head">
+    <h2>Live KPI Snapshot</h2>
+    <div class="report-slicer">
+      <div class="seg">
+        <button type="button" class="seg-btn" data-period="day">Day</button>
+        <button type="button" class="seg-btn active" data-period="month">Month</button>
+        <button type="button" class="seg-btn" data-period="quarter">Quarter</button>
+        <button type="button" class="seg-btn" data-period="year">Year</button>
+      </div>
+      <div class="report-anchor" id="report-anchor-wrap"></div>
+    </div>
+  </div>
+  <p class="muted panel-intro" id="report-selection-caption">Select a date, month, quarter or year to refresh KPIs and charts.</p>
+  <div class="kpi-grid" id="report-kpis"></div>
+  <div class="grid-2" style="margin-top:24px">
+    <div class="chart-box sm"><canvas id="reportStoreChart"></canvas></div>
+    <div class="chart-box sm"><canvas id="reportSalesChart"></canvas></div>
+  </div>
+</section>
+{% endblock %}
+{% block scripts %}<script>AdminReports.init();</script>{% endblock %}

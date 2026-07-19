@@ -1,0 +1,122 @@
+{% extends 'admin/base.html' %}
+{% block title %}Storefront Content{% endblock %}
+{% block heading %}Storefront Content{% endblock %}
+{% block top_actions %}
+<a class="btn btn-outline" href="/" target="_blank">Preview Storefront</a>
+<button class="btn btn-gold" type="submit" form="storefront-form">Save All Changes</button>
+{% endblock %}
+{% block content %}
+<p class="muted panel-intro">Edit, show/hide, and reorder every homepage section. Product and category cards continue using live catalog and inventory data.</p>
+
+<form id="storefront-form">
+  <div class="cms-add-section-row">
+    <button type="button" class="btn btn-outline" id="cms-add-section">+ Add Section</button>
+  </div>
+
+  <section class="panel cms-panel" data-cms-section="hero">
+    <div class="panel-head"><h2>Hero Banner</h2><div class="cms-controls"><label>Position <input class="cms-order" type="number" min="1" max="20"></label><label>Visible <select class="cms-enabled"><option value="true">Yes</option><option value="false">No</option></select></label></div></div>
+    <div class="form-grid">
+      <div class="field full"><label>Delivery Pill</label><input id="cms-hero-pill"></div>
+      <div class="field"><label>Title — Line 1</label><input id="cms-hero-line1"></div>
+      <div class="field"><label>Gold Accent Line</label><input id="cms-hero-accent"></div>
+      <div class="field"><label>Title — Line 3</label><input id="cms-hero-line3"></div>
+      <div class="field full"><label>Description</label><textarea id="cms-hero-description" rows="3"></textarea></div>
+      <div class="field"><label>Primary Button</label><input id="cms-hero-primary"></div>
+      <div class="field"><label>Secondary Button</label><input id="cms-hero-secondary"></div>
+      <div class="field full">
+        <label>Hero Photo</label>
+        <div class="cms-image-picker">
+          <input type="hidden" class="cms-image-url" id="cms-hero-image">
+          <div class="cms-image-preview"></div>
+          <label class="btn btn-outline btn-sm cms-upload-btn">Upload Image<input type="file" accept="image/*" class="cms-image-file" hidden></label>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel cms-panel" data-cms-section="trust">
+    <div class="panel-head"><h2>Trust Strip</h2><div class="cms-controls"><label>Position <input class="cms-order" type="number" min="1" max="20"></label><label>Visible <select class="cms-enabled"><option value="true">Yes</option><option value="false">No</option></select></label></div></div>
+    <div class="field"><label>Trust Items — one per line (add/remove by editing lines)</label><textarea id="cms-trust-items" rows="6"></textarea></div>
+  </section>
+
+  <section class="panel cms-panel" data-cms-section="why_us">
+    <div class="panel-head"><h2>Why Fish and Meat</h2><div class="cms-controls"><label>Position <input class="cms-order" type="number" min="1" max="20"></label><label>Visible <select class="cms-enabled"><option value="true">Yes</option><option value="false">No</option></select></label></div></div>
+    <div class="form-grid">
+      <div class="field"><label>Eyebrow</label><input id="cms-why-eyebrow"></div>
+      <div class="field"><label>Title</label><input id="cms-why-title"></div>
+      <div class="field full"><label>Description</label><textarea id="cms-why-description" rows="2"></textarea></div>
+      <div class="field full"><label>Feature Rows — one per line: Title | Description</label><textarea id="cms-why-features" rows="7"></textarea></div>
+      <div class="field full">
+        <label>Section Photo</label>
+        <div class="cms-image-picker">
+          <input type="hidden" class="cms-image-url" id="cms-why-image">
+          <div class="cms-image-preview"></div>
+          <label class="btn btn-outline btn-sm cms-upload-btn">Upload Image<input type="file" accept="image/*" class="cms-image-file" hidden></label>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel cms-panel" data-cms-section="product_range">
+    <div class="panel-head"><h2>Our Product Range</h2><div class="cms-controls"><label>Position <input class="cms-order" type="number" min="1" max="20"></label><label>Visible <select class="cms-enabled"><option value="true">Yes</option><option value="false">No</option></select></label></div></div>
+    <div class="form-grid">
+      <div class="field"><label>Eyebrow</label><input id="cms-range-eyebrow"></div>
+      <div class="field"><label>Title</label><input id="cms-range-title"></div>
+      <div class="field full"><label>Description</label><textarea id="cms-range-description" rows="2"></textarea></div>
+      <div class="field full"><label>Categories Shown</label><div id="cms-range-categories" class="check-grid"></div><div class="muted">If none are selected, all enabled categories are shown.</div></div>
+    </div>
+  </section>
+
+  <section class="panel cms-panel" data-cms-section="favourites">
+    <div class="panel-head"><h2>Customer Favourites</h2><div class="cms-controls"><label>Position <input class="cms-order" type="number" min="1" max="20"></label><label>Visible <select class="cms-enabled"><option value="true">Yes</option><option value="false">No</option></select></label></div></div>
+    <div class="form-grid">
+      <div class="field"><label>Eyebrow</label><input id="cms-fav-eyebrow"></div>
+      <div class="field"><label>Title</label><input id="cms-fav-title"></div>
+      <div class="field"><label>Link Text</label><input id="cms-fav-link"></div>
+      <div class="field"><label>Maximum Products</label><input id="cms-fav-limit" type="number" min="1" max="20"></div>
+      <div class="field full"><label>Products Shown</label><div id="cms-fav-products" class="check-grid cms-product-checks"></div><div class="muted">If none are selected, products tagged Featured are shown.</div></div>
+    </div>
+  </section>
+
+  <section class="panel cms-panel" data-cms-section="promise">
+    <div class="panel-head"><h2>Our Promise</h2><div class="cms-controls"><label>Position <input class="cms-order" type="number" min="1" max="20"></label><label>Visible <select class="cms-enabled"><option value="true">Yes</option><option value="false">No</option></select></label></div></div>
+    <div class="form-grid">
+      <div class="field"><label>Eyebrow</label><input id="cms-promise-eyebrow"></div>
+      <div class="field"><label>Title</label><input id="cms-promise-title"></div>
+      <div class="field full"><label>Steps — one per line: Title | Description</label><textarea id="cms-promise-steps" rows="6"></textarea></div>
+      <div class="field"><label>Badge Text</label><input id="cms-promise-badge"></div>
+    </div>
+  </section>
+
+  <section class="panel cms-panel" data-cms-section="locations">
+    <div class="panel-head"><h2>Locations</h2><div class="cms-controls"><label>Position <input class="cms-order" type="number" min="1" max="20"></label><label>Visible <select class="cms-enabled"><option value="true">Yes</option><option value="false">No</option></select></label></div></div>
+    <div class="form-grid">
+      <div class="field"><label>Eyebrow</label><input id="cms-locations-eyebrow"></div>
+      <div class="field"><label>Title</label><input id="cms-locations-title"></div>
+    </div>
+    <p class="muted">Store cards are managed under <a href="/admin/stores" class="link">Stores</a>; active stores appear here automatically.</p>
+  </section>
+
+  <section class="panel cms-panel" data-cms-section="cta">
+    <div class="panel-head"><h2>Bottom Call-to-Action</h2><div class="cms-controls"><label>Position <input class="cms-order" type="number" min="1" max="20"></label><label>Visible <select class="cms-enabled"><option value="true">Yes</option><option value="false">No</option></select></label></div></div>
+    <div class="form-grid">
+      <div class="field"><label>Title</label><input id="cms-cta-title"></div>
+      <div class="field"><label>Button</label><input id="cms-cta-button"></div>
+      <div class="field full"><label>Description</label><input id="cms-cta-description"></div>
+    </div>
+  </section>
+
+  <div id="cms-custom-sections"></div>
+
+  <section class="panel">
+    <div class="panel-head"><h2>Footer</h2></div>
+    <div class="form-grid">
+      <div class="field full"><label>Footer Description</label><textarea id="cms-footer-description" rows="2"></textarea></div>
+      <div class="field full"><label>Compliance Text</label><input id="cms-footer-compliance"></div>
+    </div>
+  </section>
+
+  <div class="settings-actions"><button type="submit" class="btn btn-dark">Save All Storefront Changes</button></div>
+</form>
+{% endblock %}
+{% block scripts %}<script>AdminStorefront.init();</script>{% endblock %}
