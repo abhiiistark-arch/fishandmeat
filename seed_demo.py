@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw, ImageFont
 import app
 from app import (
     db_find, db_find_one, db_insert, db_update, db_count,
-    db_mode, new_id, UPLOAD_DIR,
+    db_mode, new_id, UPLOAD_DIR, save_upload_bytes, sync_local_uploads_to_media,
 )
 
 random.seed(42)
@@ -141,9 +141,11 @@ def generate_images():
         fname = f"seed_{p['id']}.png"
         fpath = UPLOAD_DIR / fname
         make_product_image(str(fpath), p['name'], label, cat_id)
-        url = f'/uploads/products/{fname}'
+        data = fpath.read_bytes()
+        url = save_upload_bytes('products', fname, data, content_type='image/png')
         db_update('products', {'id': p['id']}, {'images': [url]})
         count += 1
+    sync_local_uploads_to_media()
     return count
 
 

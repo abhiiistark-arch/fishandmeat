@@ -162,6 +162,8 @@ def _connect_mongo():
             [('store_id', ASCENDING), ('product_id', ASCENDING), ('variant_id', ASCENDING)],
             unique=True
         )
+        # Binary image blobs keyed by public URL (/uploads/...)
+        _mongo_db.media.create_index([('url', ASCENDING)], unique=True)
         _use_mongo = True
         print('[db] Connected to MongoDB Atlas')
         return True
@@ -326,6 +328,16 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_IMAGE_EXT
 
 
+def _content_type_for_ext(ext):
+    return {
+        'png': 'image/png',
+        'jpg': 'image/jpeg',
+        'jpeg': 'image/jpeg',
+        'webp': 'image/webp',
+        'gif': 'image/gif',
+    }.get((ext or '').lower(), 'application/octet-stream')
+
+
 def _upload_path_for_url(url):
     """Map a public upload URL to a local file path, or None if not managed by us."""
     if not url or not isinstance(url, str):
@@ -337,16 +349,175 @@ def _upload_path_for_url(url):
     return None
 
 
-def delete_upload_file(url):
-    """Delete an uploaded image from disk when its URL is removed from MongoDB."""
-    path = _upload_path_for_url(url)
-    if not path:
+def _media_kind_for_url(url):
+    if url.startswith('/uploads/products/'):
+        return 'products'
+    if url.startswith('/uploads/content/'):
+        return 'content'
+    return 'other'
+
+
+def _save_media_blob(url, data, content_type=None, filename=None):
+    """Persist image bytes in Mongo (or local media.json) keyed by public URL."""
+    if not url or not data:
         return False
-    try:
-        path.unlink(missing_ok=True)
+    filename = filename or url.rsplit('/', 1)[-1]
+    ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+    content_type = content_type or _content_type_for_ext(ext)
+    doc = {
+        'url': url,
+        'filename': filename,
+        'kind': _media_kind_for_url(url),
+        'content_type': content_type,
+        'size': len(data),
+        'updated_at': now_iso(),
+    }
+    if _use_mongo:
+        from bson.binary import Binary
+        doc['data'] = Binary(data)
+        _mongo_db.media.update_one({'url': url}, {'$set': doc, '$setOnInsert': {'created_at': now_iso()}}, upsert=True)
         return True
+    # Local JSON fallback — store base64 so images survive without the uploads folder.
+    import base64
+    rows = _load_local('media')
+    doc['data_b64'] = base64.b64encode(data).decode('ascii')
+    replaced = False
+    for i, row in enumerate(rows):
+        if row.get('url') == url:
+            rows[i] = {**row, **doc}
+            replaced = True
+            break
+    if not replaced:
+        doc['created_at'] = now_iso()
+        rows.append(doc)
+    _save_local('media', rows)
+    return True
+
+
+def _load_media_blob(url):
+    """Return (bytes, content_type) for a public upload URL, or (None, None)."""
+    if not url:
+        return None, None
+    if _use_mongo:
+        row = _mongo_db.media.find_one({'url': url}, {'_id': 0})
+        if not row or row.get('data') is None:
+            return None, None
+        return bytes(row['data']), row.get('content_type') or 'application/octet-stream'
+    import base64
+    row = db_find_one('media', {'url': url})
+    if not row or not row.get('data_b64'):
+        return None, None
+    try:
+        return base64.b64decode(row['data_b64']), row.get('content_type') or 'application/octet-stream'
     except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _delete_media_blob(url):
+    if not url:
         return False
+    if _use_mongo:
+        return _mongo_db.media.delete_many({'url': url}).deleted_count > 0
+    before = len(_load_local('media'))
+    db_delete('media', {'url': url})
+    return len(_load_local('media')) < before
+
+
+def save_upload_bytes(kind, filename, data, content_type=None):
+    """Write bytes to disk (best-effort) and always persist in the media store."""
+    folder = UPLOAD_DIR if kind == 'products' else CONTENT_UPLOAD_DIR
+    url = f'/uploads/{kind}/{filename}'
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / filename).write_bytes(data)
+    except OSError:
+        # Vercel /tmp may fail intermittently; Mongo/media.json is the source of truth.
+        pass
+    _save_media_blob(url, data, content_type=content_type, filename=filename)
+    return url
+
+
+def save_upload_file(kind, storage):
+    """Read an uploaded Werkzeug file, store it, and return the public URL."""
+    ext = storage.filename.rsplit('.', 1)[1].lower()
+    prefix = 'content' if kind == 'content' else 'product'
+    # Product uploads keep product_id in the filename at the call site.
+    filename = f'{prefix}_{uuid.uuid4().hex[:10]}.{ext}'
+    data = storage.read()
+    if not data:
+        raise ValueError('Empty image file')
+    content_type = storage.mimetype or _content_type_for_ext(ext)
+    return save_upload_bytes(kind, filename, data, content_type=content_type)
+
+
+def delete_upload_file(url):
+    """Delete an uploaded image from disk and from the media store."""
+    path = _upload_path_for_url(url)
+    if path:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:  # noqa: BLE001
+            pass
+    return _delete_media_blob(url)
+
+
+def serve_upload(kind, filename):
+    """Serve an upload from disk, falling back to the media store (Mongo/JSON)."""
+    folder = UPLOAD_DIR if kind == 'products' else CONTENT_UPLOAD_DIR
+    path = folder / filename
+    url = f'/uploads/{kind}/{filename}'
+    if path.is_file():
+        return send_from_directory(folder, filename)
+    data, content_type = _load_media_blob(url)
+    if data is None:
+        # Also check repo-root uploads (local seed files) when RUNTIME_DIR differs.
+        legacy = BASE_DIR / 'uploads' / kind / filename
+        if legacy.is_file():
+            return send_from_directory(legacy.parent, filename)
+        abort(404)
+    # Cache onto disk for faster repeat hits within the same function instance.
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    except OSError:
+        pass
+    return send_file(BytesIO(data), mimetype=content_type, download_name=filename, max_age=86400)
+
+
+def sync_local_uploads_to_media():
+    """Push any on-disk upload files into Mongo/media.json (run after local uploads)."""
+    synced = 0
+    roots = [
+        (UPLOAD_DIR, 'products'),
+        (CONTENT_UPLOAD_DIR, 'content'),
+        (BASE_DIR / 'uploads' / 'products', 'products'),
+        (BASE_DIR / 'uploads' / 'content', 'content'),
+    ]
+    seen = set()
+    for folder, kind in roots:
+        if not folder.is_dir():
+            continue
+        for path in folder.iterdir():
+            if not path.is_file() or path.name.startswith('.'):
+                continue
+            if path.suffix.lstrip('.').lower() not in ALLOWED_IMAGE_EXT:
+                continue
+            url = f'/uploads/{kind}/{path.name}'
+            if url in seen:
+                continue
+            seen.add(url)
+            existing, _ = _load_media_blob(url)
+            if existing is not None:
+                continue
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            if _save_media_blob(url, data, filename=path.name):
+                synced += 1
+    if synced:
+        print(f'[media] Synced {synced} local upload file(s) into {"MongoDB" if _use_mongo else "media.json"}')
+    return synced
 
 
 def collect_image_urls(value, found=None):
@@ -859,6 +1030,7 @@ def ensure_media_assets():
 
 seed_if_empty()
 ensure_media_assets()
+sync_local_uploads_to_media()
 
 
 @app.before_request
@@ -918,12 +1090,12 @@ def assets(filename):
 
 @app.route('/uploads/products/<path:filename>')
 def uploaded_product(filename):
-    return send_from_directory(UPLOAD_DIR, filename)
+    return serve_upload('products', filename)
 
 
 @app.route('/uploads/content/<path:filename>')
 def uploaded_content(filename):
-    return send_from_directory(CONTENT_UPLOAD_DIR, filename)
+    return serve_upload('content', filename)
 
 
 # ---------------------------------------------------------------------------
@@ -2213,8 +2385,15 @@ def api_admin_product_image(product_id):
         return jsonify({'error': 'Invalid image type'}), 400
     ext = f.filename.rsplit('.', 1)[1].lower()
     filename = f'{product_id}_{uuid.uuid4().hex[:8]}.{ext}'
-    f.save(str(UPLOAD_DIR / filename))
-    url = f'/uploads/products/{filename}'
+    data = f.read()
+    if not data:
+        return jsonify({'error': 'Empty image file'}), 400
+    url = save_upload_bytes(
+        'products',
+        filename,
+        data,
+        content_type=f.mimetype or _content_type_for_ext(ext),
+    )
     images = list(product.get('images') or [])
     images.append(url)
     db_update('products', {'id': product_id}, {'images': images, 'updated_at': now_iso()})
@@ -2540,17 +2719,26 @@ def api_admin_storefront_content():
 @admin_required
 def api_admin_content_image():
     """Generic image upload used by the Storefront Content CMS (hero, why-us,
-    and custom section photos). Returns the public URL to store on the section."""
+    category banners, and custom section photos). Bytes are stored in Mongo
+    (media collection) so Vercel can serve them without local disk."""
     if 'image' not in request.files:
         return jsonify({'error': 'No image file'}), 400
     f = request.files['image']
     if not f.filename or not allowed_file(f.filename):
         return jsonify({'error': 'Invalid image type'}), 400
-    ext = f.filename.rsplit('.', 1)[1].lower()
-    filename = f'content_{uuid.uuid4().hex[:10]}.{ext}'
-    f.save(str(CONTENT_UPLOAD_DIR / filename))
-    url = f'/uploads/content/{filename}'
+    try:
+        url = save_upload_file('content', f)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     return jsonify({'ok': True, 'url': url})
+
+
+@app.route('/api/admin/media/sync', methods=['POST'])
+@admin_required
+def api_admin_media_sync():
+    """Push any local upload files into the media store (useful after offline edits)."""
+    count = sync_local_uploads_to_media()
+    return jsonify({'ok': True, 'synced': count, 'db': db_mode()})
 
 
 # --- In-store POS ---
