@@ -86,6 +86,13 @@
   // -------- Shared shell (topbar, badges, footer) --------
   var AdminShell = {
     storeId: localStorage.getItem('fam_admin_store') || '',
+    admin: {
+      name: document.body.getAttribute('data-admin-name') || 'Admin',
+      username: document.body.getAttribute('data-admin-username') || '',
+      role: document.body.getAttribute('data-admin-role') || '',
+      storeId: document.body.getAttribute('data-admin-store') || '',
+      isSuper: document.body.getAttribute('data-admin-super') === '1'
+    },
     initSidebarScroll: function () {
       var nav = document.querySelector('.sidebar-nav');
       if (!nav) return;
@@ -115,29 +122,59 @@
     init: async function () {
       var self = this;
       this.initSidebarScroll();
+      if (!this.admin.isSuper && this.admin.storeId) {
+        this.storeId = this.admin.storeId;
+        localStorage.setItem('fam_admin_store', this.storeId);
+      }
       var greet = document.getElementById('topbar-greeting');
       if (greet) {
         var h = new Date().getHours();
         var word = h < 12 ? 'Good morning' : (h < 17 ? 'Good afternoon' : 'Good evening');
-        greet.textContent = word + ', Admin';
+        var label = this.admin.name || 'Admin';
+        // Show display name + username (e.g. Abhay · @abhi, Mohd Zaman · @zaman)
+        if (this.admin.username) label += ' · @' + this.admin.username;
+        greet.textContent = word + ', ' + label;
       }
 
       var sel = document.getElementById('global-store-filter');
       if (sel) {
         try {
           var stores = await api('/api/admin/stores');
-          sel.innerHTML = '<option value="">All Stores</option>' + stores.map(function (s) {
-            return '<option value="' + s.id + '"' + (s.id === self.storeId ? ' selected' : '') + '>' + esc(s.name) + '</option>';
-          }).join('');
-          sel.onchange = function () {
-            self.storeId = sel.value;
-            localStorage.setItem('fam_admin_store', sel.value);
-            if (window.AdminDashboard && document.getElementById('kpi-grid')) AdminDashboard.load();
-          };
+          if (self.admin.isSuper) {
+            sel.innerHTML = '<option value="">All Stores</option>' + stores.map(function (s) {
+              return '<option value="' + s.id + '"' + (s.id === self.storeId ? ' selected' : '') + '>' + esc(s.name) + '</option>';
+            }).join('');
+            sel.disabled = false;
+            sel.onchange = function () {
+              self.storeId = sel.value;
+              localStorage.setItem('fam_admin_store', sel.value);
+              if (window.AdminDashboard && document.getElementById('kpi-grid')) AdminDashboard.scheduleLoad();
+              if (window.AdminReports && document.getElementById('report-kpis')) {
+                // Keep reports multi-select in sync when topbar store changes
+                if (sel.value) AdminReports.selectedStoreIds = [sel.value];
+                else AdminReports.selectedStoreIds = [];
+                if (AdminReports.renderStoreFilter) AdminReports.renderStoreFilter();
+                AdminReports.scheduleLoad();
+              }
+            };
+          } else {
+            var locked = stores.find(function (s) { return s.id === self.admin.storeId; })
+              || stores[0]
+              || { id: self.admin.storeId, name: 'Assigned Store' };
+            sel.innerHTML = '<option value="' + esc(locked.id || '') + '" selected>' + esc(locked.name || 'Assigned Store') + '</option>';
+            sel.disabled = true;
+            self.storeId = locked.id || self.admin.storeId;
+            localStorage.setItem('fam_admin_store', self.storeId);
+          }
           var active = stores.filter(function (s) { return s.status === 'active'; }).length;
           var fsStores = document.getElementById('fs-stores');
           if (fsStores) fsStores.textContent = active + '/' + stores.length + ' Stores Active';
-        } catch (e) { /* ignore */ }
+        } catch (e) {
+          if (!self.admin.isSuper && self.admin.storeId) {
+            sel.innerHTML = '<option value="' + esc(self.admin.storeId) + '" selected>Assigned Store</option>';
+            sel.disabled = true;
+          }
+        }
       }
 
       this.initSearch();
@@ -241,6 +278,8 @@
   var AdminDashboard = {
     period: 'month',
     anchor: '',
+    loadToken: 0,
+    loadTimer: null,
     init: function () {
       var self = this;
       this.anchor = this.defaultAnchor(this.period);
@@ -253,11 +292,16 @@
           self.anchor = self.defaultAnchor(self.period);
           self.renderAnchorControl();
           self.updateCaption();
-          self.load();
+          self.scheduleLoad();
         });
       });
       this.updateCaption();
       this.load();
+    },
+    scheduleLoad: function () {
+      var self = this;
+      clearTimeout(this.loadTimer);
+      this.loadTimer = setTimeout(function () { self.load(); }, 160);
     },
     updateCaption: function () {
       document.getElementById('chart-caption').textContent =
@@ -316,7 +360,7 @@
           } else {
             self.anchor = document.getElementById('dashboard-anchor').value;
           }
-          self.load();
+          self.scheduleLoad();
         };
       });
     },
@@ -324,7 +368,9 @@
       return periodSalesKpi(this.period, k);
     },
     load: async function () {
+      var token = ++this.loadToken;
       var data = await api('/api/admin/stats?' + this.queryParams().toString());
+      if (token !== this.loadToken) return;
       var k = data.kpis;
       var periodLabel = data.selection_label || PERIOD_KPI_LABELS[this.period] || 'Period Sales';
       if (data.period_caption) {
@@ -370,33 +416,54 @@
       ].join('');
 
       var labels = data.timeline.map(function (t) { return t.label; });
-      if (salesChart) salesChart.destroy();
-      salesChart = new Chart(document.getElementById('salesChart'), {
-        type: 'line',
-        data: {
-          labels: labels,
-          datasets: [
-            { label: 'Sales (₹)', data: data.timeline.map(function (t) { return t.sales; }),
-              borderColor: '#1E3A22', backgroundColor: 'rgba(30,58,34,.12)', tension: .35, fill: true },
-            { label: 'Orders', data: data.timeline.map(function (t) { return t.orders; }),
-              borderColor: '#A5342A', backgroundColor: 'transparent', tension: .35, yAxisID: 'y1' },
-            { label: 'New Customers', data: data.timeline.map(function (t) { return t.customers; }),
-              borderColor: '#E7B430', backgroundColor: 'transparent', tension: .35, yAxisID: 'y1', borderDash: [5, 3] }
-          ]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          scales: {
-            y: { beginAtZero: true, ticks: { color: '#55594F' } },
-            y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false } }
-          },
-          plugins: { legend: { labels: { font: { family: 'Work Sans', size: 11 }, boxWidth: 14 } } }
+      var drawChart = function () {
+        if (typeof Chart === 'undefined' || !document.getElementById('salesChart')) {
+          window.setTimeout(drawChart, 40);
+          return;
         }
-      });
+        if (salesChart) salesChart.destroy();
+        salesChart = new Chart(document.getElementById('salesChart'), {
+          type: 'line',
+          data: {
+            labels: labels,
+            datasets: [
+              { label: 'Sales (₹)', data: data.timeline.map(function (t) { return t.sales; }),
+                borderColor: '#1E3A22', backgroundColor: 'rgba(30,58,34,.12)', tension: .35, fill: true },
+              { label: 'Orders', data: data.timeline.map(function (t) { return t.orders; }),
+                borderColor: '#A5342A', backgroundColor: 'transparent', tension: .35, yAxisID: 'y1' },
+              { label: 'New Customers', data: data.timeline.map(function (t) { return t.customers; }),
+                borderColor: '#E7B430', backgroundColor: 'transparent', tension: .35, yAxisID: 'y1', borderDash: [5, 3] }
+            ]
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            animation: { duration: 0 },
+            scales: {
+              y: { beginAtZero: true, ticks: { color: '#55594F' } },
+              y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false } }
+            },
+            plugins: { legend: { labels: { font: { family: 'Work Sans', size: 11 }, boxWidth: 14 } } }
+          }
+        });
+      };
+      drawChart();
 
-      // Live activity feed
-      this.loadActivity();
+      // Activity feed (bundled in stats — no second request)
+      var feed = document.getElementById('activity-feed');
+      if (feed) {
+        var activityRows = data.activity || [];
+        feed.innerHTML = activityRows.map(function (a) {
+          var when = a.created_at ? new Date(a.created_at.replace('Z', '+00:00')).toLocaleString('en-IN', {
+            day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+          }) : '';
+          return '<div class="activity-item">' +
+            '<div class="activity-dot ' + esc(a.kind || 'system') + '"></div>' +
+            '<div><div class="activity-text">' + esc(a.text) + '</div>' +
+            '<div class="activity-time">' + when + '</div></div>' +
+            '</div>';
+        }).join('') || '<p class="muted">No activity yet — place an order or update inventory.</p>';
+      }
 
       // Recent orders
       var ot = document.querySelector('#recent-orders tbody');
@@ -450,48 +517,24 @@
         }).join('') || '<p class="muted">No sales in this period</p>';
       }
 
-      // Staff on duty
-      this.loadStaff();
-    },
-    loadActivity: async function () {
-      var feed = document.getElementById('activity-feed');
-      if (!feed) return;
-      try {
-        var rows = await api('/api/admin/activity?limit=12');
-        feed.innerHTML = rows.map(function (a) {
-          var when = a.created_at ? new Date(a.created_at.replace('Z', '+00:00')).toLocaleString('en-IN', {
-            day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
-          }) : '';
-          return '<div class="activity-item">' +
-            '<div class="activity-dot ' + esc(a.kind || 'system') + '"></div>' +
-            '<div><div class="activity-text">' + esc(a.text) + '</div>' +
-            '<div class="activity-time">' + when + '</div></div>' +
-            '</div>';
-        }).join('') || '<p class="muted">No activity yet — place an order or update inventory.</p>';
-      } catch (e) {
-        feed.innerHTML = '<p class="muted">Activity unavailable</p>';
-      }
-    },
-    loadStaff: async function () {
-      var el = document.getElementById('staff-on-duty');
-      if (!el) return;
-      try {
-        var data = await api('/api/admin/staff');
-        var staff = data.items || [];
-        el.innerHTML = staff.slice(0, 5).map(function (m) {
+      // Staff on duty (bundled in stats)
+      var staffEl = document.getElementById('staff-on-duty');
+      if (staffEl) {
+        var staff = data.on_duty_staff || [];
+        staffEl.innerHTML = staff.slice(0, 5).map(function (m) {
           var initials = (m.name || '?').split(' ').map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase();
           return '<div class="staff-row">' +
             '<div class="staff-avatar">' + esc(initials) + '</div>' +
             '<div class="staff-info"><div class="staff-name">' + esc(m.name) + '</div>' +
             '<div class="staff-role">' + esc(m.role) + ' · ' + esc(m.store_name || 'All Stores') + '</div></div>' +
             '<div class="staff-status ' + (m.on_duty ? 'on' : 'off') + '"><span class="staff-dot"></span>' +
-            (m.on_duty ? 'On duty' : 'Off shift') + '</div>' +
+            (m.on_duty ? 'On duty' : 'Off duty') + '</div>' +
             '</div>';
         }).join('') || '<p class="muted">No staff added yet. <a class="link" href="/admin/staff">Add staff</a></p>';
-      } catch (e) {
-        el.innerHTML = '<p class="muted">Staff unavailable</p>';
       }
-    }
+    },
+    loadActivity: async function () {},
+    loadStaff: async function () {}
   };
 
   function kpi(label, value, cls) {
@@ -1177,6 +1220,7 @@
   var AdminCustomers = {
     page: 1,
     timer: null,
+    stores: [],
     init: function () {
       var self = this;
       document.getElementById('customer-search').oninput = function () {
@@ -1184,12 +1228,17 @@
         self.timer = setTimeout(function () { self.page = 1; self.load(); }, 300);
       };
       document.getElementById('customer-close').onclick = function () { closeModal('customer-modal'); };
+      var editCancel = document.getElementById('customer-edit-cancel');
+      var editSave = document.getElementById('customer-edit-save');
+      if (editCancel) editCancel.onclick = function () { closeModal('customer-edit-modal'); };
+      if (editSave) editSave.onclick = function () { self.saveEdit(); };
       this.load();
     },
     load: async function () {
       var q = document.getElementById('customer-search').value.trim();
       var focus = getQueryParam('focus');
       var qs = '?page=' + this.page + '&per_page=15';
+      if (AdminShell.storeId) qs += '&store_id=' + encodeURIComponent(AdminShell.storeId);
       if (focus) qs += '&focus=' + encodeURIComponent(focus);
       else if (q) qs += '&q=' + encodeURIComponent(q);
       var data = await api('/api/admin/customers' + qs);
@@ -1206,8 +1255,15 @@
         self.page = 1;
         self.load();
       });
+      var canEdit = AdminShell.admin.isSuper;
       var tbody = document.querySelector('#customers-table tbody');
       tbody.innerHTML = data.items.map(function (c) {
+        var actions = '<button type="button" class="btn btn-sm btn-outline" data-view=\'' + encodeURIComponent(JSON.stringify(c)) + '\'>History</button>';
+        if (canEdit) {
+          actions += '<button type="button" class="btn btn-sm btn-gold" data-edit=\'' + encodeURIComponent(JSON.stringify(c)) + '\'>Edit</button>';
+          actions += '<button type="button" class="btn btn-sm btn-danger" data-remove="' + encodeURIComponent(c.id) +
+            '" data-name="' + encodeURIComponent(c.name) + '">Remove</button>';
+        }
         return '<tr class="' + (focus && c.id === focus ? 'row-focus' : '') + '">' +
           '<td><strong>' + esc(c.name) + '</strong></td>' +
           '<td>' + esc(c.phone) + '</td>' +
@@ -1218,11 +1274,7 @@
           '<td>' + c.order_count + '</td>' +
           '<td>' + money(c.lifetime_value) + '</td>' +
           '<td>' + esc((c.created_at || '').slice(0, 10)) + '</td>' +
-          '<td><div class="table-actions">' +
-            '<button type="button" class="btn btn-sm btn-outline" data-view=\'' + encodeURIComponent(JSON.stringify(c)) + '\'>History</button>' +
-            '<button type="button" class="btn btn-sm btn-danger" data-remove="' + encodeURIComponent(c.id) +
-              '" data-name="' + encodeURIComponent(c.name) + '">Remove</button>' +
-          '</div></td></tr>';
+          '<td><div class="table-actions">' + actions + '</div></td></tr>';
       }).join('') || '<tr><td colspan="8">' + ((focus || q) ? 'No matching customers.' : 'No customers') + '</td></tr>';
       tbody.querySelectorAll('[data-view]').forEach(function (btn) {
         btn.onclick = function () {
@@ -1238,6 +1290,11 @@
           html += '</tbody></table></div>';
           document.getElementById('customer-detail').innerHTML = html;
           openModal('customer-modal');
+        };
+      });
+      tbody.querySelectorAll('[data-edit]').forEach(function (btn) {
+        btn.onclick = function () {
+          self.openEdit(JSON.parse(decodeURIComponent(btn.getAttribute('data-edit'))));
         };
       });
       tbody.querySelectorAll('[data-remove]').forEach(function (btn) {
@@ -1276,7 +1333,60 @@
         };
       });
     },
+    openEdit: async function (customer) {
+      if (!AdminShell.admin.isSuper) {
+        toast('Only Super Admin (abhi) can edit customers', true);
+        return;
+      }
+      if (!this.stores.length) {
+        try { this.stores = await api('/api/admin/stores'); } catch (e) { this.stores = []; }
+      }
+      document.getElementById('cust-edit-id').value = customer.id || '';
+      document.getElementById('cust-edit-name').value = customer.name || '';
+      document.getElementById('cust-edit-phone').value = customer.phone || '';
+      document.getElementById('cust-edit-email').value = customer.email || '';
+      document.getElementById('cust-edit-address').value = customer.address || '';
+      var storeSel = document.getElementById('cust-edit-store');
+      storeSel.innerHTML = '<option value="">— None —</option>' + this.stores.map(function (s) {
+        return '<option value="' + esc(s.id) + '"' +
+          (s.id === (customer.preferred_store_id || '') ? ' selected' : '') + '>' + esc(s.name) + '</option>';
+      }).join('');
+      openModal('customer-edit-modal');
+    },
+    saveEdit: async function () {
+      if (!AdminShell.admin.isSuper) {
+        toast('Only Super Admin (abhi) can edit customers', true);
+        return;
+      }
+      var id = document.getElementById('cust-edit-id').value;
+      var payload = {
+        name: document.getElementById('cust-edit-name').value.trim(),
+        phone: document.getElementById('cust-edit-phone').value.trim(),
+        email: document.getElementById('cust-edit-email').value.trim(),
+        address: document.getElementById('cust-edit-address').value.trim(),
+        preferred_store_id: document.getElementById('cust-edit-store').value
+      };
+      if (!payload.name || !payload.phone) {
+        toast('Name and phone are required', true);
+        return;
+      }
+      try {
+        await api('/api/admin/customers/' + encodeURIComponent(id), {
+          method: 'PUT',
+          body: JSON.stringify(payload)
+        });
+        toast('Customer saved to MongoDB');
+        closeModal('customer-edit-modal');
+        this.load();
+      } catch (e) {
+        toast(e.message || 'Could not save customer', true);
+      }
+    },
     remove: async function (customerId, customerName) {
+      if (!AdminShell.admin.isSuper) {
+        toast('Only Super Admin (abhi) can remove customers', true);
+        return;
+      }
       if (!confirm(
         'Remove ' + customerName + '\'s customer details and account? Existing order records will be kept.'
       )) return;
@@ -1296,13 +1406,19 @@
   var AdminReports = {
     period: 'month',
     anchor: '',
+    stores: [],
+    selectedStoreIds: [],
+    loadToken: 0,
+    loadTimer: null,
     init: async function () {
       var self = this;
-      var stores = await api('/api/admin/stores');
-      var sel = document.getElementById('report-store');
-      sel.innerHTML = '<option value="">All stores</option>' + stores.map(function (s) {
-        return '<option value="' + s.id + '">' + esc(s.name) + '</option>';
-      }).join('');
+      this.stores = await api('/api/admin/stores');
+      if (!AdminShell.admin.isSuper && AdminShell.admin.storeId) {
+        this.selectedStoreIds = [AdminShell.admin.storeId];
+      } else {
+        this.selectedStoreIds = [];
+      }
+      this.renderStoreFilter();
       this.anchor = this.defaultAnchor(this.period);
       this.renderAnchorControl();
       document.querySelectorAll('.panel-head .seg-btn').forEach(function (btn) {
@@ -1313,7 +1429,7 @@
           self.anchor = self.defaultAnchor(self.period);
           self.renderAnchorControl();
           syncLinks();
-          self.load();
+          self.scheduleLoad();
         });
       });
       var syncLinks = function () {
@@ -1323,9 +1439,110 @@
         document.getElementById('dl-pdf').href = '/api/admin/reports/pdf' + q;
       };
       this.syncLinks = syncLinks;
-      sel.onchange = function () { syncLinks(); AdminReports.load(); };
       syncLinks();
       this.load();
+    },
+    scheduleLoad: function () {
+      var self = this;
+      clearTimeout(this.loadTimer);
+      this.loadTimer = setTimeout(function () { self.load(); }, 160);
+    },
+    renderStoreFilter: function () {
+      var self = this;
+      var panel = document.getElementById('report-store-panel');
+      var toggle = document.getElementById('report-store-toggle');
+      var labelEl = document.getElementById('report-store-label');
+      if (!panel || !toggle || !labelEl) return;
+
+      var locked = !AdminShell.admin.isSuper;
+      var stores = this.stores || [];
+      if (locked) {
+        stores = stores.filter(function (s) { return s.id === AdminShell.admin.storeId; });
+        if (!stores.length && AdminShell.admin.storeId) {
+          stores = [{ id: AdminShell.admin.storeId, name: 'Assigned Store' }];
+        }
+      }
+
+      var rows = '';
+      if (!locked) {
+        rows += '<label class="is-all"><input type="checkbox" data-all="1"' +
+          (this.selectedStoreIds.length === 0 ? ' checked' : '') + '> All Stores</label>';
+      }
+      rows += stores.map(function (s) {
+        var checked = locked || self.selectedStoreIds.indexOf(s.id) !== -1;
+        return '<label><input type="checkbox" value="' + esc(s.id) + '"' +
+          (checked ? ' checked' : '') + (locked ? ' disabled' : '') + '> ' + esc(s.name) + '</label>';
+      }).join('');
+      panel.innerHTML = rows;
+      this.updateStoreLabel();
+
+      if (locked) {
+        toggle.disabled = true;
+        panel.hidden = true;
+        toggle.setAttribute('aria-expanded', 'false');
+        return;
+      }
+
+      toggle.disabled = false;
+      toggle.onclick = function (e) {
+        e.stopPropagation();
+        var open = panel.hidden;
+        panel.hidden = !open;
+        toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+      };
+
+      if (!this._storeOutsideBound) {
+        this._storeOutsideBound = true;
+        document.addEventListener('click', function (e) {
+          var root = document.getElementById('report-store-multi');
+          if (!root || root.contains(e.target)) return;
+          panel.hidden = true;
+          toggle.setAttribute('aria-expanded', 'false');
+        });
+      }
+
+      panel.querySelectorAll('input[type="checkbox"]').forEach(function (box) {
+        box.onchange = function () {
+          if (box.getAttribute('data-all') === '1') {
+            self.selectedStoreIds = [];
+            panel.querySelectorAll('input[type="checkbox"]:not([data-all])').forEach(function (b) {
+              b.checked = false;
+            });
+            box.checked = true;
+          } else {
+            var ids = [];
+            panel.querySelectorAll('input[type="checkbox"]:not([data-all])').forEach(function (b) {
+              if (b.checked) ids.push(b.value);
+            });
+            self.selectedStoreIds = ids;
+            var allBox = panel.querySelector('input[data-all]');
+            if (allBox) allBox.checked = ids.length === 0;
+          }
+          self.updateStoreLabel();
+          if (self.syncLinks) self.syncLinks();
+          self.scheduleLoad();
+        };
+      });
+    },
+    updateStoreLabel: function () {
+      var labelEl = document.getElementById('report-store-label');
+      if (!labelEl) return;
+      if (!AdminShell.admin.isSuper) {
+        var locked = (this.stores || []).find(function (s) { return s.id === AdminShell.admin.storeId; });
+        labelEl.textContent = locked ? locked.name : 'Assigned Store';
+        return;
+      }
+      var ids = this.selectedStoreIds || [];
+      if (!ids.length) {
+        labelEl.textContent = 'All Stores';
+        return;
+      }
+      if (ids.length === 1) {
+        var one = (this.stores || []).find(function (s) { return s.id === ids[0]; });
+        labelEl.textContent = one ? one.name : '1 store';
+        return;
+      }
+      labelEl.textContent = ids.length + ' stores';
     },
     defaultAnchor: function (period) {
       var now = new Date();
@@ -1342,8 +1559,11 @@
       var params = new URLSearchParams();
       params.set('period', this.period);
       if (this.anchor) params.set('anchor', this.anchor);
-      var sid = document.getElementById('report-store').value;
-      if (sid) params.set('store_id', sid);
+      var ids = this.selectedStoreIds || [];
+      if (!AdminShell.admin.isSuper && AdminShell.admin.storeId) {
+        ids = [AdminShell.admin.storeId];
+      }
+      if (ids.length) params.set('store_ids', ids.join(','));
       return params;
     },
     renderAnchorControl: function () {
@@ -1383,19 +1603,21 @@
           self.anchor = document.getElementById('report-anchor').value;
         }
         if (self.syncLinks) self.syncLinks();
-        self.load();
+        self.scheduleLoad();
       };
       wrap.querySelectorAll('input, select').forEach(function (el) {
         el.onchange = syncAnchor;
       });
     },
     load: async function () {
+      var token = ++this.loadToken;
       try {
         var data = await api('/api/admin/stats?' + this.queryParams().toString());
+        if (token !== this.loadToken) return;
         var k = data.kpis;
         var caption = data.period_caption || '';
         var captionEl = document.getElementById('report-selection-caption');
-        if (captionEl) captionEl.textContent = caption + ' · KPIs and charts update from the selected slicer.';
+        if (captionEl) captionEl.textContent = caption + ' · KPIs and charts update from the selected store and period filters.';
         var periodLabel = data.selection_label || PERIOD_KPI_LABELS[this.period] || 'Period Sales';
         var salesValue = (k.sales_selected != null) ? money(k.sales_selected) : periodSalesKpi(this.period, k);
         document.getElementById('report-kpis').innerHTML = [
@@ -1405,35 +1627,42 @@
           kpi('Customers in Period', k.customers_selected != null ? k.customers_selected : k.customers_total)
         ].join('');
 
-        if (reportStoreChart) reportStoreChart.destroy();
-        reportStoreChart = new Chart(document.getElementById('reportStoreChart'), {
-          type: 'bar',
-          data: {
-            labels: data.store_sales.map(function (s) { return s.name; }),
-            datasets: [{
-              label: 'Sales (₹)',
-              data: data.store_sales.map(function (s) { return s.sales; }),
-              backgroundColor: '#1E3A22'
-            }]
-          },
-          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
-        });
-        if (reportSalesChart) reportSalesChart.destroy();
-        reportSalesChart = new Chart(document.getElementById('reportSalesChart'), {
-          type: 'line',
-          data: {
-            labels: data.timeline.map(function (t) { return t.label; }),
-            datasets: [{
-              label: 'Sales',
-              data: data.timeline.map(function (t) { return t.sales; }),
-              borderColor: '#A5342A',
-              backgroundColor: 'rgba(165,52,42,.1)',
-              fill: true,
-              tension: .3
-            }]
-          },
-          options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
-        });
+        var drawCharts = function () {
+          if (typeof Chart === 'undefined') {
+            window.setTimeout(drawCharts, 40);
+            return;
+          }
+          if (reportStoreChart) reportStoreChart.destroy();
+          reportStoreChart = new Chart(document.getElementById('reportStoreChart'), {
+            type: 'bar',
+            data: {
+              labels: data.store_sales.map(function (s) { return s.name; }),
+              datasets: [{
+                label: 'Sales (₹)',
+                data: data.store_sales.map(function (s) { return s.sales; }),
+                backgroundColor: '#1E3A22'
+              }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+          });
+          if (reportSalesChart) reportSalesChart.destroy();
+          reportSalesChart = new Chart(document.getElementById('reportSalesChart'), {
+            type: 'line',
+            data: {
+              labels: data.timeline.map(function (t) { return t.label; }),
+              datasets: [{
+                label: 'Sales',
+                data: data.timeline.map(function (t) { return t.sales; }),
+                borderColor: '#A5342A',
+                backgroundColor: 'rgba(165,52,42,.1)',
+                fill: true,
+                tension: .3
+              }]
+            },
+            options: { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
+          });
+        };
+        drawCharts();
       } catch (e) {
         toast(e.message || 'Could not load report snapshot', true);
       }
@@ -1592,12 +1821,16 @@
   var AdminStaff = {
     roles: [],
     stores: [],
+    canManage: document.body.getAttribute('data-admin-super') === '1',
     init: async function () {
       var self = this;
       this.stores = await api('/api/admin/stores');
-      document.getElementById('btn-add-staff').onclick = function () { self.openForm(); };
-      document.getElementById('staff-cancel').onclick = function () { closeModal('staff-modal'); };
-      document.getElementById('staff-form').onsubmit = function (e) {
+      var addBtn = document.getElementById('btn-add-staff');
+      if (addBtn) addBtn.onclick = function () { self.openForm(); };
+      var cancel = document.getElementById('staff-cancel');
+      if (cancel) cancel.onclick = function () { closeModal('staff-modal'); };
+      var form = document.getElementById('staff-form');
+      if (form) form.onsubmit = function (e) {
         e.preventDefault();
         self.save();
       };
@@ -1618,15 +1851,23 @@
       });
       var tbody = document.querySelector('#staff-table tbody');
       tbody.innerHTML = list.map(function (m) {
+        var actions = '';
+        if (self.canManage) {
+          actions = '<button class="btn btn-sm btn-outline" data-edit="' + m.id + '">Edit</button> ' +
+            '<button class="btn btn-sm btn-outline" data-del="' + m.id + '">Remove</button>';
+        } else {
+          actions = '<button class="btn btn-sm btn-outline" data-duty="' + m.id + '" data-on="' + (m.on_duty ? '0' : '1') + '">' +
+            (m.on_duty ? 'Mark Off Duty' : 'Mark On Duty') + '</button>';
+        }
         return '<tr class="' + (focus && m.id === focus ? 'row-focus' : '') + '">' +
           '<td><strong>' + esc(m.name) + '</strong></td>' +
+          '<td>' + esc(m.username || '—') + '</td>' +
           '<td>' + esc(m.role) + '</td>' +
           '<td>' + esc(m.store_name || 'All Stores') + '</td>' +
           '<td>' + esc(m.phone || '—') + '</td>' +
-          '<td>' + (m.on_duty ? '<span class="badge green">On duty</span>' : '<span class="badge">Off shift</span>') + '</td>' +
-          '<td><button class="btn btn-sm btn-outline" data-edit="' + m.id + '">Edit</button> ' +
-          '<button class="btn btn-sm btn-outline" data-del="' + m.id + '">Remove</button></td></tr>';
-      }).join('') || '<tr><td colspan="6">' + (focus ? 'No matching staff found.' : 'No staff yet') + '</td></tr>';
+          '<td>' + (m.on_duty ? '<span class="badge green">On duty</span>' : '<span class="badge">Off duty</span>') + '</td>' +
+          '<td>' + actions + '</td></tr>';
+      }).join('') || '<tr><td colspan="7">' + (focus ? 'No matching staff found.' : 'No staff yet') + '</td></tr>';
       tbody.querySelectorAll('[data-edit]').forEach(function (btn) {
         btn.onclick = function () {
           self.openForm(staff.find(function (x) { return x.id === btn.getAttribute('data-edit'); }));
@@ -1640,31 +1881,82 @@
           self.load();
         };
       });
+      tbody.querySelectorAll('[data-duty]').forEach(function (btn) {
+        btn.onclick = async function () {
+          await api('/api/admin/staff/' + btn.getAttribute('data-duty'), {
+            method: 'PUT',
+            body: JSON.stringify({ on_duty: btn.getAttribute('data-on') === '1' })
+          });
+          toast('Duty status updated');
+          self.load();
+        };
+      });
+    },
+    syncStoreForRole: function () {
+      var roleEl = document.getElementById('stf-role');
+      var storeEl = document.getElementById('stf-store');
+      if (!roleEl || !storeEl) return;
+      var isSuper = roleEl.value === 'Super Admin';
+      if (isSuper) {
+        storeEl.value = '';
+        storeEl.disabled = true;
+      } else {
+        storeEl.disabled = false;
+        // If still on All Stores with a non-super role, pick the first real store.
+        if (!storeEl.value && storeEl.options.length > 1) {
+          storeEl.selectedIndex = 1;
+        }
+      }
     },
     openForm: function (m) {
+      var self = this;
       m = m || {};
-      document.getElementById('staff-modal-title').textContent = m.id ? 'Edit Staff' : 'Add Staff';
+      document.getElementById('staff-modal-title').textContent = m.id ? 'Edit Staff' : 'Add Staff Login';
       document.getElementById('staff-id').value = m.id || '';
       document.getElementById('stf-name').value = m.name || '';
+      document.getElementById('stf-username').value = m.username || '';
+      document.getElementById('stf-password').value = '';
+      document.getElementById('stf-password').required = !m.id;
       document.getElementById('stf-role').innerHTML = this.roles.map(function (r) {
-        return '<option value="' + esc(r) + '"' + (r === m.role ? ' selected' : '') + '>' + esc(r) + '</option>';
+        return '<option value="' + esc(r) + '"' + (r === (m.role || 'Store Admin') ? ' selected' : '') + '>' + esc(r) + '</option>';
       }).join('');
       document.getElementById('stf-store').innerHTML = '<option value="">All Stores</option>' + this.stores.map(function (s) {
         return '<option value="' + s.id + '"' + (s.id === m.store_id ? ' selected' : '') + '>' + esc(s.name) + '</option>';
       }).join('');
       document.getElementById('stf-phone').value = m.phone || '';
       document.getElementById('stf-duty').value = String(m.on_duty !== false);
+      var active = document.getElementById('stf-active');
+      if (active) active.value = String(m.active !== false);
+      var roleEl = document.getElementById('stf-role');
+      roleEl.onchange = function () { self.syncStoreForRole(); };
+      this.syncStoreForRole();
       openModal('staff-modal');
     },
     save: async function () {
+      this.syncStoreForRole();
       var id = document.getElementById('staff-id').value;
+      var role = document.getElementById('stf-role').value;
+      var storeId = document.getElementById('stf-store').value;
+      if (role === 'Super Admin') storeId = '';
+      if (role !== 'Super Admin' && !storeId) {
+        toast('Store Admin and Billing Staff must be assigned to a store', true);
+        return;
+      }
       var body = {
         name: document.getElementById('stf-name').value,
-        role: document.getElementById('stf-role').value,
-        store_id: document.getElementById('stf-store').value,
+        username: document.getElementById('stf-username').value,
+        role: role,
+        store_id: storeId,
         phone: document.getElementById('stf-phone').value,
-        on_duty: document.getElementById('stf-duty').value === 'true'
+        on_duty: document.getElementById('stf-duty').value === 'true',
+        active: document.getElementById('stf-active').value === 'true'
       };
+      var password = document.getElementById('stf-password').value;
+      if (password) body.password = password;
+      if (!id && !password) {
+        toast('Password is required for new staff logins', true);
+        return;
+      }
       if (id) await api('/api/admin/staff/' + id, { method: 'PUT', body: JSON.stringify(body) });
       else await api('/api/admin/staff', { method: 'POST', body: JSON.stringify(body) });
       closeModal('staff-modal');
@@ -1988,6 +2280,41 @@
     categories: [],
     products: [],
     cart: {},
+    draftKey: function () {
+      var store = document.getElementById('pos-store');
+      var sid = store ? store.value : (AdminShell.storeId || 'default');
+      return 'fam_pos_draft_' + sid;
+    },
+    saveDraft: function () {
+      try {
+        var payload = {
+          cart: this.cart,
+          customer_name: document.getElementById('pos-customer-name').value,
+          customer_phone: document.getElementById('pos-customer-phone').value,
+          payment: document.getElementById('pos-payment').value,
+          discount: document.getElementById('pos-discount').value,
+          notes: document.getElementById('pos-notes').value,
+          updated_at: Date.now()
+        };
+        sessionStorage.setItem(this.draftKey(), JSON.stringify(payload));
+      } catch (e) { /* ignore quota */ }
+    },
+    loadDraft: function () {
+      try {
+        var raw = sessionStorage.getItem(this.draftKey());
+        if (!raw) return;
+        var payload = JSON.parse(raw);
+        this.cart = payload.cart || {};
+        if (payload.customer_name != null) document.getElementById('pos-customer-name').value = payload.customer_name;
+        if (payload.customer_phone != null) document.getElementById('pos-customer-phone').value = payload.customer_phone;
+        if (payload.payment) document.getElementById('pos-payment').value = payload.payment;
+        if (payload.discount != null) document.getElementById('pos-discount').value = payload.discount;
+        if (payload.notes != null) document.getElementById('pos-notes').value = payload.notes;
+      } catch (e) { /* ignore */ }
+    },
+    clearDraft: function () {
+      try { sessionStorage.removeItem(this.draftKey()); } catch (e) { /* ignore */ }
+    },
     init: async function () {
       var self = this;
       var results = await Promise.all([
@@ -2003,15 +2330,40 @@
       if (AdminShell.storeId && this.stores.some(function (s) { return s.id === AdminShell.storeId; })) {
         store.value = AdminShell.storeId;
       }
+      if (!AdminShell.admin.isSuper) {
+        store.disabled = true;
+      }
+      var staffName = document.getElementById('pos-staff-name');
+      if (staffName && !staffName.value) staffName.value = AdminShell.admin.name || '';
       document.getElementById('pos-category').innerHTML = '<option value="">All categories</option>' +
         this.categories.map(function (c) { return '<option value="' + c.id + '">' + esc(c.name) + '</option>'; }).join('');
-      store.onchange = function () { self.cart = {}; self.loadProducts(); self.loadRecent(); };
+      store.onchange = function () {
+        self.saveDraft();
+        self.cart = {};
+        self.loadDraft();
+        self.loadProducts();
+        self.loadRecent();
+      };
       document.getElementById('pos-search').oninput = function () { self.renderProducts(); };
       document.getElementById('pos-category').onchange = function () { self.renderProducts(); };
-      document.getElementById('pos-discount').oninput = function () { self.renderCart(); };
-      document.getElementById('pos-clear').onclick = function () { self.cart = {}; self.renderCart(); };
+      document.getElementById('pos-discount').oninput = function () { self.renderCart(); self.saveDraft(); };
+      ['pos-customer-name', 'pos-customer-phone', 'pos-payment', 'pos-notes'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('change', function () { self.saveDraft(); });
+        if (el) el.addEventListener('input', function () { self.saveDraft(); });
+      });
+      document.getElementById('pos-clear').onclick = function () {
+        self.cart = {};
+        document.getElementById('pos-customer-name').value = '';
+        document.getElementById('pos-customer-phone').value = '';
+        document.getElementById('pos-discount').value = 0;
+        document.getElementById('pos-notes').value = '';
+        self.clearDraft();
+        self.renderCart();
+      };
       document.getElementById('pos-checkout').onclick = function () { self.checkout(); };
       document.getElementById('pos-success-close').onclick = function () { closeModal('pos-success-modal'); };
+      this.loadDraft();
       await this.loadProducts();
       this.loadRecent();
     },
@@ -2077,6 +2429,7 @@
         qty: current + 1
       };
       this.renderCart();
+      this.saveDraft();
     },
     changeQty: function (key, delta) {
       var row = this.cart[key];
@@ -2088,6 +2441,7 @@
         toast('Maximum available stock reached', true);
       }
       this.renderCart();
+      this.saveDraft();
     },
     renderCart: function () {
       var self = this;
@@ -2135,12 +2489,14 @@
         });
         var order = result.order;
         self.cart = {};
+        self.clearDraft();
         document.getElementById('pos-discount').value = 0;
         document.getElementById('pos-customer-name').value = '';
         document.getElementById('pos-customer-phone').value = '';
         document.getElementById('pos-notes').value = '';
         document.getElementById('pos-success-copy').textContent =
-          'Bill ' + order.order_id + ' · ' + money(order.total) + ' · ' + order.payment_method.toUpperCase();
+          'Bill ' + order.order_id + ' · ' + money(order.total) + ' · ' +
+          (order.payment_method || '').toUpperCase() + ' · by ' + (order.staff_name || AdminShell.admin.name);
         document.getElementById('pos-invoice').href = '/api/admin/orders/' + order.order_id + '/invoice';
         openModal('pos-success-modal');
         await self.loadProducts();
@@ -2159,7 +2515,9 @@
       document.querySelector('#pos-recent tbody').innerHTML = rows.map(function (o) {
         return '<tr><td><strong>' + esc(o.order_id) + '</strong></td><td>' +
           esc((o.created_at || '').slice(0, 16).replace('T', ' ')) + '</td><td>' +
-          esc(o.store_name) + '</td><td>' + esc(o.customer_name) + '</td><td>' +
+          esc(o.store_name) + '</td><td>' + esc(o.customer_name) +
+          (o.staff_name ? '<div class="muted">by ' + esc(o.staff_name) + '</div>' : '') +
+          '</td><td>' +
           esc((o.payment_method || '').toUpperCase()) + '</td><td>' + money(o.total) +
           '</td><td><a class="btn btn-sm btn-outline" target="_blank" href="/api/admin/orders/' +
           encodeURIComponent(o.order_id) + '/invoice">Invoice</a></td></tr>';

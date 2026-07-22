@@ -324,6 +324,226 @@ def admin_required(f):
     return wrapped
 
 
+ROLE_SUPER = 'Super Admin'
+ROLE_STORE = 'Store Admin'
+ROLE_BILLING = 'Billing Staff'
+STAFF_ROLES = [ROLE_SUPER, ROLE_STORE, ROLE_BILLING]
+
+# Pages each role may open in the admin UI
+ROLE_PAGES = {
+    ROLE_SUPER: {
+        'dashboard', 'reports', 'in_store', 'orders', 'inventory', 'stores',
+        'storefront', 'products', 'categories', 'coupons', 'customers', 'staff', 'settings',
+    },
+    ROLE_STORE: {
+        'dashboard', 'reports', 'in_store', 'orders', 'inventory', 'products',
+        'categories', 'customers', 'staff',
+    },
+    ROLE_BILLING: {
+        'dashboard', 'in_store', 'orders',
+    },
+}
+
+_stats_cache = {}
+_STATS_CACHE_TTL = 20  # seconds
+
+
+def current_admin():
+    if not session.get('admin_ok'):
+        return None
+    return {
+        'id': session.get('admin_user_id') or '',
+        'name': session.get('admin_name') or 'Admin',
+        'username': session.get('admin_username') or '',
+        'role': session.get('admin_role') or ROLE_SUPER,
+        'store_id': session.get('admin_store_id') or '',
+    }
+
+
+def admin_is_super():
+    return session.get('admin_role') == ROLE_SUPER
+
+
+def role_required(*roles):
+    def decorator(f):
+        @wraps(f)
+        @admin_required
+        def wrapped(*args, **kwargs):
+            role = session.get('admin_role')
+            if role not in roles:
+                if request.path.startswith('/api/'):
+                    return jsonify({'error': 'Forbidden for your role'}), 403
+                return redirect(url_for('admin_dashboard'))
+            return f(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
+def page_required(page_key):
+    def decorator(f):
+        @wraps(f)
+        @admin_required
+        def wrapped(*args, **kwargs):
+            role = session.get('admin_role') or ROLE_SUPER
+            allowed = ROLE_PAGES.get(role, set())
+            if page_key not in allowed:
+                if request.path.startswith('/api/'):
+                    return jsonify({'error': 'Forbidden for your role'}), 403
+                return redirect(url_for('admin_dashboard'))
+            return f(*args, **kwargs)
+        return wrapped
+    return decorator
+
+
+def resolve_store_scope(requested=None):
+    """Super Admin may pick any store; other roles are locked to their store."""
+    if requested is None:
+        requested = request.args.get('store_id')
+        if requested is None and request.method in ('POST', 'PUT', 'PATCH'):
+            body = request.get_json(silent=True) or {}
+            requested = body.get('store_id')
+    requested = (requested or '').strip()
+    if admin_is_super():
+        return requested
+    locked = (session.get('admin_store_id') or '').strip()
+    return locked
+
+
+def resolve_store_ids(requested=None):
+    """Return selected store ids. Empty list means all stores (Super Admin only)."""
+    if requested is None:
+        raw = request.args.get('store_ids')
+        if raw is None or raw == '':
+            single = request.args.get('store_id')
+            raw = single or ''
+        requested = raw
+    if isinstance(requested, (list, tuple, set)):
+        ids = [str(x).strip() for x in requested if str(x).strip()]
+    else:
+        ids = [x.strip() for x in str(requested or '').replace(';', ',').split(',') if x.strip()]
+    # Deduplicate while preserving order
+    seen = set()
+    clean = []
+    for sid in ids:
+        if sid not in seen:
+            seen.add(sid)
+            clean.append(sid)
+    if not admin_is_super():
+        locked = (session.get('admin_store_id') or '').strip()
+        return [locked] if locked else []
+    return clean
+
+
+def assert_store_access(store_id):
+    """Return an error response if the current admin cannot access store_id."""
+    if admin_is_super():
+        return None
+    locked = (session.get('admin_store_id') or '').strip()
+    if not locked:
+        return jsonify({'error': 'Your account is not assigned to a store'}), 403
+    if store_id and store_id != locked:
+        return jsonify({'error': 'You can only access your assigned store'}), 403
+    return None
+
+
+def set_admin_session(member):
+    session.clear()
+    session['admin_ok'] = True
+    session['admin_user_id'] = member.get('id')
+    session['admin_name'] = member.get('name') or member.get('username') or 'Admin'
+    session['admin_username'] = member.get('username') or ''
+    session['admin_role'] = member.get('role') or ROLE_STORE
+    session['admin_store_id'] = member.get('store_id') or ''
+    session.permanent = False
+
+
+def ensure_admin_users():
+    """Seed Super Admin abhi / abhi123 and migrate legacy role labels."""
+    # Normalize legacy role names on existing staff
+    for member in db_find('staff'):
+        role = member.get('role') or ''
+        mapped = None
+        if role in ('Store Manager', 'Inventory Manager', 'Sales Manager'):
+            mapped = ROLE_STORE
+        elif role == 'Content Manager':
+            mapped = ROLE_BILLING
+        if mapped and mapped != role:
+            db_update('staff', {'id': member['id']}, {'role': mapped, 'updated_at': now_iso()})
+
+    existing = db_find_one('staff', {'username': 'abhi'})
+    if existing:
+        updates = {}
+        if existing.get('role') != ROLE_SUPER:
+            updates['role'] = ROLE_SUPER
+        if not existing.get('password_hash'):
+            updates['password_hash'] = generate_password_hash('abhi123')
+        # Username is "abhi" — keep display name Abhay so the topbar shows the name that username maps to.
+        if (existing.get('name') or '').strip().lower() in ('', 'admin', 'abhi'):
+            updates['name'] = 'Abhay'
+        if updates:
+            updates['updated_at'] = now_iso()
+            db_update('staff', {'id': existing['id']}, updates)
+        return
+
+    # Prefer renaming a password-less Super Admin roster row if present
+    legacy_super = next(
+        (m for m in db_find('staff') if m.get('role') == ROLE_SUPER and not m.get('username')),
+        None,
+    )
+    if legacy_super:
+        db_update('staff', {'id': legacy_super['id']}, {
+            'name': legacy_super.get('name') or 'Abhay',
+            'username': 'abhi',
+            'password_hash': generate_password_hash('abhi123'),
+            'role': ROLE_SUPER,
+            'store_id': '',
+            'on_duty': True,
+            'active': True,
+            'updated_at': now_iso(),
+        })
+        print('[auth] Linked Super Admin login: abhi / abhi123')
+        return
+
+    db_insert('staff', {
+        'id': new_id('stf_'),
+        'name': 'Abhay',
+        'username': 'abhi',
+        'password_hash': generate_password_hash('abhi123'),
+        'role': ROLE_SUPER,
+        'store_id': '',
+        'phone': '',
+        'on_duty': True,
+        'active': True,
+        'created_at': now_iso(),
+    })
+    print('[auth] Created Super Admin login: abhi / abhi123')
+
+
+@app.context_processor
+def inject_admin_session():
+    admin = current_admin()
+    if not admin:
+        return {'admin_user': None, 'admin_can': {}}
+    role = admin['role']
+    pages = ROLE_PAGES.get(role, set())
+    return {
+        'admin_user': admin,
+        'admin_can': {
+            'super': role == ROLE_SUPER,
+            'manage_staff': role == ROLE_SUPER,
+            'manage_stores': role == ROLE_SUPER,
+            'manage_catalog': role == ROLE_SUPER,
+            'manage_settings': role == ROLE_SUPER,
+            'manage_coupons': role == ROLE_SUPER,
+            'manage_storefront': role == ROLE_SUPER,
+            'billing': role in (ROLE_SUPER, ROLE_STORE, ROLE_BILLING),
+            'reports': role in (ROLE_SUPER, ROLE_STORE),
+            'inventory': role in (ROLE_SUPER, ROLE_STORE),
+            'pages': pages,
+        },
+    }
+
+
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_IMAGE_EXT
 
@@ -423,8 +643,44 @@ def _delete_media_blob(url):
     return len(_load_local('media')) < before
 
 
+def optimize_image_bytes(data, kind='products'):
+    """Resize and convert uploads to WebP for faster storefront loads."""
+    try:
+        from PIL import Image
+        img = Image.open(BytesIO(data))
+        img.load()
+        if img.mode in ('RGBA', 'LA'):
+            pass
+        elif img.mode == 'P':
+            img = img.convert('RGBA')
+        elif img.mode != 'RGB':
+            img = img.convert('RGB')
+        max_w = 1600 if kind == 'content' else 1000
+        if img.width > max_w:
+            ratio = max_w / float(img.width)
+            img = img.resize(
+                (max_w, max(1, int(img.height * ratio))),
+                Image.Resampling.LANCZOS,
+            )
+        out = BytesIO()
+        quality = 78 if kind == 'content' else 72
+        img.save(out, format='WEBP', quality=quality, method=4)
+        optimized = out.getvalue()
+        # Prefer WebP when it is smaller, or when the original was a huge PNG.
+        if len(optimized) <= len(data) or len(data) > 350_000:
+            return optimized, 'webp', 'image/webp'
+    except Exception:  # noqa: BLE001
+        pass
+    return data, None, None
+
+
 def save_upload_bytes(kind, filename, data, content_type=None):
-    """Write bytes to disk (best-effort) and always persist in the media store."""
+    """Optimize, write bytes to disk (best-effort), and persist in the media store."""
+    data, new_ext, new_ct = optimize_image_bytes(data, kind=kind)
+    if new_ext:
+        stem = filename.rsplit('.', 1)[0]
+        filename = f'{stem}.{new_ext}'
+        content_type = new_ct
     folder = UPLOAD_DIR if kind == 'products' else CONTENT_UPLOAD_DIR
     url = f'/uploads/{kind}/{filename}'
     try:
@@ -450,6 +706,15 @@ def save_upload_file(kind, storage):
     return save_upload_bytes(kind, filename, data, content_type=content_type)
 
 
+def _cached_send(directory, filename, max_age=604800):
+    """Serve a static/upload file with browser-friendly cache headers."""
+    response = send_from_directory(directory, filename)
+    response.cache_control.public = True
+    response.cache_control.max_age = max_age
+    response.headers['Vary'] = 'Accept-Encoding'
+    return response
+
+
 def delete_upload_file(url):
     """Delete an uploaded image from disk and from the media store."""
     path = _upload_path_for_url(url)
@@ -467,13 +732,13 @@ def serve_upload(kind, filename):
     path = folder / filename
     url = f'/uploads/{kind}/{filename}'
     if path.is_file():
-        return send_from_directory(folder, filename)
+        return _cached_send(folder, filename, max_age=604800)
     data, content_type = _load_media_blob(url)
     if data is None:
         # Also check repo-root uploads (local seed files) when RUNTIME_DIR differs.
         legacy = BASE_DIR / 'uploads' / kind / filename
         if legacy.is_file():
-            return send_from_directory(legacy.parent, filename)
+            return _cached_send(legacy.parent, filename, max_age=604800)
         abort(404)
     # Cache onto disk for faster repeat hits within the same function instance.
     try:
@@ -481,7 +746,7 @@ def serve_upload(kind, filename):
         path.write_bytes(data)
     except OSError:
         pass
-    return send_file(BytesIO(data), mimetype=content_type, download_name=filename, max_age=86400)
+    return send_file(BytesIO(data), mimetype=content_type, download_name=filename, max_age=604800)
 
 
 def sync_local_uploads_to_media():
@@ -507,11 +772,12 @@ def sync_local_uploads_to_media():
                 continue
             seen.add(url)
             existing, _ = _load_media_blob(url)
-            if existing is not None:
-                continue
             try:
                 data = path.read_bytes()
             except OSError:
+                continue
+            # Refresh Mongo when local file is new or smaller (e.g. after recompression).
+            if existing is not None and len(existing) <= len(data):
                 continue
             if _save_media_blob(url, data, filename=path.name):
                 synced += 1
@@ -1031,6 +1297,7 @@ def ensure_media_assets():
 seed_if_empty()
 ensure_media_assets()
 sync_local_uploads_to_media()
+ensure_admin_users()
 
 
 @app.before_request
@@ -1075,17 +1342,17 @@ def home():
 
 @app.route('/style.css')
 def style_css():
-    return send_from_directory(BASE_DIR, 'style.css')
+    return _cached_send(BASE_DIR, 'style.css', max_age=86400)
 
 
 @app.route('/script.js')
 def script_js():
-    return send_from_directory(BASE_DIR, 'script.js')
+    return _cached_send(BASE_DIR, 'script.js', max_age=86400)
 
 
 @app.route('/assets/<path:filename>')
 def assets(filename):
-    return send_from_directory(BASE_DIR / 'assets', filename)
+    return _cached_send(BASE_DIR / 'assets', filename, max_age=604800)
 
 
 @app.route('/uploads/products/<path:filename>')
@@ -1108,15 +1375,123 @@ def api_health():
 
 
 def _public_customer(customer):
+    addresses = _normalize_addresses(customer)
+    default_addr = next((a for a in addresses if a.get('is_default')), addresses[0] if addresses else None)
     return {
         'id': customer.get('id'),
         'name': customer.get('name', ''),
         'phone': customer.get('phone', ''),
         'email': customer.get('email', ''),
-        'address': customer.get('address', ''),
+        'address': (default_addr or {}).get('line1') or customer.get('address', ''),
+        'addresses': addresses,
         'preferred_store_id': customer.get('preferred_store_id', ''),
         'has_account': bool(customer.get('password_hash')),
     }
+
+
+def _session_customer():
+    customer_id = session.get('customer_id')
+    if not customer_id:
+        return None
+    customer = db_find_one('customers', {'id': customer_id})
+    if not customer:
+        session.pop('customer_id', None)
+        return None
+    return customer
+
+
+def _normalize_addresses(customer):
+    """Return a clean addresses list; migrate legacy single `address` string once."""
+    if not customer:
+        return []
+    raw = customer.get('addresses')
+    addresses = []
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            line1 = (item.get('line1') or item.get('address') or '').strip()
+            if not line1:
+                continue
+            addresses.append({
+                'id': item.get('id') or new_id('addr_'),
+                'label': (item.get('label') or 'Home').strip() or 'Home',
+                'line1': line1,
+                'area': (item.get('area') or '').strip(),
+                'pincode': (item.get('pincode') or '').strip(),
+                'is_default': bool(item.get('is_default')),
+            })
+    legacy = (customer.get('address') or '').strip()
+    if legacy and not addresses:
+        addresses = [{
+            'id': new_id('addr_'),
+            'label': 'Home',
+            'line1': legacy,
+            'area': '',
+            'pincode': '',
+            'is_default': True,
+        }]
+        db_update('customers', {'id': customer['id']}, {
+            'addresses': addresses,
+            'updated_at': now_iso(),
+        })
+    if addresses and not any(a.get('is_default') for a in addresses):
+        addresses[0]['is_default'] = True
+    return addresses
+
+
+def _address_from_payload(data, existing=None):
+    existing = existing or {}
+    line1 = (data.get('line1') or data.get('address') or '').strip()
+    if not line1:
+        return None, 'Address line is required'
+    label = (data.get('label') or existing.get('label') or 'Home').strip() or 'Home'
+    return {
+        'id': existing.get('id') or new_id('addr_'),
+        'label': label[:40],
+        'line1': line1[:240],
+        'area': (data.get('area') or existing.get('area') or '').strip()[:80],
+        'pincode': (data.get('pincode') or existing.get('pincode') or '').strip()[:12],
+        'is_default': bool(data.get('is_default', existing.get('is_default', False))),
+    }, None
+
+
+def _save_customer_addresses(customer_id, addresses):
+    if addresses and not any(a.get('is_default') for a in addresses):
+        addresses[0]['is_default'] = True
+    default = next((a for a in addresses if a.get('is_default')), None)
+    updates = {
+        'addresses': addresses,
+        'address': (default or {}).get('line1', ''),
+        'updated_at': now_iso(),
+    }
+    db_update('customers', {'id': customer_id}, updates)
+    return db_find_one('customers', {'id': customer_id})
+
+
+def _remember_order_address(customer, data):
+    """Add checkout delivery address to the customer's address book when new."""
+    line1 = (data.get('address') or '').strip()
+    if not line1 or (data.get('delivery_mode') or 'delivery') == 'pickup':
+        return
+    addresses = _normalize_addresses(customer)
+    lowered = line1.lower()
+    for addr in addresses:
+        if (addr.get('line1') or '').lower() == lowered:
+            return
+    new_addr = {
+        'id': new_id('addr_'),
+        'label': 'Delivery',
+        'line1': line1[:240],
+        'area': (data.get('area') or '').strip()[:80],
+        'pincode': (data.get('pincode') or '').strip()[:12],
+        'is_default': not addresses,
+    }
+    if new_addr['is_default']:
+        for addr in addresses:
+            addr['is_default'] = False
+    addresses.append(new_addr)
+    _save_customer_addresses(customer['id'], addresses)
 
 
 @app.route('/api/auth/signup', methods=['POST'])
@@ -1152,6 +1527,7 @@ def api_auth_signup():
             'phone': phone,
             'email': email,
             'address': '',
+            'addresses': [],
             'password_hash': password_hash,
             'cart': [],
             'preferred_store_id': '',
@@ -1284,6 +1660,105 @@ def api_account_cart():
         updates['preferred_store_id'] = str(data.get('preferred_store_id') or '')
     db_update('customers', {'id': customer_id}, updates)
     return jsonify({'ok': True, 'cart': clean_cart})
+
+
+@app.route('/api/account/profile', methods=['PUT'])
+def api_account_profile():
+    """Update name, email, and preferred store for the logged-in customer."""
+    customer = _session_customer()
+    if not customer:
+        return jsonify({'error': 'Login required'}), 401
+    data = parse_json()
+    name = (data.get('name') or '').strip()
+    email = (data.get('email') or '').strip()
+    if not name:
+        return jsonify({'error': 'Name is required'}), 400
+    if email and ('@' not in email or '.' not in email.split('@')[-1]):
+        return jsonify({'error': 'Enter a valid email address'}), 400
+    updates = {
+        'name': name[:80],
+        'email': email[:120],
+        'updated_at': now_iso(),
+    }
+    if 'preferred_store_id' in data:
+        updates['preferred_store_id'] = str(data.get('preferred_store_id') or '')
+    db_update('customers', {'id': customer['id']}, updates)
+    customer = db_find_one('customers', {'id': customer['id']})
+    return jsonify({'ok': True, 'customer': _public_customer(customer)})
+
+
+@app.route('/api/account/password', methods=['PUT'])
+def api_account_password():
+    customer = _session_customer()
+    if not customer:
+        return jsonify({'error': 'Login required'}), 401
+    data = parse_json()
+    current = data.get('current_password') or ''
+    new_password = data.get('new_password') or ''
+    if len(new_password) < 4:
+        return jsonify({'error': 'New password must be at least 4 characters'}), 400
+    if not customer.get('password_hash') or not check_password_hash(customer['password_hash'], current):
+        return jsonify({'error': 'Current password is incorrect'}), 400
+    db_update('customers', {'id': customer['id']}, {
+        'password_hash': generate_password_hash(new_password),
+        'updated_at': now_iso(),
+    })
+    return jsonify({'ok': True})
+
+
+@app.route('/api/account/addresses', methods=['GET', 'POST'])
+def api_account_addresses():
+    customer = _session_customer()
+    if not customer:
+        return jsonify({'error': 'Login required'}), 401
+    if request.method == 'GET':
+        return jsonify({'addresses': _normalize_addresses(customer)})
+
+    data = parse_json()
+    addr, err = _address_from_payload(data)
+    if err:
+        return jsonify({'error': err}), 400
+    addresses = _normalize_addresses(customer)
+    if addr['is_default'] or not addresses:
+        for existing in addresses:
+            existing['is_default'] = False
+        addr['is_default'] = True
+    addresses.append(addr)
+    customer = _save_customer_addresses(customer['id'], addresses)
+    return jsonify({'ok': True, 'addresses': _normalize_addresses(customer), 'customer': _public_customer(customer)}), 201
+
+
+@app.route('/api/account/addresses/<addr_id>', methods=['PUT', 'DELETE'])
+def api_account_address_detail(addr_id):
+    customer = _session_customer()
+    if not customer:
+        return jsonify({'error': 'Login required'}), 401
+    addresses = _normalize_addresses(customer)
+    match = next((a for a in addresses if a.get('id') == addr_id), None)
+    if not match:
+        return jsonify({'error': 'Address not found'}), 404
+
+    if request.method == 'DELETE':
+        remaining = [a for a in addresses if a.get('id') != addr_id]
+        customer = _save_customer_addresses(customer['id'], remaining)
+        return jsonify({'ok': True, 'addresses': _normalize_addresses(customer), 'customer': _public_customer(customer)})
+
+    data = parse_json()
+    updated, err = _address_from_payload(data, existing=match)
+    if err:
+        return jsonify({'error': err}), 400
+    updated['id'] = addr_id
+    if updated['is_default']:
+        for addr in addresses:
+            addr['is_default'] = addr.get('id') == addr_id
+    else:
+        # Keep at least one default.
+        others_default = any(a.get('is_default') and a.get('id') != addr_id for a in addresses)
+        if not others_default:
+            updated['is_default'] = True
+    addresses = [updated if a.get('id') == addr_id else a for a in addresses]
+    customer = _save_customer_addresses(customer['id'], addresses)
+    return jsonify({'ok': True, 'addresses': _normalize_addresses(customer), 'customer': _public_customer(customer)})
 
 
 @app.route('/api/settings')
@@ -1548,12 +2023,14 @@ def api_place_order():
             'phone': str(data['phone']),
             'email': data.get('email', ''),
             'address': data.get('address', ''),
+            'addresses': [],
             'cart': [],
             'preferred_store_id': data.get('store_id', ''),
             'created_at': now_iso(),
         }
         db_insert('customers', customer)
         log_activity('customer', f"New customer {data['name']} registered")
+        _remember_order_address(customer, data)
     else:
         db_update('customers', {'id': customer['id']}, {
             'name': data['name'],
@@ -1565,6 +2042,7 @@ def api_place_order():
             'updated_at': now_iso(),
         })
         customer = db_find_one('customers', {'id': customer['id']})
+        _remember_order_address(customer, data)
     if session.get('customer_id') != customer['id']:
         session['customer_id'] = customer['id']
 
@@ -1610,19 +2088,37 @@ def api_place_order():
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
     error = None
+    if session.get('admin_ok') and request.method == 'GET':
+        return redirect(url_for('admin_dashboard'))
+
     if request.method == 'POST':
-        password = request.form.get('password', '')
-        if password == ADMIN_PASSWORD:
-            session.clear()
-            session['admin_ok'] = True
-            session.permanent = False
-            resp = redirect(url_for('admin_dashboard'))
-            return _apply_admin_no_cache(resp)
-        error = 'Incorrect password'
-    # Always clear any previous admin session when the login screen is opened,
-    # so navigating to /admin or /admin/login never reuses a cached session.
-    if request.method == 'GET':
-        session.clear()
+        username = (request.form.get('username') or '').strip().lower()
+        password = request.form.get('password') or ''
+        member = None
+        if username:
+            for row in db_find('staff'):
+                if (row.get('username') or '').strip().lower() == username:
+                    member = row
+                    break
+        if member and member.get('active') is False:
+            error = 'This account is disabled. Contact Super Admin.'
+        elif member and member.get('password_hash') and check_password_hash(member['password_hash'], password):
+            if member.get('role') in (ROLE_STORE, ROLE_BILLING) and not member.get('store_id'):
+                error = 'This account has no store assigned. Ask Super Admin to set a store.'
+            else:
+                set_admin_session(member)
+                log_activity('system', f"{member.get('name')} signed in ({member.get('role')})")
+                return _apply_admin_no_cache(redirect(url_for('admin_dashboard')))
+        else:
+            # Bootstrap fallback: env ADMIN_PASSWORD still works once for Super Admin recovery.
+            if username in ('abhi', 'admin') and password == ADMIN_PASSWORD and password:
+                ensure_admin_users()
+                member = db_find_one('staff', {'username': 'abhi'})
+                if member:
+                    set_admin_session(member)
+                    return _apply_admin_no_cache(redirect(url_for('admin_dashboard')))
+            error = 'Incorrect username or password'
+
     resp = make_response(render_template('admin/login.html', error=error, db_mode=db_mode()))
     return _apply_admin_no_cache(resp)
 
@@ -1631,8 +2127,6 @@ def admin_login():
 def admin_logout():
     session.clear()
     resp = redirect(url_for('admin_login'))
-    # Only clear HTTP cache — never wipe browser storage (customer accounts live there
-    # until migrated, and cart/session prefs should survive admin visits).
     resp.headers['Clear-Site-Data'] = '"cache"'
     return _apply_admin_no_cache(resp)
 
@@ -1640,87 +2134,102 @@ def admin_logout():
 @app.route('/admin/')
 @app.route('/admin')
 def admin_entry():
-    # Opening the Admin Portal root always begins at a fresh login screen.
-    session.clear()
+    if session.get('admin_ok'):
+        return redirect(url_for('admin_dashboard'))
     resp = redirect(url_for('admin_login'))
-    resp.headers['Clear-Site-Data'] = '"cache"'
     return _apply_admin_no_cache(resp)
 
 
-@app.route('/admin/dashboard')
+@app.route('/api/admin/me')
 @admin_required
+def api_admin_me():
+    admin = current_admin()
+    return jsonify({
+        'ok': True,
+        'admin': admin,
+        'can': {
+            'super': admin_is_super(),
+            'manage_staff': admin_is_super(),
+            'manage_stores': admin_is_super(),
+            'pages': list(ROLE_PAGES.get(admin['role'], [])),
+        },
+    })
+
+
+@app.route('/admin/dashboard')
+@page_required('dashboard')
 def admin_dashboard():
     return render_template('admin/dashboard.html', page='dashboard', db_mode=db_mode())
 
 
 @app.route('/admin/stores')
-@admin_required
+@page_required('stores')
 def admin_stores():
     return render_template('admin/stores.html', page='stores', db_mode=db_mode())
 
 
 @app.route('/admin/categories')
-@admin_required
+@page_required('categories')
 def admin_categories():
     return render_template('admin/categories.html', page='categories', db_mode=db_mode())
 
 
 @app.route('/admin/products')
-@admin_required
+@page_required('products')
 def admin_products():
     return render_template('admin/products.html', page='products', db_mode=db_mode())
 
 
 @app.route('/admin/inventory')
-@admin_required
+@page_required('inventory')
 def admin_inventory():
     return render_template('admin/inventory.html', page='inventory', db_mode=db_mode())
 
 
 @app.route('/admin/orders')
-@admin_required
+@page_required('orders')
 def admin_orders():
     return render_template('admin/orders.html', page='orders', db_mode=db_mode())
 
 
 @app.route('/admin/customers')
-@admin_required
+@page_required('customers')
 def admin_customers():
     return render_template('admin/customers.html', page='customers', db_mode=db_mode())
 
 
 @app.route('/admin/reports')
-@admin_required
+@page_required('reports')
 def admin_reports():
     return render_template('admin/reports.html', page='reports', db_mode=db_mode())
 
 
 @app.route('/admin/settings')
-@admin_required
+@page_required('settings')
 def admin_settings():
     return render_template('admin/settings.html', page='settings', db_mode=db_mode())
 
 
 @app.route('/admin/coupons')
-@admin_required
+@page_required('coupons')
 def admin_coupons():
     return render_template('admin/coupons.html', page='coupons', db_mode=db_mode())
 
 
 @app.route('/admin/staff')
-@admin_required
+@page_required('staff')
 def admin_staff():
     return render_template('admin/staff.html', page='staff', db_mode=db_mode())
 
 
 @app.route('/admin/storefront')
-@admin_required
+@page_required('storefront')
 def admin_storefront():
     return render_template('admin/storefront.html', page='storefront', db_mode=db_mode())
 
 
 @app.route('/admin/in-store')
-@admin_required
+@page_required('in_store')
 def admin_in_store():
     return render_template('admin/in_store.html', page='in_store', db_mode=db_mode())
 
@@ -1912,7 +2421,9 @@ def api_admin_stats():
     period = request.args.get('period', 'month')
     if period not in ('day', 'month', 'quarter', 'year'):
         period = 'month'
-    store_id = request.args.get('store_id')
+    store_ids = resolve_store_ids()
+    # Back-compat: single store_id still works via resolve_store_ids.
+    store_id = store_ids[0] if len(store_ids) == 1 else ''
     anchor_raw = request.args.get('anchor')
     selected_mode = anchor_raw is not None
     now = datetime.utcnow()
@@ -1922,12 +2433,24 @@ def api_admin_stats():
         if not anchor:
             return jsonify({'error': 'Invalid period selection'}), 400
 
+    cache_key = f'{session.get("admin_user_id")}|{",".join(store_ids)}|{period}|{anchor or ""}'
+    cached = _stats_cache.get(cache_key)
+    if cached and (datetime.utcnow() - cached['at']).total_seconds() < _STATS_CACHE_TTL:
+        return jsonify(cached['payload'])
+
     orders = db_find('orders')
-    if store_id:
-        orders = [o for o in orders if o.get('store_id') == store_id]
+    if store_ids:
+        allowed = set(store_ids)
+        orders = [o for o in orders if o.get('store_id') in allowed]
 
     customers = db_find('customers')
     stores = db_find('stores')
+    if store_ids:
+        stores = [s for s in stores if s.get('id') in set(store_ids)] or stores
+
+    products_by_id = {p['id']: p for p in db_find('products')}
+    categories_by_id = {c['id']: c for c in db_find('categories')}
+    stores_by_id = {s['id']: s for s in db_find('stores')}
 
     if selected_mode:
         selected_orders = [o for o in orders if _matches_selection(o.get('created_at'), period, anchor)]
@@ -2056,9 +2579,9 @@ def api_admin_stats():
             product_agg[pid]['revenue'] += it.get('price', 0) * it.get('qty', 0)
     top_products = sorted(product_agg.values(), key=lambda x: x['revenue'], reverse=True)[:5]
     for tp in top_products:
-        p = db_find_one('products', {'id': tp['product_id']})
+        p = products_by_id.get(tp['product_id'])
         if p:
-            cat = db_find_one('categories', {'id': p.get('category_id')})
+            cat = categories_by_id.get(p.get('category_id'))
             tp['category'] = cat['name'] if cat else ''
 
     # Low stock with configurable threshold + capacity bars
@@ -2066,11 +2589,14 @@ def api_admin_stats():
     threshold = int(settings['low_stock_threshold'])
     low_stock = []
     inventory_rows = db_find('inventory')
+    if store_ids:
+        allowed_inv = set(store_ids)
+        inventory_rows = [i for i in inventory_rows if i.get('store_id') in allowed_inv]
     max_stock = max((i.get('stock', 0) for i in inventory_rows), default=1) or 1
     for inv in inventory_rows:
         if inv.get('stock', 0) <= threshold:
-            p = db_find_one('products', {'id': inv.get('product_id')})
-            s = db_find_one('stores', {'id': inv.get('store_id')})
+            p = products_by_id.get(inv.get('product_id'))
+            s = stores_by_id.get(inv.get('store_id'))
             low_stock.append({
                 **inv,
                 'product_name': p['name'] if p else inv.get('product_id'),
@@ -2087,7 +2613,7 @@ def api_admin_stats():
         prod_totals[pid] += inv.get('stock', 0)
     prod_max = max(prod_totals.values(), default=1) or 1
     for pid, total_stock in sorted(prod_totals.items(), key=lambda x: x[1])[:8]:
-        p = db_find_one('products', {'id': pid})
+        p = products_by_id.get(pid)
         inv_health.append({
             'product_id': pid,
             'name': p['name'] if p else pid,
@@ -2097,10 +2623,18 @@ def api_admin_stats():
         })
 
     staff = db_find('staff')
+    if store_ids:
+        allowed_staff = set(store_ids)
+        staff_scoped = [
+            m for m in staff
+            if not m.get('store_id') or m.get('store_id') in allowed_staff
+        ]
+    else:
+        staff_scoped = staff
     recent = sorted(scoped_orders, key=lambda x: x.get('created_at', ''), reverse=True)[:8]
     for o in recent:
         o['status'] = normalize_status(o.get('status'))
-        s = db_find_one('stores', {'id': o.get('store_id')})
+        s = stores_by_id.get(o.get('store_id'))
         o['store_name'] = s['name'] if s else ''
 
     kpis = {
@@ -2113,11 +2647,11 @@ def api_admin_stats():
         'customers_total': len(selected_customers) if selected_mode else len(customers),
         'pending_orders': pending,
         'cancelled_orders': status_counts.get('cancelled', 0),
-        'products_total': db_count('products'),
+        'products_total': len(products_by_id),
         'stores_active': sum(1 for s in stores if s.get('status') == 'active'),
         'stores_total': len(stores),
-        'staff_on_duty': sum(1 for m in staff if m.get('on_duty')),
-        'staff_total': len(staff),
+        'staff_on_duty': sum(1 for m in staff_scoped if m.get('on_duty')),
+        'staff_total': len(staff_scoped),
         'low_stock_count': len(low_stock),
         'avg_order_value': round(sales_period / max(1, sum(b['orders'] for b in buckets.values()))),
     }
@@ -2126,7 +2660,20 @@ def api_admin_stats():
         kpis['orders_selected'] = orders_selected
         kpis['customers_selected'] = customers_selected
 
-    return jsonify({
+    on_duty_staff = []
+    for m in staff_scoped[:12]:
+        on_duty_staff.append({
+            'id': m.get('id'),
+            'name': m.get('name'),
+            'role': m.get('role'),
+            'store_id': m.get('store_id') or '',
+            'store_name': (stores_by_id.get(m.get('store_id')) or {}).get('name', 'All Stores') if m.get('store_id') else 'All Stores',
+            'on_duty': bool(m.get('on_duty')),
+        })
+
+    activity = db_find('activity', sort=[('created_at', -1)], limit=12)
+
+    payload = {
         'period': period,
         'anchor': anchor,
         'period_caption': period_caption,
@@ -2142,7 +2689,16 @@ def api_admin_stats():
         'low_stock': low_stock[:20],
         'recent_orders': recent,
         'low_stock_threshold': threshold,
-    })
+        'activity': activity,
+        'on_duty_staff': on_duty_staff,
+    }
+    _stats_cache[cache_key] = {'at': datetime.utcnow(), 'payload': payload}
+    # Keep cache map small
+    if len(_stats_cache) > 40:
+        oldest = sorted(_stats_cache.items(), key=lambda kv: kv[1]['at'])[:20]
+        for key, _ in oldest:
+            _stats_cache.pop(key, None)
+    return jsonify(payload)
 
 
 # --- Stores CRUD ---
@@ -2151,7 +2707,13 @@ def api_admin_stats():
 @admin_required
 def api_admin_stores():
     if request.method == 'GET':
-        return jsonify(db_find('stores', sort=[('name', 1)]))
+        stores = db_find('stores', sort=[('name', 1)])
+        scoped = resolve_store_scope(request.args.get('store_id'))
+        if scoped:
+            stores = [s for s in stores if s.get('id') == scoped]
+        return jsonify(stores)
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can create stores'}), 403
     data = parse_json()
     settings = get_settings()
     store = {
@@ -2181,10 +2743,14 @@ def api_admin_store_detail(store_id):
         return jsonify({'error': 'Store not found'}), 404
 
     if request.method == 'DELETE':
+        if not admin_is_super():
+            return jsonify({'error': 'Only Super Admin can delete stores'}), 403
         db_delete('stores', {'id': store_id})
         db_delete('inventory', {'store_id': store_id})
         log_activity('system', f"Store {store.get('name', store_id)} deleted")
         return jsonify({'ok': True})
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can edit stores'}), 403
     data = parse_json()
     allowed = ['name', 'tag', 'address', 'contact', 'hours', 'status', 'delivery_radius_km', 'manager']
     updates = {k: data[k] for k in allowed if k in data}
@@ -2202,6 +2768,8 @@ def api_admin_store_detail(store_id):
 def api_admin_categories():
     if request.method == 'GET':
         return jsonify(db_find('categories', sort=[('sort_order', 1)]))
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can manage categories'}), 403
     data = parse_json()
     name = data.get('name', '').strip()
     if not name:
@@ -2225,6 +2793,8 @@ def api_admin_categories():
 @app.route('/api/admin/categories/<cat_id>', methods=['PUT', 'DELETE'])
 @admin_required
 def api_admin_category_detail(cat_id):
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can manage categories'}), 403
     category = db_find_one('categories', {'id': cat_id})
     if not category:
         return jsonify({'error': 'Category not found'}), 404
@@ -2259,6 +2829,8 @@ def api_admin_products():
             p['category_name'] = cat['name'] if cat else ''
         return jsonify(products)
 
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can manage products'}), 403
     data = parse_json()
     name = data.get('name', '').strip()
     if not name:
@@ -2312,6 +2884,8 @@ def api_admin_products():
 @app.route('/api/admin/products/<product_id>', methods=['PUT', 'DELETE'])
 @admin_required
 def api_admin_product_detail(product_id):
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can manage products'}), 403
     product = db_find_one('products', {'id': product_id})
     if not product:
         return jsonify({'error': 'Product not found'}), 404
@@ -2405,11 +2979,13 @@ def api_admin_product_image(product_id):
 @app.route('/api/admin/inventory')
 @admin_required
 def api_admin_inventory():
-    store_id = request.args.get('store_id')
+    store_id = resolve_store_scope(request.args.get('store_id'))
     low_stock_threshold = int(get_settings().get('low_stock_threshold', 10))
     query = {}
     if store_id:
         query['store_id'] = store_id
+    elif not admin_is_super():
+        return jsonify({'error': 'Your account is not assigned to a store'}), 403
     rows = db_find('inventory', query)
     enriched = []
     for r in rows:
@@ -2437,6 +3013,12 @@ def api_admin_inventory():
 @app.route('/api/admin/inventory/<inv_id>', methods=['PUT'])
 @admin_required
 def api_admin_inventory_update(inv_id):
+    row = db_find_one('inventory', {'id': inv_id})
+    if not row:
+        return jsonify({'error': 'Inventory row not found'}), 404
+    denied = assert_store_access(row.get('store_id'))
+    if denied:
+        return denied
     data = parse_json()
     updates = {}
     if 'price' in data:
@@ -2454,7 +3036,7 @@ def api_admin_inventory_update(inv_id):
 @admin_required
 def api_admin_orders():
     status = request.args.get('status')
-    store_id = request.args.get('store_id')
+    store_id = resolve_store_scope(request.args.get('store_id'))
     q = (request.args.get('q') or '').strip().lower()
     focus = (request.args.get('focus') or '').strip()
     page = max(1, int(request.args.get('page', 1)))
@@ -2466,6 +3048,8 @@ def api_admin_orders():
         orders = [o for o in orders if o.get('status') == status]
     if store_id:
         orders = [o for o in orders if o.get('store_id') == store_id]
+    elif not admin_is_super():
+        return jsonify({'error': 'Your account is not assigned to a store'}), 403
     if focus:
         orders = [o for o in orders if o.get('order_id') == focus or o.get('id') == focus]
     elif q:
@@ -2548,6 +3132,9 @@ def api_admin_order_update(order_id):
     order = db_find_one('orders', {'order_id': order_id}) or db_find_one('orders', {'id': order_id})
     if not order:
         return jsonify({'error': 'Order not found'}), 404
+    denied = assert_store_access(order.get('store_id'))
+    if denied:
+        return denied
 
     if request.method == 'DELETE':
         if order.get('inventory_deducted'):
@@ -2663,7 +3250,25 @@ def api_admin_customers():
     focus = (request.args.get('focus') or '').strip()
     page = max(1, int(request.args.get('page', 1)))
     per_page = min(100, int(request.args.get('per_page', 20)))
+    store_id = resolve_store_scope(request.args.get('store_id'))
     customers = db_find('customers')
+    all_orders = db_find('orders')
+    if store_id:
+        store_customer_ids = set()
+        store_phones = set()
+        for order in all_orders:
+            if order.get('store_id') != store_id:
+                continue
+            if order.get('customer_id'):
+                store_customer_ids.add(order['customer_id'])
+            if order.get('customer_phone'):
+                store_phones.add(str(order['customer_phone']))
+        customers = [
+            c for c in customers
+            if c.get('id') in store_customer_ids
+            or (c.get('phone') and str(c.get('phone')) in store_phones)
+            or c.get('preferred_store_id') == store_id
+        ]
     if focus:
         customers = [c for c in customers if c.get('id') == focus]
     elif q:
@@ -2676,12 +3281,15 @@ def api_admin_customers():
     chunk = customers[start:start + per_page]
     for c in chunk:
         orders = [
-            order for order in db_find('orders')
-            if order.get('customer_id') == c.get('id')
-            or (
-                c.get('phone')
-                and order.get('customer_phone') == c.get('phone')
+            order for order in all_orders
+            if (
+                order.get('customer_id') == c.get('id')
+                or (
+                    c.get('phone')
+                    and order.get('customer_phone') == c.get('phone')
+                )
             )
+            and (not store_id or order.get('store_id') == store_id)
         ]
         c['order_count'] = len(orders)
         c['lifetime_value'] = sum(o.get('total', 0) for o in orders)
@@ -2691,17 +3299,99 @@ def api_admin_customers():
     return jsonify({'items': chunk, 'total': total, 'page': page, 'per_page': per_page})
 
 
-@app.route('/api/admin/customers/<customer_id>', methods=['DELETE'])
+@app.route('/api/admin/customers/<customer_id>', methods=['PUT', 'DELETE'])
 @admin_required
-def api_admin_customer_delete(customer_id):
+def api_admin_customer_detail(customer_id):
     customer = db_find_one('customers', {'id': customer_id})
     if not customer:
         return jsonify({'error': 'Customer not found'}), 404
 
-    db_delete('customers', {'id': customer_id})
-    log_activity('customer', f"Customer {customer.get('name') or customer_id} removed")
-    return jsonify({'ok': True})
+    if request.method == 'DELETE':
+        if not admin_is_super():
+            return jsonify({'error': 'Only Super Admin (abhi) can remove customer details'}), 403
+        db_delete('customers', {'id': customer_id})
+        log_activity('customer', f"Customer {customer.get('name') or customer_id} removed")
+        return jsonify({'ok': True})
 
+    # PUT — Super Admin only (login: abhi)
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin (abhi) can edit customer details'}), 403
+
+    data = parse_json()
+    name = (data.get('name') or '').strip()
+    phone = re.sub(r'\D', '', str(data.get('phone') or ''))
+    email = (data.get('email') or '').strip()
+    address = (data.get('address') or '').strip()
+    preferred_store_id = (data.get('preferred_store_id') or '').strip()
+
+    if not name:
+        return jsonify({'error': 'Customer name is required'}), 400
+    if len(phone) < 10:
+        return jsonify({'error': 'Enter a valid 10-digit phone number'}), 400
+
+    conflict = db_find_one('customers', {'phone': phone})
+    if conflict and conflict.get('id') != customer_id:
+        return jsonify({'error': 'Another customer already uses this phone number'}), 400
+
+    if preferred_store_id and not db_find_one('stores', {'id': preferred_store_id}):
+        return jsonify({'error': 'Preferred store not found'}), 400
+
+    updates = {
+        'name': name[:120],
+        'phone': phone[-10:] if len(phone) > 10 else phone,
+        'email': email[:160],
+        'address': address[:240],
+        'preferred_store_id': preferred_store_id,
+        'updated_at': now_iso(),
+        'updated_by': session.get('admin_username') or session.get('admin_name') or 'abhi',
+    }
+
+    # Keep default address line in sync when legacy address field is edited
+    addresses = _normalize_addresses(customer)
+    if address:
+        if addresses:
+            for a in addresses:
+                if a.get('is_default'):
+                    a['line1'] = address[:240]
+                    break
+            else:
+                addresses[0]['line1'] = address[:240]
+            updates['addresses'] = addresses
+        else:
+            updates['addresses'] = [{
+                'id': new_id('addr_'),
+                'label': 'Home',
+                'line1': address[:240],
+                'area': '',
+                'pincode': '',
+                'is_default': True,
+            }]
+
+    db_update('customers', {'id': customer_id}, updates)
+    # Keep order history labels in sync for this customer
+    for order in db_find('orders', {'customer_id': customer_id}):
+        q = {'id': order['id']} if order.get('id') else {'order_id': order.get('order_id')}
+        db_update('orders', q, {
+            'customer_name': updates['name'],
+            'customer_phone': updates['phone'],
+        })
+    # Also match by previous phone if customer_id was missing on older orders
+    old_phone = customer.get('phone')
+    if old_phone and old_phone != updates['phone']:
+        for order in db_find('orders', {'customer_phone': old_phone}):
+            if order.get('customer_id') and order.get('customer_id') != customer_id:
+                continue
+            q = {'id': order['id']} if order.get('id') else {'order_id': order.get('order_id')}
+            db_update('orders', q, {
+                'customer_id': customer_id,
+                'customer_name': updates['name'],
+                'customer_phone': updates['phone'],
+            })
+
+    log_activity('customer', f"Customer {updates['name']} updated by {updates['updated_by']}")
+    refreshed = db_find_one('customers', {'id': customer_id}) or {}
+    refreshed.pop('password_hash', None)
+    return jsonify(refreshed)
 
 # --- Storefront CMS ---
 
@@ -2710,6 +3400,8 @@ def api_admin_customer_delete(customer_id):
 def api_admin_storefront_content():
     if request.method == 'GET':
         return jsonify(get_storefront_content())
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can edit storefront content'}), 403
     content = save_storefront_content(parse_json())
     log_activity('system', 'Storefront content updated')
     return jsonify(content)
@@ -2721,6 +3413,8 @@ def api_admin_content_image():
     """Generic image upload used by the Storefront Content CMS (hero, why-us,
     category banners, and custom section photos). Bytes are stored in Mongo
     (media collection) so Vercel can serve them without local disk."""
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can upload content images'}), 403
     if 'image' not in request.files:
         return jsonify({'error': 'No image file'}), 400
     f = request.files['image']
@@ -2771,7 +3465,7 @@ def _pos_adjust_stock(inventory_id, quantity_delta):
 @admin_required
 def api_admin_pos_orders():
     if request.method == 'GET':
-        store_id = request.args.get('store_id')
+        store_id = resolve_store_scope(request.args.get('store_id'))
         limit = min(100, max(1, int(request.args.get('limit', 20))))
         orders = [o for o in db_find('orders') if o.get('channel') == 'in_store']
         if store_id:
@@ -2783,7 +3477,10 @@ def api_admin_pos_orders():
         return jsonify(orders[:limit])
 
     data = parse_json()
-    store_id = data.get('store_id')
+    store_id = resolve_store_scope(data.get('store_id'))
+    denied = assert_store_access(store_id)
+    if denied:
+        return denied
     raw_items = data.get('items') or []
     payment_method = data.get('payment_method', 'cash')
     if payment_method not in ('cash', 'card', 'upi'):
@@ -2903,7 +3600,8 @@ def api_admin_pos_orders():
         'channel': 'in_store',
         'address': store.get('address', ''),
         'notes': data.get('notes', ''),
-        'staff_name': (data.get('staff_name') or '').strip(),
+        'staff_id': session.get('admin_user_id') or '',
+        'staff_name': session.get('admin_name') or (data.get('staff_name') or '').strip() or 'Staff',
         'created_at': now_iso(),
         'updated_at': now_iso(),
     }
@@ -2928,6 +3626,8 @@ def api_admin_pos_orders():
 def api_admin_settings():
     if request.method == 'GET':
         return jsonify(get_settings())
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can change settings'}), 403
     data = parse_json()
     numeric = ['low_stock_threshold', 'min_order_value', 'delivery_fee_below_min',
                'free_delivery_above', 'default_delivery_radius_km']
@@ -2951,6 +3651,8 @@ def api_admin_settings():
 def api_admin_coupons():
     if request.method == 'GET':
         return jsonify(db_find('coupons', sort=[('created_at', -1)]))
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can manage coupons'}), 403
     data = parse_json()
     code = (data.get('code') or '').strip().upper()
     if not code:
@@ -2975,6 +3677,8 @@ def api_admin_coupons():
 @app.route('/api/admin/coupons/<coupon_id>', methods=['PUT', 'DELETE'])
 @admin_required
 def api_admin_coupon_detail(coupon_id):
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can manage coupons'}), 403
     if request.method == 'DELETE':
         db_delete('coupons', {'id': coupon_id})
         return jsonify({'ok': True})
@@ -2990,49 +3694,154 @@ def api_admin_coupon_detail(coupon_id):
     return jsonify(db_find_one('coupons', {'id': coupon_id}))
 
 
-# --- Staff (RBAC-ready roster) ---
+# --- Staff (login accounts + duty status) ---
 
-STAFF_ROLES = ['Super Admin', 'Store Manager', 'Inventory Manager', 'Sales Manager', 'Content Manager']
+def _staff_public(member, stores=None):
+    stores = stores or {s['id']: s['name'] for s in db_find('stores')}
+    return {
+        'id': member.get('id'),
+        'name': member.get('name', ''),
+        'username': member.get('username', ''),
+        'role': member.get('role', ROLE_STORE),
+        'store_id': member.get('store_id', ''),
+        'store_name': stores.get(member.get('store_id'), 'All Stores'),
+        'phone': member.get('phone', ''),
+        'on_duty': bool(member.get('on_duty')),
+        'active': member.get('active') is not False,
+        'has_login': bool(member.get('password_hash') and member.get('username')),
+        'created_at': member.get('created_at'),
+        'updated_at': member.get('updated_at'),
+    }
 
 
 @app.route('/api/admin/staff', methods=['GET', 'POST'])
 @admin_required
 def api_admin_staff():
+    stores = {s['id']: s['name'] for s in db_find('stores')}
     if request.method == 'GET':
         staff = db_find('staff', sort=[('name', 1)])
-        stores = {s['id']: s['name'] for s in db_find('stores')}
-        for m in staff:
-            m['store_name'] = stores.get(m.get('store_id'), 'All Stores')
-        return jsonify({'items': staff, 'roles': STAFF_ROLES})
+        scoped = resolve_store_scope(request.args.get('store_id'))
+        role = session.get('admin_role')
+        if role == ROLE_BILLING:
+            staff = [m for m in staff if m.get('id') == session.get('admin_user_id')]
+        elif scoped and not admin_is_super():
+            staff = [
+                m for m in staff
+                if m.get('store_id') == scoped or m.get('id') == session.get('admin_user_id')
+            ]
+        return jsonify({
+            'items': [_staff_public(m, stores) for m in staff],
+            'roles': STAFF_ROLES if admin_is_super() else [ROLE_STORE, ROLE_BILLING],
+        })
+
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can create staff logins'}), 403
     data = parse_json()
     name = (data.get('name') or '').strip()
+    username = (data.get('username') or '').strip().lower()
+    password = data.get('password') or ''
+    role = data.get('role') or ROLE_STORE
+    store_id = data.get('store_id') or ''
     if not name:
         return jsonify({'error': 'Name required'}), 400
+    if role not in STAFF_ROLES:
+        return jsonify({'error': 'Invalid role'}), 400
+    if role in (ROLE_STORE, ROLE_BILLING) and not store_id:
+        return jsonify({'error': 'Store Admin and Billing Staff must be assigned to a store'}), 400
+    if role == ROLE_SUPER:
+        store_id = ''
+    if not username:
+        return jsonify({'error': 'Username required for admin login'}), 400
+    if len(password) < 4:
+        return jsonify({'error': 'Password must be at least 4 characters'}), 400
+    if any((m.get('username') or '').lower() == username for m in db_find('staff')):
+        return jsonify({'error': 'Username already exists'}), 409
     member = {
         'id': new_id('stf_'),
         'name': name,
-        'role': data.get('role', 'Store Manager'),
-        'store_id': data.get('store_id', ''),
+        'username': username,
+        'password_hash': generate_password_hash(password),
+        'role': role,
+        'store_id': store_id,
         'phone': data.get('phone', ''),
         'on_duty': bool(data.get('on_duty', True)),
+        'active': True,
         'created_at': now_iso(),
     }
     db_insert('staff', member)
-    return jsonify(member), 201
+    log_activity('system', f"Staff account {username} created ({role})")
+    return jsonify(_staff_public(member, stores)), 201
 
 
 @app.route('/api/admin/staff/<staff_id>', methods=['PUT', 'DELETE'])
 @admin_required
 def api_admin_staff_detail(staff_id):
+    member = db_find_one('staff', {'id': staff_id})
+    if not member:
+        return jsonify({'error': 'Staff not found'}), 404
+    stores = {s['id']: s['name'] for s in db_find('stores')}
+
     if request.method == 'DELETE':
+        if not admin_is_super():
+            return jsonify({'error': 'Only Super Admin can remove staff'}), 403
+        if member.get('username') == 'abhi':
+            return jsonify({'error': 'Cannot delete the primary Super Admin account'}), 400
         db_delete('staff', {'id': staff_id})
         return jsonify({'ok': True})
+
     data = parse_json()
-    allowed = ['name', 'role', 'store_id', 'phone', 'on_duty']
-    updates = {k: data[k] for k in allowed if k in data}
+    # Staff may toggle their own duty; Super Admin can edit everything.
+    if not admin_is_super():
+        if staff_id != session.get('admin_user_id'):
+            # Store Admin can toggle duty for their store team
+            if session.get('admin_role') != ROLE_STORE or member.get('store_id') != session.get('admin_store_id'):
+                return jsonify({'error': 'Forbidden'}), 403
+            if set(data.keys()) - {'on_duty'}:
+                return jsonify({'error': 'You can only update duty status'}), 403
+        updates = {'on_duty': bool(data.get('on_duty', member.get('on_duty'))), 'updated_at': now_iso()}
+        db_update('staff', {'id': staff_id}, updates)
+        return jsonify(_staff_public(db_find_one('staff', {'id': staff_id}), stores))
+
+    updates = {}
+    for key in ('name', 'phone', 'on_duty', 'active'):
+        if key in data:
+            updates[key] = data[key]
+    if 'role' in data:
+        role = data['role']
+        if role not in STAFF_ROLES:
+            return jsonify({'error': 'Invalid role'}), 400
+        updates['role'] = role
+    if 'store_id' in data:
+        updates['store_id'] = data.get('store_id') or ''
+    role = updates.get('role', member.get('role'))
+    store_id = updates.get('store_id', member.get('store_id') or '')
+    if role == ROLE_SUPER:
+        updates['store_id'] = ''
+    elif role in (ROLE_STORE, ROLE_BILLING) and not store_id:
+        return jsonify({'error': 'Store Admin and Billing Staff must be assigned to a store'}), 400
+    if 'username' in data:
+        username = (data.get('username') or '').strip().lower()
+        if not username:
+            return jsonify({'error': 'Username required'}), 400
+        clash = next(
+            (m for m in db_find('staff')
+             if (m.get('username') or '').lower() == username and m.get('id') != staff_id),
+            None,
+        )
+        if clash:
+            return jsonify({'error': 'Username already exists'}), 409
+        updates['username'] = username
+    if data.get('password'):
+        if len(data['password']) < 4:
+            return jsonify({'error': 'Password must be at least 4 characters'}), 400
+        updates['password_hash'] = generate_password_hash(data['password'])
+    if 'on_duty' in updates:
+        updates['on_duty'] = bool(updates['on_duty'])
+    if 'active' in updates:
+        updates['active'] = bool(updates['active'])
     updates['updated_at'] = now_iso()
     db_update('staff', {'id': staff_id}, updates)
-    return jsonify(db_find_one('staff', {'id': staff_id}))
+    return jsonify(_staff_public(db_find_one('staff', {'id': staff_id}), stores))
 
 
 # --- Activity feed & nav badges ---
@@ -3050,10 +3859,15 @@ def api_admin_activity():
 def api_admin_badges():
     settings = get_settings()
     threshold = int(settings['low_stock_threshold'])
+    store_id = resolve_store_scope(request.args.get('store_id'))
     orders = db_find('orders')
+    inventory = db_find('inventory')
+    if store_id:
+        orders = [o for o in orders if o.get('store_id') == store_id]
+        inventory = [i for i in inventory if i.get('store_id') == store_id]
     open_orders = sum(1 for o in orders
                       if normalize_status(o.get('status')) in ('new', 'confirmed', 'ready', 'out_for_delivery'))
-    low_stock = sum(1 for i in db_find('inventory') if i.get('stock', 0) <= threshold)
+    low_stock = sum(1 for i in inventory if i.get('stock', 0) <= threshold)
     return jsonify({'orders': open_orders, 'inventory': low_stock})
 
 
@@ -3174,10 +3988,16 @@ def api_admin_order_invoice(order_id):
 
 # --- Reports PDF / XLSX ---
 
-def _report_dataset(store_id=None, period=None, anchor=None):
+def _report_dataset(store_id=None, period=None, anchor=None, store_ids=None):
+    if store_ids is None:
+        if store_id:
+            store_ids = [store_id]
+        else:
+            store_ids = []
     orders = db_find('orders')
-    if store_id:
-        orders = [o for o in orders if o.get('store_id') == store_id]
+    if store_ids:
+        allowed = set(store_ids)
+        orders = [o for o in orders if o.get('store_id') in allowed]
     period_caption = 'All time'
     if period in ('day', 'month', 'quarter', 'year'):
         if anchor is not None:
@@ -3218,6 +4038,8 @@ def _report_dataset(store_id=None, period=None, anchor=None):
     threshold = int(settings['low_stock_threshold'])
     inventory = []
     for inv in db_find('inventory'):
+        if store_ids and inv.get('store_id') not in set(store_ids):
+            continue
         p = db_find_one('products', {'id': inv.get('product_id')})
         variant_label = ''
         if p:
@@ -3262,13 +4084,13 @@ def api_report_xlsx():
     from openpyxl import Workbook
     from openpyxl.styles import Font, PatternFill, Alignment
 
-    store_id = request.args.get('store_id')
+    store_ids = resolve_store_ids()
     period = request.args.get('period', 'month')
     if period not in ('day', 'month', 'quarter', 'year'):
         period = 'month'
     anchor = request.args.get('anchor')
     try:
-        data = _report_dataset(store_id, period, anchor)
+        data = _report_dataset(store_ids=store_ids, period=period, anchor=anchor)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     wb = Workbook()
@@ -3391,13 +4213,13 @@ def api_report_pdf():
     from reportlab.lib.units import inch
     from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 
-    store_id = request.args.get('store_id')
+    store_ids = resolve_store_ids()
     period = request.args.get('period', 'month')
     if period not in ('day', 'month', 'quarter', 'year'):
         period = 'month'
     anchor = request.args.get('anchor')
     try:
-        data = _report_dataset(store_id, period, anchor)
+        data = _report_dataset(store_ids=store_ids, period=period, anchor=anchor)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
 

@@ -2,16 +2,22 @@
 {% block title %}Staff{% endblock %}
 {% block heading %}Staff{% endblock %}
 {% block top_actions %}
-<button class="btn btn-gold" id="btn-add-staff">+ Add Staff</button>
+{% if admin_can.manage_staff %}
+<button class="btn btn-gold" id="btn-add-staff">+ Add Staff Login</button>
+{% endif %}
 {% endblock %}
 {% block content %}
 <section class="panel">
   <div id="focus-bar" class="focus-bar hidden"></div>
-  <p class="muted panel-intro">Staff roster with roles (Super Admin, Store Manager, Inventory Manager, Sales Manager, Content Manager) and duty status. Role-based access control ready.</p>
+  <p class="muted panel-intro">
+    Super Admin creates usernames and passwords.
+    Roles: <strong>Super Admin</strong> (all stores), <strong>Store Admin</strong> (one store), <strong>Billing Staff</strong> (in-store billing).
+    Duty status: On Duty / Off Duty.
+  </p>
   <div class="table-wrap">
     <table class="data-table" id="staff-table">
       <thead>
-        <tr><th>Name</th><th>Role</th><th>Store</th><th>Phone</th><th>Duty</th><th></th></tr>
+        <tr><th>Name</th><th>Username</th><th>Role</th><th>Store</th><th>Phone</th><th>Duty</th><th></th></tr>
       </thead>
       <tbody></tbody>
     </table>
@@ -24,13 +30,19 @@
     <input type="hidden" id="staff-id" />
     <div class="form-grid">
       <div class="field"><label>Name</label><input id="stf-name" required /></div>
+      <div class="field"><label>Username</label><input id="stf-username" required autocomplete="off" /></div>
+      <div class="field"><label>Password</label><input id="stf-password" type="password" autocomplete="new-password" placeholder="Set login password" /></div>
       <div class="field"><label>Role</label><select id="stf-role"></select></div>
       <div class="field"><label>Store</label><select id="stf-store"></select></div>
       <div class="field"><label>Phone</label><input id="stf-phone" /></div>
       <div class="field"><label>Duty Status</label>
-        <select id="stf-duty"><option value="true">On duty</option><option value="false">Off shift</option></select>
+        <select id="stf-duty"><option value="true">On duty</option><option value="false">Off duty</option></select>
+      </div>
+      <div class="field"><label>Account</label>
+        <select id="stf-active"><option value="true">Active</option><option value="false">Disabled</option></select>
       </div>
     </div>
+    <p class="muted" id="stf-password-hint">Leave password blank when editing to keep the current password.</p>
     <div class="modal-actions">
       <button type="button" class="btn btn-outline" id="staff-cancel">Cancel</button>
       <button type="submit" class="btn btn-dark">Save Staff</button>

@@ -102,6 +102,50 @@
     return String(str == null ? '' : str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+  function imgTag(src, alt, opts) {
+    opts = opts || {};
+    if (!src || String(src).indexOf('/') !== 0) return '';
+    var attrs = [
+      'src="' + esc(src) + '"',
+      'alt="' + esc(alt || '') + '"',
+      'decoding="async"'
+    ];
+    if (opts.eager) {
+      attrs.push('fetchpriority="high"');
+      attrs.push('loading="eager"');
+    } else {
+      attrs.push('loading="lazy"');
+    }
+    if (opts.width) attrs.push('width="' + opts.width + '"');
+    if (opts.height) attrs.push('height="' + opts.height + '"');
+    if (opts.className) attrs.push('class="' + esc(opts.className) + '"');
+    if (opts.style) attrs.push('style="' + opts.style + '"');
+    return '<img ' + attrs.join(' ') + ' />';
+  }
+
+  function closeMobileNav() {
+    var nav = document.getElementById('main-nav');
+    var toggle = document.getElementById('nav-toggle');
+    if (nav) nav.classList.remove('is-open');
+    if (toggle) toggle.setAttribute('aria-expanded', 'false');
+    document.body.classList.remove('nav-open');
+  }
+
+  function userAddresses() {
+    return (state.user && state.user.addresses) || [];
+  }
+
+  function defaultAddress() {
+    var list = userAddresses();
+    return list.find(function (a) { return a.is_default; }) || list[0] || null;
+  }
+
+  function applyCustomerPayload(customer) {
+    if (!customer) return;
+    state.user = customer;
+    if (!Array.isArray(state.user.addresses)) state.user.addresses = [];
+  }
+
   var state = {
     page: 'home',
     category: 'all',
@@ -190,6 +234,7 @@
 
   function navigate(page, opts) {
     opts = opts || {};
+    closeMobileNav();
     function updatePage() {
       state.page = page;
       if (opts.category !== undefined) state.category = opts.category;
@@ -224,9 +269,11 @@
   }
 
   function productCardHTML(p) {
-    var imgHtml = (typeof p.image === 'string' && p.image.indexOf('/') === 0)
-      ? '<img src="' + esc(p.image) + '" alt="' + esc(p.name) + '" style="width:100%;height:100%;object-fit:cover;" />'
-      : '<span>[ ' + esc(p.image) + ' ]</span>';
+    var imgHtml = imgTag(p.image, p.name, {
+      width: 400,
+      height: 300,
+      style: 'width:100%;height:100%;object-fit:cover;'
+    }) || '<span>[ ' + esc(p.image) + ' ]</span>';
     var isBestseller = !!p.bestseller;
     var isAvailable = !isBestseller && String(p.badge || '').toLowerCase() !== 'out of stock';
     var cardClass = 'product-card' + (isBestseller ? ' is-bestseller' : (isAvailable ? ' is-available' : ''));
@@ -245,6 +292,8 @@
   }
 
   function wireProductGrid(container) {
+    if (!container || container.dataset.wired === '1') return;
+    container.dataset.wired = '1';
     container.addEventListener('click', function (e) {
       var btn = e.target.closest('[data-add]');
       if (btn && container.contains(btn)) {
@@ -269,18 +318,161 @@
     });
   }
 
+  function relatedProductsFor(product, limit) {
+    limit = limit || 4;
+    var same = [];
+    var others = [];
+    PRODUCTS.forEach(function (x) {
+      if (x.id === product.id) return;
+      if (x.category === product.category) same.push(x);
+      else others.push(x);
+    });
+    function rank(list) {
+      return list.slice().sort(function (a, b) {
+        return (Number(!!b.bestseller) + Number(!!b.featured)) - (Number(!!a.bestseller) + Number(!!a.featured));
+      });
+    }
+    var picked = rank(same).concat(rank(others));
+    return picked.slice(0, limit);
+  }
+
+  function categoryThumb(cat) {
+    if (cat.banner && String(cat.banner).indexOf('/') === 0) return cat.banner;
+    for (var i = 0; i < PRODUCTS.length; i++) {
+      if (PRODUCTS[i].category === cat.id && PRODUCTS[i].image && String(PRODUCTS[i].image).indexOf('/') === 0) {
+        return PRODUCTS[i].image;
+      }
+    }
+    return '';
+  }
+
+  function thumbHtml(src, label) {
+    var img = imgTag(src, label, { width: 80, height: 80 });
+    if (img) return img;
+    var initial = String(label || '?').trim().charAt(0).toUpperCase() || '?';
+    return '<span class="hs-thumb-fallback">' + esc(initial) + '</span>';
+  }
+
+  function initStoreSearch() {
+    var input = document.getElementById('store-search');
+    var results = document.getElementById('store-search-results');
+    if (!input || !results) return;
+    var timer = null;
+
+    function hide() {
+      results.classList.add('hidden');
+      results.innerHTML = '';
+    }
+
+    function clearInput() {
+      input.value = '';
+      hide();
+    }
+
+    function render() {
+      var q = input.value.trim().toLowerCase();
+      if (q.length < 1) {
+        hide();
+        return;
+      }
+
+      var cats = CATEGORIES.filter(function (c) {
+        return c.id !== 'all' && (c.label || '').toLowerCase().indexOf(q) !== -1;
+      }).slice(0, 4);
+
+      var products = PRODUCTS.filter(function (p) {
+        var hay = ((p.name || '') + ' ' + (p.categoryLabel || '') + ' ' + (p.badge || '') + ' ' + (p.desc || '')).toLowerCase();
+        return hay.indexOf(q) !== -1;
+      }).slice(0, 6);
+
+      if (!cats.length && !products.length) {
+        results.innerHTML = '<div class="hs-empty">No matches for “' + esc(input.value.trim()) + '”</div>';
+        results.classList.remove('hidden');
+        return;
+      }
+
+      var html = '';
+      if (cats.length) {
+        html += '<div class="hs-group">CATEGORIES</div>';
+        cats.forEach(function (c) {
+          html += '<button type="button" class="hs-item" data-search-cat="' + esc(c.id) + '" role="option">' +
+            '<span class="hs-thumb">' + thumbHtml(categoryThumb(c), c.label) + '</span>' +
+            '<span class="hs-meta"><span class="hs-name">' + esc(c.label) + '</span>' +
+            '<span class="hs-sub">Shop category</span></span></button>';
+        });
+      }
+      if (products.length) {
+        html += '<div class="hs-group">PRODUCTS</div>';
+        products.forEach(function (p) {
+          html += '<button type="button" class="hs-item" data-search-product="' + esc(p.id) + '" role="option">' +
+            '<span class="hs-thumb">' + thumbHtml(p.image, p.name) + '</span>' +
+            '<span class="hs-meta"><span class="hs-name">' + esc(p.name) + '</span>' +
+            '<span class="hs-sub">&#8377;' + p.price + ' / ' + esc(p.unit) +
+            (p.categoryLabel ? ' · ' + esc(p.categoryLabel) : '') +
+            '</span></span></button>';
+        });
+      }
+      results.innerHTML = html;
+      results.classList.remove('hidden');
+
+      results.querySelectorAll('[data-search-cat]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          clearInput();
+          closeMobileNav();
+          navigate('catalog', { category: btn.getAttribute('data-search-cat') });
+        });
+      });
+      results.querySelectorAll('[data-search-product]').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          clearInput();
+          closeMobileNav();
+          navigate('product', { productId: btn.getAttribute('data-search-product') });
+        });
+      });
+    }
+
+    input.addEventListener('input', function () {
+      clearTimeout(timer);
+      timer = setTimeout(render, 120);
+    });
+    input.addEventListener('focus', function () {
+      if (input.value.trim()) render();
+    });
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') {
+        hide();
+        input.blur();
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        var first = results.querySelector('[data-search-product], [data-search-cat]');
+        if (first) first.click();
+      }
+    });
+    document.addEventListener('click', function (e) {
+      var wrap = document.getElementById('header-search');
+      if (!wrap || wrap.contains(e.target)) return;
+      hide();
+    });
+  }
+
   /* ---- HOME ---- */
   function setText(id, value) {
     var el = document.getElementById(id);
     if (el && value != null) el.textContent = value;
   }
 
-  function setVisual(id, url, tone) {
+  function setVisual(id, url, tone, opts) {
     var el = document.getElementById(id);
     if (!el) return;
+    opts = opts || {};
     if (url) {
       el.classList.remove('placeholder', 'placeholder-dark', 'placeholder-light');
-      el.innerHTML = '<img src="' + esc(url) + '" alt="" style="width:100%;height:100%;object-fit:cover;border-radius:12px;" />';
+      el.innerHTML = imgTag(url, opts.alt || '', {
+        eager: !!opts.eager,
+        width: opts.width || 800,
+        height: opts.height || 600,
+        style: 'width:100%;height:100%;object-fit:cover;border-radius:12px;'
+      });
     } else if (!el.querySelector('img')) {
       el.classList.add('placeholder', tone === 'dark' ? 'placeholder-dark' : 'placeholder-light');
     }
@@ -292,7 +484,7 @@
     el.className = 'section custom-section' + (dark ? ' custom-section-dark' : ' custom-section-light');
     el.setAttribute('data-storefront-section', 'custom:' + section.id);
     var visual = section.image
-      ? '<img src="' + esc(section.image) + '" alt="' + esc(section.title || '') + '" />'
+      ? imgTag(section.image, section.title || '', { width: 800, height: 520 })
       : '<div class="placeholder ' + (dark ? 'placeholder-dark' : 'placeholder-light') + '" style="height:100%;min-height:280px;">' +
         '<div class="placeholder-label' + (dark ? ' placeholder-label-light' : '') + '">[ section photo ]</div></div>';
     var button = section.button_text
@@ -356,7 +548,7 @@
     setText('home-hero-description', c.hero.description);
     setText('hero-shop', c.hero.primary_button);
     setText('hero-locations', c.hero.secondary_button);
-    setVisual('home-hero-visual', c.hero.image, 'dark');
+    setVisual('home-hero-visual', c.hero.image, 'dark', { eager: true, alt: 'Fresh fish and meat', width: 900, height: 700 });
     var trust = document.getElementById('home-trust-items');
     trust.innerHTML = (c.trust.items || []).map(function (item) {
       return '<span>&#10003; ' + esc(item) + '</span>';
@@ -365,7 +557,7 @@
     setText('home-why-eyebrow', c.why_us.eyebrow);
     setText('home-why-title', c.why_us.title);
     setText('home-why-description', c.why_us.description);
-    setVisual('home-why-visual', c.why_us.image, 'light');
+    setVisual('home-why-visual', c.why_us.image, 'light', { alt: 'Why choose us', width: 800, height: 600 });
     var colors = ['num-green', 'num-gold', 'num-red', 'num-green'];
     document.getElementById('home-why-features').innerHTML = (c.why_us.features || []).map(function (feature, i) {
       return '<div class="feature-row"><div class="feature-num ' + colors[i % colors.length] + '">' + (i + 1) +
@@ -405,7 +597,7 @@
     });
     tileGrid.innerHTML = rangeCategories.map(function (c) {
       var tileVisual = c.banner
-        ? '<img src="' + esc(c.banner) + '" alt="' + esc(c.label) + '" />'
+        ? imgTag(c.banner, c.label, { width: 480, height: 280 })
         : '<span>[ ' + esc(c.label) + ' photo ]</span>';
       return '' +
         '<div class="tile" data-cat="' + c.id + '">' +
@@ -468,9 +660,8 @@
     var p = findProduct(state.selectedProductId);
     if (!p) { navigate('catalog'); return; }
     var el = document.getElementById('product-detail');
-    var detailImage = (typeof p.image === 'string' && p.image.indexOf('/') === 0)
-      ? '<img src="' + esc(p.image) + '" alt="' + esc(p.name) + '" />'
-      : '<div class="placeholder-label">[ ' + esc(p.image) + ' ]</div>';
+    var detailImage = imgTag(p.image, p.name, { width: 700, height: 700, eager: true })
+      || '<div class="placeholder-label">[ ' + esc(p.image) + ' ]</div>';
     el.innerHTML = '' +
       '<div class="detail-grid">' +
         '<div class="detail-image' + ((typeof p.image === 'string' && p.image.indexOf('/') === 0) ? '' : ' placeholder placeholder-light') + '">' + detailImage + '</div>' +
@@ -492,7 +683,10 @@
     document.getElementById('detail-add').addEventListener('click', function () { addToCart(p.id, state.detailQty); state.detailQty = 1; navigate('product', { productId: p.id }); });
 
     var relatedGrid = document.getElementById('related-products');
-    relatedGrid.innerHTML = PRODUCTS.filter(function (x) { return x.category === p.category && x.id !== p.id; }).slice(0, 4).map(productCardHTML).join('');
+    var related = relatedProductsFor(p, 4);
+    relatedGrid.innerHTML = related.length
+      ? related.map(productCardHTML).join('')
+      : '<p class="muted">More products coming soon.</p>';
     wireProductGrid(relatedGrid);
   }
 
@@ -509,9 +703,7 @@
     el.innerHTML = '' +
       '<div class="cart-grid">' +
         '<div class="cart-lines">' + lines.map(function (l) {
-          var thumb = (typeof l.image === 'string' && l.image.indexOf('/') === 0)
-            ? '<img src="' + esc(l.image) + '" alt="' + esc(l.name) + '" />'
-            : '';
+          var thumb = imgTag(l.image, l.name, { width: 96, height: 96 });
           return '' +
             '<div class="cart-line">' +
               '<div class="cart-thumb">' + thumb + '</div>' +
@@ -536,10 +728,71 @@
   }
 
   /* ---- CHECKOUT ---- */
+  function fillCheckoutSavedAddresses() {
+    var field = document.getElementById('checkout-saved-address-field');
+    var select = document.getElementById('checkout-saved-address');
+    if (!field || !select) return;
+    var addresses = userAddresses();
+    var isPickup = state.checkoutMode === 'pickup';
+    if (!state.user || !addresses.length || isPickup) {
+      field.style.display = 'none';
+      return;
+    }
+    field.style.display = '';
+    var current = select.value;
+    select.innerHTML = '<option value="">Enter a new address</option>' + addresses.map(function (a) {
+      var label = esc(a.label) + ' — ' + esc(a.line1);
+      return '<option value="' + esc(a.id) + '">' + label + '</option>';
+    }).join('');
+    if (current && addresses.some(function (a) { return a.id === current; })) {
+      select.value = current;
+    } else {
+      var def = defaultAddress();
+      select.value = def ? def.id : '';
+    }
+    applySavedAddressSelection();
+    select.onchange = applySavedAddressSelection;
+  }
+
+  function applySavedAddressSelection() {
+    var select = document.getElementById('checkout-saved-address');
+    var addressInput = document.getElementById('checkout-address');
+    var pincodeInput = document.getElementById('checkout-pincode');
+    if (!select || !addressInput) return;
+    var id = select.value;
+    if (!id) return;
+    var addr = userAddresses().find(function (a) { return a.id === id; });
+    if (!addr) return;
+    addressInput.value = addr.line1 || '';
+    if (pincodeInput && addr.pincode) pincodeInput.value = addr.pincode;
+    if (addr.area) {
+      var match = LOCATIONS.find(function (loc) {
+        return loc.name.toLowerCase() === String(addr.area).toLowerCase()
+          || String(loc.area || '').toLowerCase().indexOf(String(addr.area).toLowerCase()) !== -1;
+      });
+      if (match) state.checkoutArea = match.name;
+    }
+  }
+
   function renderCheckout() {
     if (state.user) {
       if (!document.getElementById('checkout-name').value) document.getElementById('checkout-name').value = state.user.name || '';
       if (!document.getElementById('checkout-phone').value) document.getElementById('checkout-phone').value = state.user.phone || '';
+      if (!document.getElementById('checkout-address').value) {
+        var def = defaultAddress();
+        if (def) {
+          document.getElementById('checkout-address').value = def.line1 || '';
+          if (def.pincode) document.getElementById('checkout-pincode').value = def.pincode;
+          if (def.area && !state.checkoutArea) {
+            var match = LOCATIONS.find(function (loc) {
+              return loc.name.toLowerCase() === String(def.area).toLowerCase();
+            });
+            if (match) state.checkoutArea = match.name;
+          }
+        } else if (state.user.address) {
+          document.getElementById('checkout-address').value = state.user.address;
+        }
+      }
     }
     var modeEl = document.getElementById('checkout-mode');
     if (modeEl) {
@@ -553,6 +806,7 @@
       if (addrField) addrField.style.display = isPickup ? 'none' : '';
       if (pinField) pinField.style.display = isPickup ? 'none' : '';
     }
+    fillCheckoutSavedAddresses();
 
     var areasEl = document.getElementById('checkout-areas');
     areasEl.innerHTML = LOCATIONS.map(function (loc) {
@@ -727,7 +981,7 @@
           errEl.textContent = (res.d && res.d.error) || 'No matching account found. Please sign up.';
           return;
         }
-        state.user = res.d.customer;
+        applyCustomerPayload(res.d.customer);
         if (Array.isArray(res.d.cart) && res.d.cart.length) state.cart = res.d.cart;
         if (res.d.preferred_store_id) selectedStoreId = res.d.preferred_store_id;
         saveCart();
@@ -762,7 +1016,7 @@
           errEl.textContent = (res.d && res.d.error) || 'Could not create account.';
           return;
         }
-        state.user = res.d.customer;
+        applyCustomerPayload(res.d.customer);
         saveCart();
         document.getElementById('signup-form').reset();
         errEl.textContent = '';
@@ -827,7 +1081,7 @@
       .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
       .then(function (data) {
         if (data.authenticated && data.customer) {
-          state.user = data.customer;
+          applyCustomerPayload(data.customer);
           if (Array.isArray(data.cart)) state.cart = data.cart;
           if (data.preferred_store_id) selectedStoreId = data.preferred_store_id;
           renderHeader();
@@ -844,6 +1098,140 @@
   }
 
   /* ---- ACCOUNT ---- */
+  function setAccountMsg(id, text, ok) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = text || '';
+    el.classList.toggle('is-ok', !!ok);
+    el.classList.toggle('is-err', !ok && !!text);
+  }
+
+  function saveProfile(e) {
+    e.preventDefault();
+    var name = document.getElementById('acct-name').value.trim();
+    var email = document.getElementById('acct-email').value.trim();
+    var preferred = document.getElementById('acct-preferred-store').value;
+    setAccountMsg('acct-profile-msg', 'Saving…', true);
+    fetch('/api/account/profile', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ name: name, email: email, preferred_store_id: preferred })
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          setAccountMsg('acct-profile-msg', (res.d && res.d.error) || 'Could not update profile.', false);
+          return;
+        }
+        applyCustomerPayload(res.d.customer);
+        if (preferred) selectedStoreId = preferred;
+        renderHeader();
+        setAccountMsg('acct-profile-msg', 'Profile updated.', true);
+      })
+      .catch(function () { setAccountMsg('acct-profile-msg', 'Could not reach the server.', false); });
+  }
+
+  function savePassword(e) {
+    e.preventDefault();
+    var current = document.getElementById('acct-current-password').value;
+    var next = document.getElementById('acct-new-password').value;
+    setAccountMsg('acct-password-msg', 'Updating…', true);
+    fetch('/api/account/password', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ current_password: current, new_password: next })
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          setAccountMsg('acct-password-msg', (res.d && res.d.error) || 'Could not update password.', false);
+          return;
+        }
+        document.getElementById('acct-current-password').value = '';
+        document.getElementById('acct-new-password').value = '';
+        setAccountMsg('acct-password-msg', 'Password updated.', true);
+      })
+      .catch(function () { setAccountMsg('acct-password-msg', 'Could not reach the server.', false); });
+  }
+
+  function saveAddressForm(e) {
+    e.preventDefault();
+    var editingId = document.getElementById('addr-edit-id').value;
+    var payload = {
+      label: document.getElementById('addr-label').value.trim() || 'Home',
+      line1: document.getElementById('addr-line1').value.trim(),
+      area: document.getElementById('addr-area').value.trim(),
+      pincode: document.getElementById('addr-pincode').value.trim(),
+      is_default: document.getElementById('addr-default').checked
+    };
+    if (!payload.line1) {
+      setAccountMsg('acct-address-msg', 'Address line is required.', false);
+      return;
+    }
+    var url = editingId ? '/api/account/addresses/' + encodeURIComponent(editingId) : '/api/account/addresses';
+    var method = editingId ? 'PUT' : 'POST';
+    setAccountMsg('acct-address-msg', 'Saving address…', true);
+    fetch(url, {
+      method: method,
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(payload)
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          setAccountMsg('acct-address-msg', (res.d && res.d.error) || 'Could not save address.', false);
+          return;
+        }
+        applyCustomerPayload(res.d.customer || Object.assign({}, state.user, { addresses: res.d.addresses || [] }));
+        renderAccount();
+      })
+      .catch(function () { setAccountMsg('acct-address-msg', 'Could not reach the server.', false); });
+  }
+
+  function editAddress(id) {
+    var addr = userAddresses().find(function (a) { return a.id === id; });
+    if (!addr) return;
+    document.getElementById('addr-edit-id').value = addr.id;
+    document.getElementById('addr-label').value = addr.label || '';
+    document.getElementById('addr-line1').value = addr.line1 || '';
+    document.getElementById('addr-area').value = addr.area || '';
+    document.getElementById('addr-pincode').value = addr.pincode || '';
+    document.getElementById('addr-default').checked = !!addr.is_default;
+    document.getElementById('addr-form-title').textContent = 'Edit Address';
+    document.getElementById('addr-submit').textContent = 'Update Address';
+    document.getElementById('addr-cancel-edit').classList.remove('hidden');
+    setAccountMsg('acct-address-msg', '', true);
+  }
+
+  function resetAddressForm() {
+    document.getElementById('addr-edit-id').value = '';
+    document.getElementById('addr-label').value = '';
+    document.getElementById('addr-line1').value = '';
+    document.getElementById('addr-area').value = '';
+    document.getElementById('addr-pincode').value = '';
+    document.getElementById('addr-default').checked = userAddresses().length === 0;
+    document.getElementById('addr-form-title').textContent = 'Add Address';
+    document.getElementById('addr-submit').textContent = 'Save Address';
+    document.getElementById('addr-cancel-edit').classList.add('hidden');
+  }
+
+  function deleteAddress(id) {
+    if (!window.confirm('Remove this saved address?')) return;
+    fetch('/api/account/addresses/' + encodeURIComponent(id), {
+      method: 'DELETE',
+      credentials: 'same-origin'
+    }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
+      .then(function (res) {
+        if (!res.ok) {
+          setAccountMsg('acct-address-msg', (res.d && res.d.error) || 'Could not delete address.', false);
+          return;
+        }
+        applyCustomerPayload(res.d.customer || Object.assign({}, state.user, { addresses: res.d.addresses || [] }));
+        renderAccount();
+      })
+      .catch(function () { setAccountMsg('acct-address-msg', 'Could not reach the server.', false); });
+  }
+
   function renderAccount() {
     var el = document.getElementById('account-content');
     if (!state.user) {
@@ -852,6 +1240,30 @@
       return;
     }
     loadAccountOrders(function () {
+      var addresses = userAddresses();
+      var storeOptions = LOCATIONS.map(function (loc) {
+        var selected = (state.user.preferred_store_id || selectedStoreId) === loc.id ? ' selected' : '';
+        return '<option value="' + esc(loc.id) + '"' + selected + '>' + esc(loc.name) + '</option>';
+      }).join('');
+      var addressCards = addresses.length === 0
+        ? '<p class="muted">No saved addresses yet. Add one below for faster checkout.</p>'
+        : '<div class="address-list">' + addresses.map(function (a) {
+            return '' +
+              '<div class="address-card' + (a.is_default ? ' is-default' : '') + '">' +
+                '<div>' +
+                  '<div class="address-label">' + esc(a.label || 'Home') +
+                    (a.is_default ? '<span class="address-default-pill">Default</span>' : '') +
+                  '</div>' +
+                  '<div class="address-line">' + esc(a.line1) + '</div>' +
+                  ((a.area || a.pincode) ? '<div class="address-line">' + esc([a.area, a.pincode].filter(Boolean).join(' · ')) + '</div>' : '') +
+                '</div>' +
+                '<div class="address-actions">' +
+                  '<button type="button" data-edit-addr="' + esc(a.id) + '">Edit</button>' +
+                  '<button type="button" class="danger" data-del-addr="' + esc(a.id) + '">Delete</button>' +
+                '</div>' +
+              '</div>';
+          }).join('') + '</div>';
+
       var ordersHTML = state.orders.length === 0
         ? '<div class="empty-state card-style"><div class="empty-copy">No orders yet.</div><button class="btn btn-dark" id="acct-shop">Shop Now</button></div>'
         : state.orders.map(function (o, orderIndex) {
@@ -893,15 +1305,66 @@
                 '</div>' +
               '</div>';
           }).join('');
+
       el.innerHTML = '' +
         '<h1 class="h1">My Account</h1>' +
         '<div class="account-profile">' +
-          '<div><div class="account-name">' + esc(state.user.name) + '</div><div class="account-detail">' + esc(state.user.phone) + '</div><div class="account-detail">' + esc(state.user.email) + '</div></div>' +
-          '<span class="logout-link" id="acct-logout">Log Out</span>' +
+          '<div class="account-profile-top">' +
+            '<div><div class="account-name">' + esc(state.user.name) + '</div>' +
+              '<div class="account-detail">' + esc(state.user.phone) + '</div>' +
+              '<div class="account-detail">' + esc(state.user.email || 'No email on file') + '</div></div>' +
+            '<span class="logout-link" id="acct-logout">Log Out</span>' +
+          '</div>' +
+          '<form id="acct-profile-form" class="account-form-grid">' +
+            '<div class="field"><label>Full Name</label><input id="acct-name" type="text" value="' + esc(state.user.name) + '" required /></div>' +
+            '<div class="field"><label>Email</label><input id="acct-email" type="email" value="' + esc(state.user.email || '') + '" placeholder="you@example.com" /></div>' +
+            '<div class="field"><label>Phone</label><input type="tel" value="' + esc(state.user.phone) + '" disabled /></div>' +
+            '<div class="field"><label>Preferred Store</label><select id="acct-preferred-store"><option value="">No preference</option>' + storeOptions + '</select></div>' +
+            '<div class="field full account-form-actions"><button type="submit" class="btn btn-dark">Save Profile</button></div>' +
+          '</form>' +
+          '<div class="account-msg" id="acct-profile-msg"></div>' +
+        '</div>' +
+        '<div class="account-section">' +
+          '<h3 class="h3">Saved Addresses</h3>' +
+          addressCards +
+          '<form id="acct-address-form" class="account-form-grid">' +
+            '<input type="hidden" id="addr-edit-id" value="" />' +
+            '<div class="field full"><h3 class="h3" id="addr-form-title" style="margin:8px 0 0;">Add Address</h3></div>' +
+            '<div class="field"><label>Label</label><input id="addr-label" type="text" placeholder="Home / Office" /></div>' +
+            '<div class="field"><label>Area</label><input id="addr-area" type="text" placeholder="Andheri West" /></div>' +
+            '<div class="field full"><label>Address</label><input id="addr-line1" type="text" placeholder="Flat, building, street" required /></div>' +
+            '<div class="field"><label>Pincode</label><input id="addr-pincode" type="text" placeholder="400053" /></div>' +
+            '<div class="field" style="display:flex;align-items:flex-end;"><label style="display:flex;gap:8px;align-items:center;font-weight:600;"><input id="addr-default" type="checkbox"' + (addresses.length === 0 ? ' checked' : '') + ' /> Set as default</label></div>' +
+            '<div class="field full account-form-actions">' +
+              '<button type="submit" class="btn btn-dark" id="addr-submit">Save Address</button>' +
+              '<button type="button" class="btn btn-outline-dark hidden" id="addr-cancel-edit">Cancel</button>' +
+            '</div>' +
+          '</form>' +
+          '<div class="account-msg" id="acct-address-msg"></div>' +
+        '</div>' +
+        '<div class="account-section">' +
+          '<h3 class="h3">Change Password</h3>' +
+          '<form id="acct-password-form" class="account-form-grid">' +
+            '<div class="field"><label>Current Password</label><input id="acct-current-password" type="password" required /></div>' +
+            '<div class="field"><label>New Password</label><input id="acct-new-password" type="password" minlength="4" required /></div>' +
+            '<div class="field full account-form-actions"><button type="submit" class="btn btn-outline-dark">Update Password</button></div>' +
+          '</form>' +
+          '<div class="account-msg" id="acct-password-msg"></div>' +
         '</div>' +
         '<h2 class="h2-sm" style="margin-bottom:20px;">Order History</h2>' +
         ordersHTML;
+
       document.getElementById('acct-logout').addEventListener('click', logout);
+      document.getElementById('acct-profile-form').addEventListener('submit', saveProfile);
+      document.getElementById('acct-password-form').addEventListener('submit', savePassword);
+      document.getElementById('acct-address-form').addEventListener('submit', saveAddressForm);
+      document.getElementById('addr-cancel-edit').addEventListener('click', resetAddressForm);
+      el.querySelectorAll('[data-edit-addr]').forEach(function (btn) {
+        btn.addEventListener('click', function () { editAddress(btn.getAttribute('data-edit-addr')); });
+      });
+      el.querySelectorAll('[data-del-addr]').forEach(function (btn) {
+        btn.addEventListener('click', function () { deleteAddress(btn.getAttribute('data-del-addr')); });
+      });
       var shopBtn = document.getElementById('acct-shop');
       if (shopBtn) shopBtn.addEventListener('click', function () { navigate('catalog', { category: 'all' }); });
       el.querySelectorAll('[data-order-details]').forEach(function (button) {
@@ -929,62 +1392,19 @@
     }
   }
 
-  function initScrollAnimations() {
-    var selector = [
-      '#page-home .hero-inner > *',
-      '#page-home .trust-strip-inner > *',
-      '#page-home .why-us > *',
-      '#page-home .range-section .section-inner > *',
-      '#page-home .section-header > *',
-      '#page-home .tile',
-      '#page-home .product-card',
-      '#page-home .promise-inner > *',
-      '#page-home .step-row',
-      '#page-home .location-card',
-      '#page-home .cta-inner > *',
-      '#page-home .custom-section-grid > *'
-    ].join(',');
-    var animated = new WeakSet();
-    var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    var observer = null;
-
-    if ('IntersectionObserver' in window && !reduceMotion) {
-      observer = new IntersectionObserver(function (entries) {
-        entries.forEach(function (entry) {
-          entry.target.classList.toggle('is-visible', entry.isIntersecting);
-        });
-      }, { threshold: 0.12, rootMargin: '0px 0px -7% 0px' });
-    }
-
-    function register(root) {
-      var scope = root && root.querySelectorAll ? root : document;
-      var items = [];
-      if (root && root.matches && root.matches(selector)) items.push(root);
-      scope.querySelectorAll(selector).forEach(function (item) { items.push(item); });
-      items.forEach(function (item, index) {
-        if (animated.has(item)) return;
-        animated.add(item);
-        item.classList.add('reveal-item');
-        item.style.setProperty('--reveal-delay', Math.min(index % 5, 4) * 55 + 'ms');
-        if (observer) observer.observe(item);
-        else item.classList.add('is-visible');
-      });
-    }
-
-    register(document);
-    document.documentElement.classList.add('reveal-ready');
-    new MutationObserver(function (mutations) {
-      mutations.forEach(function (mutation) {
-        mutation.addedNodes.forEach(function (node) {
-          if (node.nodeType === 1) register(node);
-        });
-      });
-    }).observe(document.getElementById('page-home'), { childList: true, subtree: true });
-  }
-
   /* ---- WIRE STATIC EVENTS ---- */
   function init() {
-    initScrollAnimations();
+    initStoreSearch();
+    var navToggle = document.getElementById('nav-toggle');
+    if (navToggle) {
+      navToggle.addEventListener('click', function () {
+        var nav = document.getElementById('main-nav');
+        var open = !nav.classList.contains('is-open');
+        nav.classList.toggle('is-open', open);
+        navToggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+        document.body.classList.toggle('nav-open', open);
+      });
+    }
     document.getElementById('logo-home').addEventListener('click', function () { navigate('home'); });
     document.getElementById('nav-home').addEventListener('click', function () { navigate('home'); });
     document.getElementById('nav-shop').addEventListener('click', function () { navigate('catalog', { category: 'all' }); });

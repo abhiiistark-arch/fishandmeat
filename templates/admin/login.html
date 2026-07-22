@@ -14,16 +14,18 @@
 <body class="login-body">
   <div class="login-wrap">
     <div class="login-hero">
-      <img src="/assets/fish-and-meat-logo.png" alt="Fish and Meat" class="login-logo" />
+      <img src="/assets/fish-and-meat-logo.png" alt="Fish and Meat" class="login-logo" width="72" height="72" />
       <div class="brand-name login-brand"><span class="c-gold">FISH</span> <span class="c-white">AND</span> <span class="c-gold">MEAT</span></div>
       <p class="login-tag">Admin Portal · Inventory · Orders · Stores</p>
     </div>
     <form method="post" class="login-card" autocomplete="off">
       <div class="eyebrow c-red">SECURE ACCESS</div>
       <h1>Admin Login</h1>
-      <p class="muted">Enter the admin password to manage catalog, inventory and orders.</p>
+      <p class="muted">Sign in with your staff username. Super Admin is <strong>abhi</strong> (display name <strong>Abhay</strong>).</p>
+      <label>Username</label>
+      <input type="text" name="username" placeholder="Username" autofocus required autocomplete="username" />
       <label>Password</label>
-      <input type="password" name="password" placeholder="Admin password" autofocus required autocomplete="current-password" />
+      <input type="password" name="password" placeholder="Password" required autocomplete="current-password" />
       {% if error %}
       <div class="error-banner">{{ error }}</div>
       {% endif %}
@@ -32,7 +34,6 @@
     </form>
   </div>
   <script>
-    // If the browser restores this page from back/forward cache, force a fresh load.
     window.addEventListener('pageshow', function (e) {
       if (e.persisted) window.location.reload();
     });

@@ -3,9 +3,8 @@
 {% block heading %}Reports &amp; Downloads{% endblock %}
 {% block content %}
 <section class="panel">
-  <p class="muted panel-intro">Download order history, total sales, store-wise contribution and KPIs as PDF or Excel.</p>
+  <p class="muted panel-intro">Download order history, total sales, store-wise contribution and KPIs as PDF or Excel. Downloads use the same store and period filters as the snapshot below.</p>
   <div class="report-actions">
-    <select id="report-store" class="select-dark"></select>
     <a class="btn btn-gold" id="dl-xlsx" href="/api/admin/reports/xlsx">Download Excel (.xlsx)</a>
     <a class="btn btn-dark" id="dl-pdf" href="/api/admin/reports/pdf">Download PDF</a>
   </div>
@@ -14,6 +13,13 @@
   <div class="panel-head">
     <h2>Live KPI Snapshot</h2>
     <div class="report-slicer">
+      <div class="store-multi" id="report-store-multi">
+        <button type="button" class="store-multi-btn" id="report-store-toggle" aria-haspopup="listbox" aria-expanded="false">
+          <span id="report-store-label">All Stores</span>
+          <span class="store-multi-caret" aria-hidden="true"></span>
+        </button>
+        <div class="store-multi-panel" id="report-store-panel" hidden role="listbox" aria-label="Store filter"></div>
+      </div>
       <div class="seg">
         <button type="button" class="seg-btn" data-period="day">Day</button>
         <button type="button" class="seg-btn active" data-period="month">Month</button>
@@ -23,12 +29,15 @@
       <div class="report-anchor" id="report-anchor-wrap"></div>
     </div>
   </div>
-  <p class="muted panel-intro" id="report-selection-caption">Select a date, month, quarter or year to refresh KPIs and charts.</p>
+  <p class="muted panel-intro" id="report-selection-caption">Select stores and a date, month, quarter or year to refresh KPIs and charts.</p>
   <div class="kpi-grid" id="report-kpis"></div>
   <div class="grid-2" style="margin-top:24px">
     <div class="chart-box sm"><canvas id="reportStoreChart"></canvas></div>
     <div class="chart-box sm"><canvas id="reportSalesChart"></canvas></div>
   </div>
 </section>
+{% endblock %}
+{% block head_extra %}
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js" defer></script>
 {% endblock %}
 {% block scripts %}<script>AdminReports.init();</script>{% endblock %}

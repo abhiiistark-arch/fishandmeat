@@ -7,7 +7,14 @@
 {% block content %}
 <section class="panel">
   <div id="focus-bar" class="focus-bar hidden"></div>
-  <p class="muted panel-intro">Customer records with order history. List is paginated so large customer counts stay fast.</p>
+  <p class="muted panel-intro">
+    Customer records with order history. List is paginated so large customer counts stay fast.
+    {% if admin_can.super %}
+    Edit and remove are available for Super Admin only (username <strong>abhi</strong> — display name <strong>Abhay</strong>). Changes save to MongoDB.
+    {% else %}
+    Viewing is available for your store. Editing customer details is restricted to Super Admin (<strong>abhi</strong> / Abhay).
+    {% endif %}
+  </p>
   <div class="table-wrap">
     <table class="data-table" id="customers-table">
       <thead>
@@ -27,6 +34,25 @@
     <div id="customer-detail"></div>
     <div class="modal-actions">
       <button type="button" class="btn btn-outline" id="customer-close">Close</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="customer-edit-modal" class="modal">
+  <div class="modal-card">
+    <h2>Edit Customer</h2>
+    <p class="muted panel-intro" style="margin-top:-8px">Super Admin only (abhi). Updates write to MongoDB and sync order labels.</p>
+    <form id="customer-edit-form" class="form-grid">
+      <input type="hidden" id="cust-edit-id" />
+      <div class="field"><label>Name</label><input id="cust-edit-name" required maxlength="120" /></div>
+      <div class="field"><label>Phone</label><input id="cust-edit-phone" required inputmode="numeric" maxlength="15" /></div>
+      <div class="field"><label>Email</label><input id="cust-edit-email" type="email" maxlength="160" /></div>
+      <div class="field"><label>Preferred Store</label><select id="cust-edit-store"></select></div>
+      <div class="field" style="grid-column:1/-1"><label>Address</label><textarea id="cust-edit-address" rows="2" maxlength="240"></textarea></div>
+    </form>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline" id="customer-edit-cancel">Cancel</button>
+      <button type="button" class="btn btn-gold" id="customer-edit-save">Save to MongoDB</button>
     </div>
   </div>
 </dialog>
