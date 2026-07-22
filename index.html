@@ -11,6 +11,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
 <noscript><link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" /></noscript>
 <link rel="stylesheet" href="style.css" />
+<link rel="preload" as="image" href="assets/hero.webp" type="image/webp" fetchpriority="high" />
 </head>
 <body>
 
@@ -56,8 +57,18 @@
           <button class="btn btn-outline-white" id="hero-locations">Find a Store</button>
         </div>
       </div>
-      <div class="placeholder placeholder-dark" id="home-hero-visual" style="height:420px;">
-        <div class="placeholder-label placeholder-label-light">[ hero photo: fresh fish, chicken cuts and mutton arranged on ice, top-down studio shot ]</div>
+      <div class="hero-visual" id="home-hero-visual">
+        <picture>
+          <source srcset="assets/hero.webp" type="image/webp" />
+          <img
+            src="assets/hero.jpg"
+            alt="Fresh fish, chicken and mutton on ice"
+            width="960"
+            height="812"
+            fetchpriority="high"
+            decoding="async"
+          />
+        </picture>
       </div>
     </div>
   </section>

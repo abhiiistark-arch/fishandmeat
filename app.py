@@ -900,7 +900,7 @@ DEFAULT_STOREFRONT_CONTENT = {
         ),
         'primary_button': 'Shop Now',
         'secondary_button': 'Find a Store',
-        'image': '/uploads/content/content_b1506e61bd.png',
+        'image': '/assets/hero.webp',
     },
     'trust': {
         'enabled': True,
@@ -927,7 +927,7 @@ DEFAULT_STOREFRONT_CONTENT = {
             {'title': 'Cash on Delivery, Always',
              'description': 'No prepayment required. Inspect your order, then pay when it arrives.'},
         ],
-        'image': '/uploads/content/content_b1506e61bd.png',
+        'image': '/assets/hero.webp',
     },
     'product_range': {
         'enabled': True,
@@ -1242,8 +1242,8 @@ def seed_if_empty():
 
 def ensure_media_assets():
     """Attach existing design/upload images to records that still have empty image fields."""
-    hero_url = '/uploads/content/content_b1506e61bd.png'
-    why_url = '/uploads/content/content_b1506e61bd.png'
+    hero_url = '/assets/hero.webp'
+    why_url = '/assets/hero.webp'
     category_banners = {
         'cat_fish': '/uploads/products/seed_p1.png',
         'cat_fresh_meat': '/uploads/products/seed_p5.png',
@@ -1273,16 +1273,17 @@ def ensure_media_assets():
             db_update('categories', {'id': cat_id}, {'banner': banner_url})
             updated = True
 
-    hero_file = CONTENT_UPLOAD_DIR / 'content_b1506e61bd.png'
+    hero_file = BASE_DIR / 'assets' / 'hero.webp'
     if hero_file.exists():
         content = get_storefront_content()
         hero = dict(content.get('hero') or {})
         why = dict(content.get('why_us') or {})
         changes = {}
-        if not hero.get('image'):
+        # Prefer the static optimized hero asset for first paint.
+        if hero.get('image') != hero_url:
             hero['image'] = hero_url
             changes['hero'] = hero
-        if not why.get('image'):
+        if not why.get('image') or 'content_b1506' in str(why.get('image')):
             why['image'] = why_url
             changes['why_us'] = why
         if changes:

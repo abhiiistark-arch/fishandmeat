@@ -548,7 +548,7 @@
     setText('home-hero-description', c.hero.description);
     setText('hero-shop', c.hero.primary_button);
     setText('hero-locations', c.hero.secondary_button);
-    setVisual('home-hero-visual', c.hero.image, 'dark', { eager: true, alt: 'Fresh fish and meat', width: 900, height: 700 });
+    // Hero photo is embedded in index.html (assets/hero.webp) for fast first paint.
     var trust = document.getElementById('home-trust-items');
     trust.innerHTML = (c.trust.items || []).map(function (item) {
       return '<span>&#10003; ' + esc(item) + '</span>';
