@@ -13,10 +13,11 @@
 
   async function api(url, opts) {
     opts = opts || {};
-    var res = await fetch(url, Object.assign({
-      headers: { 'Content-Type': 'application/json' },
+    var headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+    var fetchOpts = Object.assign({
       credentials: 'same-origin'
-    }, opts));
+    }, opts, { headers: headers });
+    var res = await fetch(url, fetchOpts);
     if (res.status === 401) {
       window.location.href = '/admin/login';
       throw new Error('Unauthorized');
@@ -26,6 +27,38 @@
     if (ct.includes('application/json')) data = await res.json();
     if (!res.ok) throw new Error((data && data.error) || 'Request failed');
     return data;
+  }
+
+  function isAbortError(err) {
+    return err && (err.name === 'AbortError' || err.message === 'The user aborted a request.');
+  }
+
+  function upsertChart(existing, canvasId, config) {
+    var canvas = document.getElementById(canvasId);
+    if (!canvas || typeof Chart === 'undefined') return existing || null;
+    if (existing) {
+      existing.data.labels = config.data.labels;
+      config.data.datasets.forEach(function (ds, i) {
+        if (!existing.data.datasets[i]) {
+          existing.data.datasets[i] = ds;
+        } else {
+          existing.data.datasets[i].data = ds.data;
+          if (ds.label != null) existing.data.datasets[i].label = ds.label;
+          if (ds.backgroundColor != null) existing.data.datasets[i].backgroundColor = ds.backgroundColor;
+          if (ds.borderColor != null) existing.data.datasets[i].borderColor = ds.borderColor;
+        }
+      });
+      existing.data.datasets.length = config.data.datasets.length;
+      existing.update('none');
+      return existing;
+    }
+    return new Chart(canvas, config);
+  }
+
+  function setSlicerBusy(busy) {
+    document.querySelectorAll('.report-slicer, #report-kpis, #kpi-grid, .chart-box').forEach(function (el) {
+      el.classList.toggle('is-slicer-busy', !!busy);
+    });
   }
 
   function money(n) {
@@ -198,13 +231,18 @@
       var results = document.getElementById('global-search-results');
       if (!input || !results) return;
       var timer = null;
+      var abortCtrl = null;
       input.addEventListener('input', function () {
         clearTimeout(timer);
         var q = input.value.trim();
         if (q.length < 2) { results.classList.add('hidden'); return; }
         timer = setTimeout(async function () {
+          if (abortCtrl) abortCtrl.abort();
+          abortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
           try {
-            var data = await api('/api/admin/search?q=' + encodeURIComponent(q));
+            var data = await api('/api/admin/search?q=' + encodeURIComponent(q), {
+              signal: abortCtrl ? abortCtrl.signal : undefined
+            });
             var html = '';
             if ((data.orders || []).length) {
               html += '<div class="sr-group">ORDERS</div>' + data.orders.map(function (o) {
@@ -239,8 +277,11 @@
             }
             results.innerHTML = html || '<div class="sr-empty">No matches for “' + esc(q) + '”</div>';
             results.classList.remove('hidden');
-          } catch (e) { results.classList.add('hidden'); }
-        }, 250);
+          } catch (e) {
+            if (isAbortError(e)) return;
+            results.classList.add('hidden');
+          }
+        }, 180);
       });
       document.addEventListener('click', function (e) {
         if (!input.contains(e.target) && !results.contains(e.target)) results.classList.add('hidden');
@@ -280,6 +321,7 @@
     anchor: '',
     loadToken: 0,
     loadTimer: null,
+    abortCtrl: null,
     init: function () {
       var self = this;
       this.anchor = this.defaultAnchor(this.period);
@@ -301,7 +343,7 @@
     scheduleLoad: function () {
       var self = this;
       clearTimeout(this.loadTimer);
-      this.loadTimer = setTimeout(function () { self.load(); }, 160);
+      this.loadTimer = setTimeout(function () { self.load(); }, 40);
     },
     updateCaption: function () {
       document.getElementById('chart-caption').textContent =
@@ -369,168 +411,181 @@
     },
     load: async function () {
       var token = ++this.loadToken;
-      var data = await api('/api/admin/stats?' + this.queryParams().toString());
-      if (token !== this.loadToken) return;
-      var k = data.kpis;
-      var periodLabel = data.selection_label || PERIOD_KPI_LABELS[this.period] || 'Period Sales';
-      if (data.period_caption) {
-        document.getElementById('chart-caption').textContent = data.period_caption;
-      }
-
-      var dateEl = document.getElementById('dash-date');
-      if (dateEl) {
-        dateEl.textContent = data.period_caption || data.selection_label || '';
-      }
+      if (this.abortCtrl) this.abortCtrl.abort();
+      this.abortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      setSlicerBusy(true);
       var updEl = document.getElementById('dash-updated');
-      if (updEl) updEl.textContent = 'Last updated ' + new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
-
-      function deltaHtml(pct) {
-        if (pct == null) return '';
-        var up = pct >= 0;
-        return '<div class="delta ' + (up ? 'up' : 'down') + '">' + (up ? '↑ ' : '↓ ') +
-          Math.abs(pct) + '% <span style="font-weight:400;color:#55594F">vs previous</span></div>';
-      }
-      function kpiCard(label, value, cls, delta, sub, href, alert) {
-        var tag = href ? 'a' : 'div';
-        return '<' + tag + (href ? ' href="' + href + '"' : '') +
-          ' class="kpi' + (href ? ' kpi-link' : '') + ' ' + (cls || '') + '">' +
-          '<div class="label">' + (alert ? '<span class="alert-dot"></span>' : '') + label +
-          '</div><div class="value">' + value + '</div>' + (delta || '') +
-          (sub ? '<div class="sub">' + sub + '</div>' : '') + '</' + tag + '>';
-      }
-      document.getElementById('kpi-grid').innerHTML = [
-        kpiCard(periodLabel, k.sales_selected != null ? money(k.sales_selected) : this.periodSalesKpi(k),
-                'gold', deltaHtml(data.deltas.sales_pct),
-                'Avg order ' + money(k.avg_order_value), '/admin/reports'),
-        kpiCard('Total Orders', k.orders_selected != null ? k.orders_selected : k.orders_total,
-                '', deltaHtml(data.deltas.orders_pct),
-                k.pending_orders + ' open · ' + (k.cancelled_orders || 0) + ' cancelled',
-                '/admin/orders'),
-        kpiCard('Customers', k.customers_selected != null ? k.customers_selected : k.customers_total,
-                '', '', 'Registered in selected period',
-                '/admin/customers'),
-        // Inventory is live operational data and intentionally ignores date slicers.
-        kpiCard('Low Stock Items', k.low_stock_count, k.low_stock_count ? 'accent' : '',
-                '', 'Threshold: ' + data.low_stock_threshold + ' units',
-                '/admin/inventory', k.low_stock_count > 0)
-      ].join('');
-
-      var labels = data.timeline.map(function (t) { return t.label; });
-      var drawChart = function () {
-        if (typeof Chart === 'undefined' || !document.getElementById('salesChart')) {
-          window.setTimeout(drawChart, 40);
-          return;
-        }
-        if (salesChart) salesChart.destroy();
-        salesChart = new Chart(document.getElementById('salesChart'), {
-          type: 'line',
-          data: {
-            labels: labels,
-            datasets: [
-              { label: 'Sales (₹)', data: data.timeline.map(function (t) { return t.sales; }),
-                borderColor: '#1E3A22', backgroundColor: 'rgba(30,58,34,.12)', tension: .35, fill: true },
-              { label: 'Orders', data: data.timeline.map(function (t) { return t.orders; }),
-                borderColor: '#A5342A', backgroundColor: 'transparent', tension: .35, yAxisID: 'y1' },
-              { label: 'New Customers', data: data.timeline.map(function (t) { return t.customers; }),
-                borderColor: '#E7B430', backgroundColor: 'transparent', tension: .35, yAxisID: 'y1', borderDash: [5, 3] }
-            ]
-          },
-          options: {
-            responsive: true,
-            maintainAspectRatio: false,
-            animation: { duration: 0 },
-            scales: {
-              y: { beginAtZero: true, ticks: { color: '#55594F' } },
-              y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false } }
-            },
-            plugins: { legend: { labels: { font: { family: 'Work Sans', size: 11 }, boxWidth: 14 } } }
-          }
+      if (updEl) updEl.textContent = 'Updating…';
+      try {
+        var data = await api('/api/admin/stats?' + this.queryParams().toString(), {
+          signal: this.abortCtrl ? this.abortCtrl.signal : undefined
         });
-      };
-      drawChart();
+        if (token !== this.loadToken) return;
+        var k = data.kpis;
+        var periodLabel = data.selection_label || PERIOD_KPI_LABELS[this.period] || 'Period Sales';
+        if (data.period_caption) {
+          document.getElementById('chart-caption').textContent = data.period_caption;
+        }
 
-      // Activity feed (bundled in stats — no second request)
-      var feed = document.getElementById('activity-feed');
-      if (feed) {
-        var activityRows = data.activity || [];
-        feed.innerHTML = activityRows.map(function (a) {
-          var when = a.created_at ? new Date(a.created_at.replace('Z', '+00:00')).toLocaleString('en-IN', {
-            day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
-          }) : '';
-          return '<div class="activity-item">' +
-            '<div class="activity-dot ' + esc(a.kind || 'system') + '"></div>' +
-            '<div><div class="activity-text">' + esc(a.text) + '</div>' +
-            '<div class="activity-time">' + when + '</div></div>' +
-            '</div>';
-        }).join('') || '<p class="muted">No activity yet — place an order or update inventory.</p>';
-      }
+        var dateEl = document.getElementById('dash-date');
+        if (dateEl) {
+          dateEl.textContent = data.period_caption || data.selection_label || '';
+        }
+        if (updEl) updEl.textContent = 'Last updated ' + new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
 
-      // Recent orders
-      var ot = document.querySelector('#recent-orders tbody');
-      ot.innerHTML = data.recent_orders.map(function (o) {
-        return '<tr><td><strong>' + esc(o.order_id) + '</strong></td><td>' + esc(o.customer_name) + '</td><td>' +
-          esc(o.store_name || '') + '</td><td>' + money(o.total) + '</td><td>' + statusBadge(o.status) + '</td></tr>';
-      }).join('') || '<tr><td colspan="5">No orders yet</td></tr>';
+        function deltaHtml(pct) {
+          if (pct == null) return '';
+          var up = pct >= 0;
+          return '<div class="delta ' + (up ? 'up' : 'down') + '">' + (up ? '↑ ' : '↓ ') +
+            Math.abs(pct) + '% <span style="font-weight:400;color:#55594F">vs previous</span></div>';
+        }
+        function kpiCard(label, value, cls, delta, sub, href, alert) {
+          var tag = href ? 'a' : 'div';
+          return '<' + tag + (href ? ' href="' + href + '"' : '') +
+            ' class="kpi' + (href ? ' kpi-link' : '') + ' ' + (cls || '') + '">' +
+            '<div class="label">' + (alert ? '<span class="alert-dot"></span>' : '') + label +
+            '</div><div class="value">' + value + '</div>' + (delta || '') +
+            (sub ? '<div class="sub">' + sub + '</div>' : '') + '</' + tag + '>';
+        }
+        document.getElementById('kpi-grid').innerHTML = [
+          kpiCard(periodLabel, k.sales_selected != null ? money(k.sales_selected) : this.periodSalesKpi(k),
+                  'gold', deltaHtml(data.deltas.sales_pct),
+                  'Avg order ' + money(k.avg_order_value), '/admin/reports'),
+          kpiCard('Total Orders', k.orders_selected != null ? k.orders_selected : k.orders_total,
+                  '', deltaHtml(data.deltas.orders_pct),
+                  k.pending_orders + ' open · ' + (k.cancelled_orders || 0) + ' cancelled',
+                  '/admin/orders'),
+          kpiCard('Customers', k.customers_selected != null ? k.customers_selected : k.customers_total,
+                  '', '', 'Registered in selected period',
+                  '/admin/customers'),
+          // Inventory is live operational data and intentionally ignores date slicers.
+          kpiCard('Low Stock Items', k.low_stock_count, k.low_stock_count ? 'accent' : '',
+                  '', 'Threshold: ' + data.low_stock_threshold + ' units',
+                  '/admin/inventory', k.low_stock_count > 0)
+        ].join('');
 
-      // Inventory health bars
-      var ih = document.getElementById('inventory-health');
-      if (ih) {
-        ih.innerHTML = (data.inventory_health || []).map(function (r) {
-          var cls = r.low ? 'low' : (r.pct < 50 ? 'medium' : '');
-          return '<a class="inv-row inv-row-link" href="/admin/inventory">' +
-            '<div class="name">' + (r.low ? '<span class="alert-dot"></span>' : '') + esc(r.name) + '</div>' +
-            '<div class="inv-bar-wrap"><div class="inv-bar ' + cls + '" style="width:' + Math.max(4, r.pct) + '%"></div></div>' +
-            '<div class="inv-stock' + (r.low ? ' low' : '') + '">' + r.stock + ' units' + (r.low ? ' · Low!' : '') + '</div>' +
-            '</a>';
-        }).join('') || '<p class="muted">No inventory yet</p>';
-      }
+        var labels = data.timeline.map(function (t) { return t.label; });
+        var drawChart = function () {
+          if (typeof Chart === 'undefined' || !document.getElementById('salesChart')) {
+            window.setTimeout(drawChart, 40);
+            return;
+          }
+          salesChart = upsertChart(salesChart, 'salesChart', {
+            type: 'line',
+            data: {
+              labels: labels,
+              datasets: [
+                { label: 'Sales (₹)', data: data.timeline.map(function (t) { return t.sales; }),
+                  borderColor: '#1E3A22', backgroundColor: 'rgba(30,58,34,.12)', tension: .35, fill: true },
+                { label: 'Orders', data: data.timeline.map(function (t) { return t.orders; }),
+                  borderColor: '#A5342A', backgroundColor: 'transparent', tension: .35, yAxisID: 'y1' },
+                { label: 'New Customers', data: data.timeline.map(function (t) { return t.customers; }),
+                  borderColor: '#E7B430', backgroundColor: 'transparent', tension: .35, yAxisID: 'y1', borderDash: [5, 3] }
+              ]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              animation: { duration: 0 },
+              scales: {
+                y: { beginAtZero: true, ticks: { color: '#55594F' } },
+                y1: { beginAtZero: true, position: 'right', grid: { drawOnChartArea: false } }
+              },
+              plugins: { legend: { labels: { font: { family: 'Work Sans', size: 11 }, boxWidth: 14 } } }
+            }
+          });
+        };
+        drawChart();
 
-      // Store performance rows
-      var sp = document.getElementById('store-performance');
-      if (sp) {
-        var maxSales = Math.max.apply(null, data.store_sales.map(function (s) { return s.sales; }).concat([1]));
-        sp.innerHTML = data.store_sales
-          .slice().sort(function (a, b) { return b.sales - a.sales; })
-          .map(function (s) {
-            var pct = Math.round(s.sales / maxSales * 100);
-            var ch = s.change_pct;
-            var chHtml = ch == null ? '<span class="store-change flat">—</span>'
-              : '<span class="store-change ' + (ch >= 0 ? 'up' : 'down') + '">' + (ch >= 0 ? '↑' : '↓') + Math.abs(ch) + '%</span>';
-            return '<div class="store-row">' +
-              '<div class="name">' + esc(s.name) + '</div>' +
-              '<div class="store-bar-wrap"><div class="store-bar" style="width:' + Math.max(4, pct) + '%"></div></div>' +
-              '<div class="store-rev">' + money(s.sales) + '</div>' + chHtml +
+        // Activity feed (bundled in stats — no second request)
+        var feed = document.getElementById('activity-feed');
+        if (feed) {
+          var activityRows = data.activity || [];
+          feed.innerHTML = activityRows.map(function (a) {
+            var when = a.created_at ? new Date(a.created_at.replace('Z', '+00:00')).toLocaleString('en-IN', {
+              day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit'
+            }) : '';
+            return '<div class="activity-item">' +
+              '<div class="activity-dot ' + esc(a.kind || 'system') + '"></div>' +
+              '<div><div class="activity-text">' + esc(a.text) + '</div>' +
+              '<div class="activity-time">' + when + '</div></div>' +
               '</div>';
-          }).join('') || '<p class="muted">No sales yet</p>';
-      }
+          }).join('') || '<p class="muted">No activity yet — place an order or update inventory.</p>';
+        }
 
-      // Top products
-      var tp = document.getElementById('top-products');
-      if (tp) {
-        tp.innerHTML = (data.top_products || []).map(function (p, i) {
-          return '<div class="product-row">' +
-            '<div class="product-rank">' + (i + 1) + '</div>' +
-            '<div><div class="pname">' + esc(p.name) + '</div><div class="pcat">' + esc(p.category || '') + '</div></div>' +
-            '<div class="product-units">' + p.qty + ' sold</div>' +
-            '<div class="product-rev">' + money(p.revenue) + '</div>' +
-            '</div>';
-        }).join('') || '<p class="muted">No sales in this period</p>';
-      }
+        // Recent orders
+        var ot = document.querySelector('#recent-orders tbody');
+        ot.innerHTML = data.recent_orders.map(function (o) {
+          return '<tr><td><strong>' + esc(o.order_id) + '</strong></td><td>' + esc(o.customer_name) + '</td><td>' +
+            esc(o.store_name || '') + '</td><td>' + money(o.total) + '</td><td>' + statusBadge(o.status) + '</td></tr>';
+        }).join('') || '<tr><td colspan="5">No orders yet</td></tr>';
 
-      // Staff on duty (bundled in stats)
-      var staffEl = document.getElementById('staff-on-duty');
-      if (staffEl) {
-        var staff = data.on_duty_staff || [];
-        staffEl.innerHTML = staff.slice(0, 5).map(function (m) {
-          var initials = (m.name || '?').split(' ').map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase();
-          return '<div class="staff-row">' +
-            '<div class="staff-avatar">' + esc(initials) + '</div>' +
-            '<div class="staff-info"><div class="staff-name">' + esc(m.name) + '</div>' +
-            '<div class="staff-role">' + esc(m.role) + ' · ' + esc(m.store_name || 'All Stores') + '</div></div>' +
-            '<div class="staff-status ' + (m.on_duty ? 'on' : 'off') + '"><span class="staff-dot"></span>' +
-            (m.on_duty ? 'On duty' : 'Off duty') + '</div>' +
-            '</div>';
-        }).join('') || '<p class="muted">No staff added yet. <a class="link" href="/admin/staff">Add staff</a></p>';
+        // Inventory health bars
+        var ih = document.getElementById('inventory-health');
+        if (ih) {
+          ih.innerHTML = (data.inventory_health || []).map(function (r) {
+            var cls = r.low ? 'low' : (r.pct < 50 ? 'medium' : '');
+            return '<a class="inv-row inv-row-link" href="/admin/inventory">' +
+              '<div class="name">' + (r.low ? '<span class="alert-dot"></span>' : '') + esc(r.name) + '</div>' +
+              '<div class="inv-bar-wrap"><div class="inv-bar ' + cls + '" style="width:' + Math.max(4, r.pct) + '%"></div></div>' +
+              '<div class="inv-stock' + (r.low ? ' low' : '') + '">' + r.stock + ' units' + (r.low ? ' · Low!' : '') + '</div>' +
+              '</a>';
+          }).join('') || '<p class="muted">No inventory yet</p>';
+        }
+
+        // Store performance rows
+        var sp = document.getElementById('store-performance');
+        if (sp) {
+          var maxSales = Math.max.apply(null, data.store_sales.map(function (s) { return s.sales; }).concat([1]));
+          sp.innerHTML = data.store_sales
+            .slice().sort(function (a, b) { return b.sales - a.sales; })
+            .map(function (s) {
+              var pct = Math.round(s.sales / maxSales * 100);
+              var ch = s.change_pct;
+              var chHtml = ch == null ? '<span class="store-change flat">—</span>'
+                : '<span class="store-change ' + (ch >= 0 ? 'up' : 'down') + '">' + (ch >= 0 ? '↑' : '↓') + Math.abs(ch) + '%</span>';
+              return '<div class="store-row">' +
+                '<div class="name">' + esc(s.name) + '</div>' +
+                '<div class="store-bar-wrap"><div class="store-bar" style="width:' + Math.max(4, pct) + '%"></div></div>' +
+                '<div class="store-rev">' + money(s.sales) + '</div>' + chHtml +
+                '</div>';
+            }).join('') || '<p class="muted">No sales yet</p>';
+        }
+
+        // Top products
+        var tp = document.getElementById('top-products');
+        if (tp) {
+          tp.innerHTML = (data.top_products || []).map(function (p, i) {
+            return '<div class="product-row">' +
+              '<div class="product-rank">' + (i + 1) + '</div>' +
+              '<div><div class="pname">' + esc(p.name) + '</div><div class="pcat">' + esc(p.category || '') + '</div></div>' +
+              '<div class="product-units">' + p.qty + ' sold</div>' +
+              '<div class="product-rev">' + money(p.revenue) + '</div>' +
+              '</div>';
+          }).join('') || '<p class="muted">No sales in this period</p>';
+        }
+
+        // Staff on duty (bundled in stats)
+        var staffEl = document.getElementById('staff-on-duty');
+        if (staffEl) {
+          var staff = data.on_duty_staff || [];
+          staffEl.innerHTML = staff.slice(0, 5).map(function (m) {
+            var initials = (m.name || '?').split(' ').map(function (w) { return w[0]; }).join('').slice(0, 2).toUpperCase();
+            return '<div class="staff-row">' +
+              '<div class="staff-avatar">' + esc(initials) + '</div>' +
+              '<div class="staff-info"><div class="staff-name">' + esc(m.name) + '</div>' +
+              '<div class="staff-role">' + esc(m.role) + ' · ' + esc(m.store_name || 'All Stores') + '</div></div>' +
+              '<div class="staff-status ' + (m.on_duty ? 'on' : 'off') + '"><span class="staff-dot"></span>' +
+              (m.on_duty ? 'On duty' : 'Off duty') + '</div>' +
+              '</div>';
+          }).join('') || '<p class="muted">No staff added yet. <a class="link" href="/admin/staff">Add staff</a></p>';
+        }
+      } catch (e) {
+        if (isAbortError(e) || token !== this.loadToken) return;
+        if (updEl) updEl.textContent = 'Update failed';
+        toast(e.message || 'Could not load dashboard', true);
+      } finally {
+        if (token === this.loadToken) setSlicerBusy(false);
       }
     },
     loadActivity: async function () {},
@@ -739,6 +794,8 @@
     stores: [],
     categories: [],
     products: [],
+    loadToken: 0,
+    abortCtrl: null,
     init: async function () {
       var self = this;
       this.stores = await api('/api/admin/stores');
@@ -752,7 +809,19 @@
       this.load();
     },
     load: async function () {
-      this.products = await api('/api/admin/products');
+      var token = ++this.loadToken;
+      if (this.abortCtrl) this.abortCtrl.abort();
+      this.abortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      try {
+        this.products = await api('/api/admin/products', {
+          signal: this.abortCtrl ? this.abortCtrl.signal : undefined
+        });
+        if (token !== this.loadToken) return;
+      } catch (e) {
+        if (isAbortError(e) || token !== this.loadToken) return;
+        toast(e.message || 'Could not load products', true);
+        return;
+      }
       var self = this;
       var focus = getQueryParam('focus');
       var list = this.products;
@@ -931,6 +1000,8 @@
 
   // -------- Inventory --------
   var AdminInventory = {
+    loadToken: 0,
+    abortCtrl: null,
     init: async function () {
       var self = this;
       var stores = await api('/api/admin/stores');
@@ -942,34 +1013,43 @@
       this.load();
     },
     load: async function () {
+      var token = ++this.loadToken;
+      if (this.abortCtrl) this.abortCtrl.abort();
+      this.abortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       var storeId = document.getElementById('inv-store-filter').value;
       var url = '/api/admin/inventory' + (storeId ? ('?store_id=' + storeId) : '');
-      var rows = await api(url);
       var tbody = document.querySelector('#inv-table tbody');
-      tbody.innerHTML = rows.map(function (r) {
-        return '<tr data-id="' + r.id + '">' +
-          '<td><strong>' + (r.low_stock ? '<span class="alert-dot" title="Low stock"></span>' : '') +
-          esc(r.product_name) + '</strong>' +
-          (r.low_stock ? '<div class="low-stock-note">Low stock</div>' : '') + '</td>' +
-          '<td>' + esc(r.variant_label) + '</td>' +
-          '<td>' + esc(r.sku) + '</td>' +
-          '<td>' + esc(r.store_name) + '</td>' +
-          '<td><input class="inline-edit" type="number" data-field="price" value="' + r.price + '" /></td>' +
-          '<td><input class="inline-edit" type="number" data-field="stock" value="' + r.stock + '" /></td>' +
-          '<td><button class="btn btn-sm btn-dark" data-save="' + r.id + '">Save</button></td></tr>';
-      }).join('') || '<tr><td colspan="7">No inventory rows</td></tr>';
-      tbody.querySelectorAll('[data-save]').forEach(function (btn) {
-        btn.onclick = async function () {
-          var tr = btn.closest('tr');
-          var price = tr.querySelector('[data-field="price"]').value;
-          var stock = tr.querySelector('[data-field="stock"]').value;
-          await api('/api/admin/inventory/' + btn.getAttribute('data-save'), {
-            method: 'PUT',
-            body: JSON.stringify({ price: Number(price), stock: Number(stock) })
-          });
-          toast('Inventory updated');
-        };
-      });
+      try {
+        var rows = await api(url, { signal: this.abortCtrl ? this.abortCtrl.signal : undefined });
+        if (token !== this.loadToken) return;
+        tbody.innerHTML = rows.map(function (r) {
+          return '<tr data-id="' + r.id + '">' +
+            '<td><strong>' + (r.low_stock ? '<span class="alert-dot" title="Low stock"></span>' : '') +
+            esc(r.product_name) + '</strong>' +
+            (r.low_stock ? '<div class="low-stock-note">Low stock</div>' : '') + '</td>' +
+            '<td>' + esc(r.variant_label) + '</td>' +
+            '<td>' + esc(r.sku) + '</td>' +
+            '<td>' + esc(r.store_name) + '</td>' +
+            '<td><input class="inline-edit" type="number" data-field="price" value="' + r.price + '" /></td>' +
+            '<td><input class="inline-edit" type="number" data-field="stock" value="' + r.stock + '" /></td>' +
+            '<td><button class="btn btn-sm btn-dark" data-save="' + r.id + '">Save</button></td></tr>';
+        }).join('') || '<tr><td colspan="7">No inventory rows</td></tr>';
+        tbody.querySelectorAll('[data-save]').forEach(function (btn) {
+          btn.onclick = async function () {
+            var tr = btn.closest('tr');
+            var price = tr.querySelector('[data-field="price"]').value;
+            var stock = tr.querySelector('[data-field="stock"]').value;
+            await api('/api/admin/inventory/' + btn.getAttribute('data-save'), {
+              method: 'PUT',
+              body: JSON.stringify({ price: Number(price), stock: Number(stock) })
+            });
+            toast('Inventory updated');
+          };
+        });
+      } catch (e) {
+        if (isAbortError(e) || token !== this.loadToken) return;
+        toast(e.message || 'Could not load inventory', true);
+      }
     }
   };
 
@@ -980,6 +1060,8 @@
     editOrder: null,
     editItems: [],
     storeProducts: [],
+    loadToken: 0,
+    abortCtrl: null,
     init: async function () {
       var self = this;
       var stores = await api('/api/admin/stores');
@@ -997,6 +1079,9 @@
       this.load();
     },
     load: async function () {
+      var token = ++this.loadToken;
+      if (this.abortCtrl) this.abortCtrl.abort();
+      this.abortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       var status = document.getElementById('order-status-filter').value;
       var storeId = document.getElementById('order-store-filter').value;
       var focus = getQueryParam('focus');
@@ -1004,7 +1089,17 @@
       if (status) qs += '&status=' + status;
       if (storeId) qs += '&store_id=' + storeId;
       if (focus) qs += '&focus=' + encodeURIComponent(focus);
-      var data = await api('/api/admin/orders' + qs);
+      var data;
+      try {
+        data = await api('/api/admin/orders' + qs, {
+          signal: this.abortCtrl ? this.abortCtrl.signal : undefined
+        });
+        if (token !== this.loadToken) return;
+      } catch (e) {
+        if (isAbortError(e) || token !== this.loadToken) return;
+        toast(e.message || 'Could not load orders', true);
+        return;
+      }
       var self = this;
       this.orders = data.items || [];
 
@@ -1221,11 +1316,13 @@
     page: 1,
     timer: null,
     stores: [],
+    loadToken: 0,
+    abortCtrl: null,
     init: function () {
       var self = this;
       document.getElementById('customer-search').oninput = function () {
         clearTimeout(self.timer);
-        self.timer = setTimeout(function () { self.page = 1; self.load(); }, 300);
+        self.timer = setTimeout(function () { self.page = 1; self.load(); }, 220);
       };
       document.getElementById('customer-close').onclick = function () { closeModal('customer-modal'); };
       var editCancel = document.getElementById('customer-edit-cancel');
@@ -1235,13 +1332,26 @@
       this.load();
     },
     load: async function () {
+      var token = ++this.loadToken;
+      if (this.abortCtrl) this.abortCtrl.abort();
+      this.abortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       var q = document.getElementById('customer-search').value.trim();
       var focus = getQueryParam('focus');
       var qs = '?page=' + this.page + '&per_page=15';
       if (AdminShell.storeId) qs += '&store_id=' + encodeURIComponent(AdminShell.storeId);
       if (focus) qs += '&focus=' + encodeURIComponent(focus);
       else if (q) qs += '&q=' + encodeURIComponent(q);
-      var data = await api('/api/admin/customers' + qs);
+      var data;
+      try {
+        data = await api('/api/admin/customers' + qs, {
+          signal: this.abortCtrl ? this.abortCtrl.signal : undefined
+        });
+        if (token !== this.loadToken) return;
+      } catch (e) {
+        if (isAbortError(e) || token !== this.loadToken) return;
+        toast(e.message || 'Could not load customers', true);
+        return;
+      }
       var self = this;
       var focusLabel = '';
       if (focus) {
@@ -1410,6 +1520,7 @@
     selectedStoreIds: [],
     loadToken: 0,
     loadTimer: null,
+    abortCtrl: null,
     init: async function () {
       var self = this;
       this.stores = await api('/api/admin/stores');
@@ -1445,7 +1556,7 @@
     scheduleLoad: function () {
       var self = this;
       clearTimeout(this.loadTimer);
-      this.loadTimer = setTimeout(function () { self.load(); }, 160);
+      this.loadTimer = setTimeout(function () { self.load(); }, 40);
     },
     renderStoreFilter: function () {
       var self = this;
@@ -1611,8 +1722,13 @@
     },
     load: async function () {
       var token = ++this.loadToken;
+      if (this.abortCtrl) this.abortCtrl.abort();
+      this.abortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+      setSlicerBusy(true);
       try {
-        var data = await api('/api/admin/stats?' + this.queryParams().toString());
+        var data = await api('/api/admin/stats?' + this.queryParams().toString(), {
+          signal: this.abortCtrl ? this.abortCtrl.signal : undefined
+        });
         if (token !== this.loadToken) return;
         var k = data.kpis;
         var caption = data.period_caption || '';
@@ -1632,8 +1748,7 @@
             window.setTimeout(drawCharts, 40);
             return;
           }
-          if (reportStoreChart) reportStoreChart.destroy();
-          reportStoreChart = new Chart(document.getElementById('reportStoreChart'), {
+          reportStoreChart = upsertChart(reportStoreChart, 'reportStoreChart', {
             type: 'bar',
             data: {
               labels: data.store_sales.map(function (s) { return s.name; }),
@@ -1645,8 +1760,7 @@
             },
             options: { responsive: true, maintainAspectRatio: false, animation: { duration: 0 }, plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } }
           });
-          if (reportSalesChart) reportSalesChart.destroy();
-          reportSalesChart = new Chart(document.getElementById('reportSalesChart'), {
+          reportSalesChart = upsertChart(reportSalesChart, 'reportSalesChart', {
             type: 'line',
             data: {
               labels: data.timeline.map(function (t) { return t.label; }),
@@ -1664,7 +1778,10 @@
         };
         drawCharts();
       } catch (e) {
+        if (isAbortError(e) || token !== this.loadToken) return;
         toast(e.message || 'Could not load report snapshot', true);
+      } finally {
+        if (token === this.loadToken) setSlicerBusy(false);
       }
     }
   };

@@ -153,11 +153,21 @@ def _connect_mongo():
         # Indexes for scale
         _mongo_db.customers.create_index([('phone', ASCENDING)], unique=True)
         _mongo_db.customers.create_index([('created_at', ASCENDING)])
+        _mongo_db.customers.create_index([('id', ASCENDING)])
         _mongo_db.orders.create_index([('order_id', ASCENDING)], unique=True)
         _mongo_db.orders.create_index([('created_at', ASCENDING)])
         _mongo_db.orders.create_index([('store_id', ASCENDING)])
+        _mongo_db.orders.create_index([('store_id', ASCENDING), ('created_at', ASCENDING)])
         _mongo_db.orders.create_index([('customer_phone', ASCENDING)])
+        _mongo_db.orders.create_index([('customer_id', ASCENDING)])
+        _mongo_db.orders.create_index([('status', ASCENDING)])
+        _mongo_db.orders.create_index([('channel', ASCENDING), ('store_id', ASCENDING), ('created_at', ASCENDING)])
         _mongo_db.products.create_index([('sku', ASCENDING)], unique=True)
+        _mongo_db.products.create_index([('id', ASCENDING)])
+        _mongo_db.categories.create_index([('id', ASCENDING)])
+        _mongo_db.stores.create_index([('id', ASCENDING)])
+        _mongo_db.inventory.create_index([('id', ASCENDING)])
+        _mongo_db.inventory.create_index([('store_id', ASCENDING)])
         _mongo_db.inventory.create_index(
             [('store_id', ASCENDING), ('product_id', ASCENDING), ('variant_id', ASCENDING)],
             unique=True
@@ -199,10 +209,13 @@ def _save_local(collection, rows):
         json.dump(rows, f, indent=2, default=str)
 
 
-def db_find(collection, query=None, sort=None, skip=0, limit=0):
+def db_find(collection, query=None, sort=None, skip=0, limit=0, projection=None):
     query = query or {}
+    proj = {'_id': 0}
+    if projection:
+        proj.update(projection)
     if _use_mongo:
-        cursor = _mongo_db[collection].find(query, {'_id': 0})
+        cursor = _mongo_db[collection].find(query, proj)
         if sort:
             cursor = cursor.sort(sort)
         if skip:
@@ -212,20 +225,32 @@ def db_find(collection, query=None, sort=None, skip=0, limit=0):
         return list(cursor)
 
     rows = _load_local(collection)
-    def match(doc):
-        for k, v in query.items():
+
+    def match(doc, q):
+        for k, v in q.items():
+            if k == '$or':
+                if not any(match(doc, clause) for clause in v):
+                    return False
+                continue
+            if k == '$and':
+                if not all(match(doc, clause) for clause in v):
+                    return False
+                continue
             if isinstance(v, dict):
                 val = doc.get(k)
                 if '$gte' in v and not (val is not None and val >= v['$gte']):
                     return False
+                if '$gt' in v and not (val is not None and val > v['$gt']):
+                    return False
                 if '$lte' in v and not (val is not None and val <= v['$lte']):
+                    return False
+                if '$lt' in v and not (val is not None and val < v['$lt']):
                     return False
                 if '$in' in v and doc.get(k) not in v['$in']:
                     return False
                 if '$ne' in v and doc.get(k) == v['$ne']:
                     return False
                 if '$regex' in v:
-                    import re
                     flags = re.I if v.get('$options') == 'i' else 0
                     if not re.search(v['$regex'], str(doc.get(k, '')), flags):
                         return False
@@ -233,7 +258,7 @@ def db_find(collection, query=None, sort=None, skip=0, limit=0):
                 return False
         return True
 
-    filtered = [r for r in rows if match(r)]
+    filtered = [r for r in rows if match(r, query)]
     if sort:
         for key, direction in reversed(sort):
             filtered.sort(key=lambda x: x.get(key) or '', reverse=(direction == -1))
@@ -241,6 +266,10 @@ def db_find(collection, query=None, sort=None, skip=0, limit=0):
         filtered = filtered[skip:]
     if limit:
         filtered = filtered[:limit]
+    if projection:
+        keep = {k for k, v in projection.items() if v}
+        if keep:
+            filtered = [{k: r.get(k) for k in keep if k in r} for r in filtered]
     return filtered
 
 
@@ -294,7 +323,10 @@ def db_delete(collection, query):
 
 
 def db_count(collection, query=None):
-    return len(db_find(collection, query or {}))
+    query = query or {}
+    if _use_mongo:
+        return int(_mongo_db[collection].count_documents(query))
+    return len(db_find(collection, query))
 
 
 def db_mode():
@@ -345,7 +377,24 @@ ROLE_PAGES = {
 }
 
 _stats_cache = {}
-_STATS_CACHE_TTL = 20  # seconds
+_STATS_CACHE_TTL = 45  # seconds — slicer repeats hit cache while data stays fresh enough
+_ref_cache = {}
+_REF_CACHE_TTL = 60  # seconds for rarely-changing lookups (products/categories/stores)
+_badges_cache = {}
+_BADGES_CACHE_TTL = 15
+
+_ORDER_STATS_PROJECTION = {
+    'id': 1, 'order_id': 1, 'store_id': 1, 'created_at': 1, 'total': 1,
+    'status': 1, 'customer_name': 1, 'items': 1,
+}
+_CUSTOMER_STATS_PROJECTION = {'id': 1, 'created_at': 1}
+_OPEN_ORDER_STATUSES = (
+    'new', 'confirmed', 'ready', 'out_for_delivery', 'pending', 'placed', 'Placed',
+)
+_CUSTOMER_ORDER_PROJECTION = {
+    'id': 1, 'order_id': 1, 'store_id': 1, 'customer_id': 1, 'customer_phone': 1,
+    'created_at': 1, 'total': 1, 'status': 1,
+}
 
 
 def current_admin():
@@ -2235,6 +2284,143 @@ def admin_in_store():
     return render_template('admin/in_store.html', page='in_store', db_mode=db_mode())
 
 
+def _add_months(year, month, delta):
+    month += delta
+    while month > 12:
+        month -= 12
+        year += 1
+    while month < 1:
+        month += 12
+        year -= 1
+    return year, month
+
+
+def _created_at_range(period, anchor=None, now=None):
+    """Return (start, end_exclusive) ISO date prefixes for created_at range queries."""
+    now = now or datetime.utcnow()
+    if anchor:
+        if period == 'day':
+            day = datetime.strptime(anchor, '%Y-%m-%d')
+            return anchor, (day + timedelta(days=1)).strftime('%Y-%m-%d')
+        if period == 'month':
+            year, month = int(anchor[:4]), int(anchor[5:7])
+            ny, nm = _add_months(year, month, 1)
+            return f'{year:04d}-{month:02d}-01', f'{ny:04d}-{nm:02d}-01'
+        if period == 'quarter':
+            year = int(anchor[:4])
+            quarter = int(anchor[-1])
+            start_month = (quarter - 1) * 3 + 1
+            ey, em = _add_months(year, start_month, 3)
+            return f'{year:04d}-{start_month:02d}-01', f'{ey:04d}-{em:02d}-01'
+        if period == 'year':
+            year = int(anchor)
+            return f'{year:04d}-01-01', f'{year + 1:04d}-01-01'
+        return None, None
+
+    if period == 'day':
+        start = (now - timedelta(days=13)).strftime('%Y-%m-%d')
+        end = (now + timedelta(days=1)).strftime('%Y-%m-%d')
+        return start, end
+    if period == 'month':
+        y, m = _add_months(now.year, now.month, -11)
+        return f'{y:04d}-{m:02d}-01', (now + timedelta(days=1)).strftime('%Y-%m-%d')
+    if period == 'quarter':
+        y = now.year
+        q = (now.month - 1) // 3 + 1
+        for _ in range(7):
+            q -= 1
+            if q == 0:
+                q = 4
+                y -= 1
+        start_month = (q - 1) * 3 + 1
+        return f'{y:04d}-{start_month:02d}-01', (now + timedelta(days=1)).strftime('%Y-%m-%d')
+    if period == 'year':
+        return f'{now.year - 4}-01-01', f'{now.year + 1}-01-01'
+    return None, None
+
+
+def _store_date_query(store_ids=None, start=None, end=None):
+    """Build a Mongo/local query scoped by store ids and optional created_at range."""
+    query = {}
+    if store_ids:
+        if len(store_ids) == 1:
+            query['store_id'] = store_ids[0]
+        else:
+            query['store_id'] = {'$in': list(store_ids)}
+    if start or end:
+        created = {}
+        if start:
+            created['$gte'] = start
+        if end:
+            created['$lt'] = end
+        query['created_at'] = created
+    return query
+
+
+def _cached_collection(name, loader):
+    """Short TTL cache for reference collections used by dashboard/reports."""
+    cached = _ref_cache.get(name)
+    now = datetime.utcnow()
+    if cached and (now - cached['at']).total_seconds() < _REF_CACHE_TTL:
+        return cached['data']
+    data = loader()
+    _ref_cache[name] = {'at': now, 'data': data}
+    if len(_ref_cache) > 20:
+        oldest = sorted(_ref_cache.items(), key=lambda kv: kv[1]['at'])[:10]
+        for key, _ in oldest:
+            _ref_cache.pop(key, None)
+    return data
+
+
+def _invalidate_ref_cache(*names):
+    """Drop cached reference maps so admin mutations stay consistent."""
+    if not names:
+        _ref_cache.clear()
+        _badges_cache.clear()
+        _stats_cache.clear()
+        return
+    for name in names:
+        _ref_cache.pop(name, None)
+    _badges_cache.clear()
+    _stats_cache.clear()
+
+
+def _status_query_values(status):
+    """Include legacy status aliases when filtering orders."""
+    status = normalize_status(status)
+    if status == 'new':
+        return ['new', 'pending', 'placed', 'Placed']
+    return [status]
+
+
+def _ensure_product_inventory_rows(product, default_price=0, default_stock=0):
+    """Create missing inventory rows for a product without N+1 existence checks."""
+    product_id = product.get('id')
+    if not product_id:
+        return
+    existing = {
+        (row.get('store_id'), row.get('variant_id'))
+        for row in db_find('inventory', {'product_id': product_id}, projection={
+            'store_id': 1, 'variant_id': 1,
+        })
+    }
+    for sid in product.get('store_availability') or []:
+        for var in product.get('variants') or []:
+            key = (sid, var.get('id'))
+            if not key[1] or key in existing:
+                continue
+            db_insert('inventory', {
+                'id': new_id('inv_'),
+                'store_id': sid,
+                'product_id': product_id,
+                'variant_id': var['id'],
+                'price': float(default_price or 0),
+                'stock': int(default_stock or 0),
+                'updated_at': now_iso(),
+            })
+            existing.add(key)
+
+
 def _timeline_key(created_at, period):
     """Map an ISO timestamp to a bucket key for day/month/quarter/year."""
     if not created_at:
@@ -2423,8 +2609,6 @@ def api_admin_stats():
     if period not in ('day', 'month', 'quarter', 'year'):
         period = 'month'
     store_ids = resolve_store_ids()
-    # Back-compat: single store_id still works via resolve_store_ids.
-    store_id = store_ids[0] if len(store_ids) == 1 else ''
     anchor_raw = request.args.get('anchor')
     selected_mode = anchor_raw is not None
     now = datetime.utcnow()
@@ -2439,90 +2623,147 @@ def api_admin_stats():
     if cached and (datetime.utcnow() - cached['at']).total_seconds() < _STATS_CACHE_TTL:
         return jsonify(cached['payload'])
 
-    orders = db_find('orders')
+    start, end = _created_at_range(period, anchor if selected_mode else None, now)
+    order_query = _store_date_query(store_ids, start, end)
+    customer_query = {}
+    if start or end:
+        created = {}
+        if start:
+            created['$gte'] = start
+        if end:
+            created['$lt'] = end
+        customer_query['created_at'] = created
+
+    orders = db_find('orders', order_query, projection=_ORDER_STATS_PROJECTION)
+    customers = db_find('customers', customer_query, projection=_CUSTOMER_STATS_PROJECTION)
+
+    all_stores = _cached_collection('stores', lambda: db_find('stores'))
+    stores_by_id = {s['id']: s for s in all_stores}
     if store_ids:
         allowed = set(store_ids)
-        orders = [o for o in orders if o.get('store_id') in allowed]
+        stores = [s for s in all_stores if s.get('id') in allowed] or all_stores
+    else:
+        stores = all_stores
 
-    customers = db_find('customers')
-    stores = db_find('stores')
-    if store_ids:
-        stores = [s for s in stores if s.get('id') in set(store_ids)] or stores
-
-    products_by_id = {p['id']: p for p in db_find('products')}
-    categories_by_id = {c['id']: c for c in db_find('categories')}
-    stores_by_id = {s['id']: s for s in db_find('stores')}
+    products_by_id = _cached_collection(
+        'products_by_id',
+        lambda: {p['id']: p for p in db_find('products')}
+    )
+    categories_by_id = _cached_collection(
+        'categories_by_id',
+        lambda: {c['id']: c for c in db_find('categories')}
+    )
 
     if selected_mode:
-        selected_orders = [o for o in orders if _matches_selection(o.get('created_at'), period, anchor)]
-        selected_customers = [c for c in customers if _matches_selection(c.get('created_at'), period, anchor)]
         buckets = _build_selected_timeline_buckets(period, anchor)
-        for o in selected_orders:
-            key = _selection_bucket_key(o.get('created_at'), period)
-            if key in buckets:
-                buckets[key]['sales'] += o.get('total', 0)
-                buckets[key]['orders'] += 1
-        for c in selected_customers:
-            key = _selection_bucket_key(c.get('created_at'), period)
-            if key in buckets:
-                buckets[key]['customers'] += 1
-        scoped_orders = selected_orders
+        scoped_orders = orders
+        scoped_customers = customers
         period_caption = _selection_caption(period, anchor)
         selection_label = _selection_label(period, anchor)
-        sales_selected = sum(o.get('total', 0) for o in selected_orders)
-        orders_selected = len(selected_orders)
-        customers_selected = len(selected_customers)
     else:
         buckets = _build_timeline_buckets(period, now)
-        for o in orders:
-            key = _timeline_key(o.get('created_at'), period)
-            if key in buckets:
-                buckets[key]['sales'] += o.get('total', 0)
-                buckets[key]['orders'] += 1
-        for c in customers:
-            key = _timeline_key(c.get('created_at'), period)
-            if key in buckets:
-                buckets[key]['customers'] += 1
         scoped_orders = orders
+        scoped_customers = customers
         period_caption = PERIOD_CAPTIONS.get(period, '')
         selection_label = None
-        sales_selected = None
-        orders_selected = None
-        customers_selected = None
 
-    # Store-wise contribution (scoped to selection when slicer is used)
-    store_sales = {}
-    for s in stores:
-        store_sales[s['id']] = {'store_id': s['id'], 'name': s['name'], 'sales': 0, 'orders': 0}
-    for o in scoped_orders:
-        sid = o.get('store_id')
-        if sid in store_sales:
-            store_sales[sid]['sales'] += o.get('total', 0)
-            store_sales[sid]['orders'] += 1
-
+    store_sales = {
+        s['id']: {'store_id': s['id'], 'name': s['name'], 'sales': 0, 'orders': 0}
+        for s in stores
+    }
     status_counts = {}
-    for o in scoped_orders:
-        st = normalize_status(o.get('status'))
-        status_counts[st] = status_counts.get(st, 0) + 1
-
+    product_agg = {}
+    pending = 0
+    sales_today = 0
+    sales_month = 0
+    sales_quarter = 0
+    sales_year = 0
+    sales_selected = 0
     today = now.strftime('%Y-%m-%d')
     month = now.strftime('%Y-%m')
     quarter = f'{now.year}-Q{(now.month - 1) // 3 + 1}'
     year = str(now.year)
-    sales_today = sum(o.get('total', 0) for o in orders if (o.get('created_at') or '')[:10] == today)
-    sales_month = sum(o.get('total', 0) for o in orders if (o.get('created_at') or '')[:7] == month)
-    sales_quarter = sum(o.get('total', 0) for o in orders if _timeline_key(o.get('created_at'), 'quarter') == quarter)
-    sales_year = sum(o.get('total', 0) for o in orders if (o.get('created_at') or '')[:4] == year)
-    if selected_mode:
-        sales_today = sales_selected if period == 'day' else sales_today
-        sales_month = sales_selected if period == 'month' else sales_month
-        sales_quarter = sales_selected if period == 'quarter' else sales_quarter
-        sales_year = sales_selected if period == 'year' else sales_year
-    sales_period = sum(b['sales'] for b in buckets.values())
-    pending = sum(1 for o in scoped_orders
-                  if normalize_status(o.get('status')) in ('new', 'confirmed', 'ready', 'out_for_delivery'))
+    keys_ordered = list(buckets.keys())
+    prev_key = keys_ordered[-2] if len(keys_ordered) > 1 else None
+    curr_key = keys_ordered[-1] if keys_ordered else None
+    store_prev = {s['id']: 0 for s in stores}
+    store_curr = {s['id']: 0 for s in stores}
+    open_statuses = ('new', 'confirmed', 'ready', 'out_for_delivery')
 
-    # Comparison vs previous window (current bucket vs previous bucket)
+    for o in scoped_orders:
+        total = o.get('total', 0) or 0
+        sid = o.get('store_id')
+        created = o.get('created_at') or ''
+        st = normalize_status(o.get('status'))
+        status_counts[st] = status_counts.get(st, 0) + 1
+        if st in open_statuses:
+            pending += 1
+        if sid in store_sales:
+            store_sales[sid]['sales'] += total
+            store_sales[sid]['orders'] += 1
+
+        bucket_key = (
+            _selection_bucket_key(created, period)
+            if selected_mode else _timeline_key(created, period)
+        )
+        if bucket_key in buckets:
+            buckets[bucket_key]['sales'] += total
+            buckets[bucket_key]['orders'] += 1
+            for it in o.get('items') or []:
+                pid = it.get('product_id')
+                if not pid:
+                    continue
+                row = product_agg.get(pid)
+                if row is None:
+                    row = {
+                        'product_id': pid,
+                        'name': it.get('name', pid),
+                        'qty': 0,
+                        'revenue': 0,
+                    }
+                    product_agg[pid] = row
+                row['qty'] += it.get('qty', 0) or 0
+                row['revenue'] += (it.get('price', 0) or 0) * (it.get('qty', 0) or 0)
+
+        if prev_key and bucket_key == prev_key and sid in store_prev:
+            store_prev[sid] += total
+        if curr_key and bucket_key == curr_key and sid in store_curr:
+            store_curr[sid] += total
+
+        if created[:10] == today:
+            sales_today += total
+        if created[:7] == month:
+            sales_month += total
+        if _timeline_key(created, 'quarter') == quarter:
+            sales_quarter += total
+        if created[:4] == year:
+            sales_year += total
+        sales_selected += total
+
+    for c in scoped_customers:
+        bucket_key = (
+            _selection_bucket_key(c.get('created_at'), period)
+            if selected_mode else _timeline_key(c.get('created_at'), period)
+        )
+        if bucket_key in buckets:
+            buckets[bucket_key]['customers'] += 1
+
+    if selected_mode:
+        if period == 'day':
+            sales_today = sales_selected
+        elif period == 'month':
+            sales_month = sales_selected
+        elif period == 'quarter':
+            sales_quarter = sales_selected
+        elif period == 'year':
+            sales_year = sales_selected
+        orders_selected = len(scoped_orders)
+        customers_selected = len(scoped_customers)
+    else:
+        sales_selected = None
+        orders_selected = None
+        customers_selected = None
+
     def _delta(curr, prev):
         if prev <= 0:
             return None
@@ -2536,48 +2777,9 @@ def api_admin_stats():
         'orders_pct': _delta(curr_bucket.get('orders', 0), prev_bucket.get('orders', 0)),
     }
 
-    # Store performance with previous-bucket comparison
-    store_prev = {s['id']: 0 for s in stores}
-    keys_ordered = list(buckets.keys())
-    if len(keys_ordered) > 1:
-        prev_key = keys_ordered[-2]
-        for o in scoped_orders:
-            compare_key = (
-                _selection_bucket_key(o.get('created_at'), period)
-                if selected_mode else _timeline_key(o.get('created_at'), period)
-            )
-            if compare_key == prev_key and o.get('store_id') in store_prev:
-                store_prev[o['store_id']] += o.get('total', 0)
-    curr_key = keys_ordered[-1] if keys_ordered else None
-    store_curr = {s['id']: 0 for s in stores}
-    for o in scoped_orders:
-        compare_key = (
-            _selection_bucket_key(o.get('created_at'), period)
-            if selected_mode else _timeline_key(o.get('created_at'), period)
-        )
-        if curr_key and compare_key == curr_key and o.get('store_id') in store_curr:
-            store_curr[o['store_id']] += o.get('total', 0)
     for sid, row in store_sales.items():
         row['change_pct'] = _delta(store_curr.get(sid, 0), store_prev.get(sid, 0))
 
-    # Top products by revenue within the visible window
-    valid_keys = set(buckets.keys())
-    product_agg = {}
-    for o in scoped_orders:
-        compare_key = (
-            _selection_bucket_key(o.get('created_at'), period)
-            if selected_mode else _timeline_key(o.get('created_at'), period)
-        )
-        if compare_key not in valid_keys:
-            continue
-        for it in o.get('items') or []:
-            pid = it.get('product_id')
-            if not pid:
-                continue
-            product_agg.setdefault(pid, {'product_id': pid, 'name': it.get('name', pid),
-                                         'qty': 0, 'revenue': 0})
-            product_agg[pid]['qty'] += it.get('qty', 0)
-            product_agg[pid]['revenue'] += it.get('price', 0) * it.get('qty', 0)
     top_products = sorted(product_agg.values(), key=lambda x: x['revenue'], reverse=True)[:5]
     for tp in top_products:
         p = products_by_id.get(tp['product_id'])
@@ -2585,33 +2787,28 @@ def api_admin_stats():
             cat = categories_by_id.get(p.get('category_id'))
             tp['category'] = cat['name'] if cat else ''
 
-    # Low stock with configurable threshold + capacity bars
     settings = get_settings()
     threshold = int(settings['low_stock_threshold'])
-    low_stock = []
-    inventory_rows = db_find('inventory')
-    if store_ids:
-        allowed_inv = set(store_ids)
-        inventory_rows = [i for i in inventory_rows if i.get('store_id') in allowed_inv]
+    inv_query = _store_date_query(store_ids) if store_ids else {}
+    inventory_rows = db_find('inventory', inv_query)
     max_stock = max((i.get('stock', 0) for i in inventory_rows), default=1) or 1
+    low_stock = []
+    prod_totals = {}
     for inv in inventory_rows:
-        if inv.get('stock', 0) <= threshold:
-            p = products_by_id.get(inv.get('product_id'))
+        stock = inv.get('stock', 0) or 0
+        pid = inv.get('product_id')
+        prod_totals[pid] = prod_totals.get(pid, 0) + stock
+        if stock <= threshold:
+            p = products_by_id.get(pid)
             s = stores_by_id.get(inv.get('store_id'))
             low_stock.append({
                 **inv,
-                'product_name': p['name'] if p else inv.get('product_id'),
+                'product_name': p['name'] if p else pid,
                 'store_name': s['name'] if s else inv.get('store_id'),
-                'pct': min(100, round(inv.get('stock', 0) / max_stock * 100)),
+                'pct': min(100, round(stock / max_stock * 100)),
             })
 
-    # Inventory health summary (top movers by stock level)
     inv_health = []
-    prod_totals = {}
-    for inv in inventory_rows:
-        pid = inv.get('product_id')
-        prod_totals.setdefault(pid, 0)
-        prod_totals[pid] += inv.get('stock', 0)
     prod_max = max(prod_totals.values(), default=1) or 1
     for pid, total_stock in sorted(prod_totals.items(), key=lambda x: x[1])[:8]:
         p = products_by_id.get(pid)
@@ -2623,7 +2820,7 @@ def api_admin_stats():
             'low': total_stock <= threshold,
         })
 
-    staff = db_find('staff')
+    staff = _cached_collection('staff', lambda: db_find('staff'))
     if store_ids:
         allowed_staff = set(store_ids)
         staff_scoped = [
@@ -2632,20 +2829,29 @@ def api_admin_stats():
         ]
     else:
         staff_scoped = staff
+
     recent = sorted(scoped_orders, key=lambda x: x.get('created_at', ''), reverse=True)[:8]
     for o in recent:
         o['status'] = normalize_status(o.get('status'))
         s = stores_by_id.get(o.get('store_id'))
         o['store_name'] = s['name'] if s else ''
 
+    sales_period = sum(b['sales'] for b in buckets.values())
+    orders_in_buckets = sum(b['orders'] for b in buckets.values())
     kpis = {
         'sales_today': sales_today,
         'sales_month': sales_month,
         'sales_quarter': sales_quarter,
         'sales_year': sales_year,
         'sales_period': sales_period,
-        'orders_total': len(scoped_orders) if selected_mode else len(orders),
-        'customers_total': len(selected_customers) if selected_mode else len(customers),
+        'orders_total': len(scoped_orders),
+        'customers_total': (
+            len(scoped_customers) if selected_mode
+            else len(_cached_collection(
+                'customer_ids',
+                lambda: db_find('customers', projection={'id': 1})
+            ))
+        ),
         'pending_orders': pending,
         'cancelled_orders': status_counts.get('cancelled', 0),
         'products_total': len(products_by_id),
@@ -2654,7 +2860,7 @@ def api_admin_stats():
         'staff_on_duty': sum(1 for m in staff_scoped if m.get('on_duty')),
         'staff_total': len(staff_scoped),
         'low_stock_count': len(low_stock),
-        'avg_order_value': round(sales_period / max(1, sum(b['orders'] for b in buckets.values()))),
+        'avg_order_value': round(sales_period / max(1, orders_in_buckets)),
     }
     if selected_mode:
         kpis['sales_selected'] = sales_selected
@@ -2825,9 +3031,10 @@ def api_admin_category_detail(cat_id):
 def api_admin_products():
     if request.method == 'GET':
         products = db_find('products')
+        categories = _cached_collection('categories', lambda: db_find('categories'))
+        cat_names = {c['id']: c.get('name', '') for c in categories}
         for p in products:
-            cat = db_find_one('categories', {'id': p.get('category_id')})
-            p['category_name'] = cat['name'] if cat else ''
+            p['category_name'] = cat_names.get(p.get('category_id'), '')
         return jsonify(products)
 
     if not admin_is_super():
@@ -2840,6 +3047,7 @@ def api_admin_products():
     for v in variants:
         if not v.get('id'):
             v['id'] = new_id('v')
+    stores = _cached_collection('stores', lambda: db_find('stores'))
     product = {
         'id': new_id('p'),
         'name': name,
@@ -2857,28 +3065,17 @@ def api_admin_products():
         'bestseller': bool(data.get('bestseller', False)),
         'inventory_model': data.get('inventory_model', 'variant'),
         'variants': variants,
-        'store_availability': data.get('store_availability', [s['id'] for s in db_find('stores')]),
+        'store_availability': data.get('store_availability', [s['id'] for s in stores]),
         'created_at': now_iso(),
         'updated_at': now_iso(),
     }
     db_insert('products', product)
-
-    # Init inventory rows for selected stores
-    for sid in product['store_availability']:
-        for var in variants:
-            existing = db_find_one('inventory', {
-                'store_id': sid, 'product_id': product['id'], 'variant_id': var['id']
-            })
-            if not existing:
-                db_insert('inventory', {
-                    'id': new_id('inv_'),
-                    'store_id': sid,
-                    'product_id': product['id'],
-                    'variant_id': var['id'],
-                    'price': float(data.get('default_price', 0) or 0),
-                    'stock': int(data.get('default_stock', 0) or 0),
-                    'updated_at': now_iso(),
-                })
+    _ensure_product_inventory_rows(
+        product,
+        default_price=data.get('default_price', 0),
+        default_stock=data.get('default_stock', 0),
+    )
+    _invalidate_ref_cache('products_by_id')
     return jsonify(product), 201
 
 
@@ -2896,6 +3093,7 @@ def api_admin_product_detail(product_id):
             delete_upload_file(url)
         db_delete('products', {'id': product_id})
         db_delete('inventory', {'product_id': product_id})
+        _invalidate_ref_cache('products_by_id')
         log_activity('system', f"Product {product.get('name', product_id)} deleted")
         return jsonify({'ok': True})
 
@@ -2916,21 +3114,8 @@ def api_admin_product_detail(product_id):
     # Ensure inventory rows exist for new store/variant combos
     product = db_find_one('products', {'id': product_id})
     if product:
-        for sid in product.get('store_availability') or []:
-            for var in product.get('variants') or []:
-                existing = db_find_one('inventory', {
-                    'store_id': sid, 'product_id': product_id, 'variant_id': var['id']
-                })
-                if not existing:
-                    db_insert('inventory', {
-                        'id': new_id('inv_'),
-                        'store_id': sid,
-                        'product_id': product_id,
-                        'variant_id': var['id'],
-                        'price': 0,
-                        'stock': 0,
-                        'updated_at': now_iso(),
-                    })
+        _ensure_product_inventory_rows(product, default_price=0, default_stock=0)
+    _invalidate_ref_cache('products_by_id')
     return jsonify(product)
 
 
@@ -2988,10 +3173,17 @@ def api_admin_inventory():
     elif not admin_is_super():
         return jsonify({'error': 'Your account is not assigned to a store'}), 403
     rows = db_find('inventory', query)
+    products_by_id = _cached_collection(
+        'products_by_id',
+        lambda: {p['id']: p for p in db_find('products')}
+    )
+    stores_by_id = {
+        s['id']: s for s in _cached_collection('stores', lambda: db_find('stores'))
+    }
     enriched = []
     for r in rows:
-        p = db_find_one('products', {'id': r.get('product_id')})
-        s = db_find_one('stores', {'id': r.get('store_id')})
+        p = products_by_id.get(r.get('product_id'))
+        s = stores_by_id.get(r.get('store_id'))
         variant_label = ''
         if p:
             for v in p.get('variants') or []:
@@ -3028,6 +3220,7 @@ def api_admin_inventory_update(inv_id):
         updates['stock'] = int(data['stock'])
     updates['updated_at'] = now_iso()
     db_update('inventory', {'id': inv_id}, updates)
+    _badges_cache.clear()
     return jsonify(db_find_one('inventory', {'id': inv_id}))
 
 
@@ -3042,28 +3235,35 @@ def api_admin_orders():
     focus = (request.args.get('focus') or '').strip()
     page = max(1, int(request.args.get('page', 1)))
     per_page = min(100, int(request.args.get('per_page', 20)))
-    orders = db_find('orders')
-    for o in orders:
-        o['status'] = normalize_status(o.get('status'))
-    if status:
-        orders = [o for o in orders if o.get('status') == status]
     if store_id:
-        orders = [o for o in orders if o.get('store_id') == store_id]
+        pass
     elif not admin_is_super():
         return jsonify({'error': 'Your account is not assigned to a store'}), 403
+
+    query = {}
+    if store_id:
+        query['store_id'] = store_id
+    if status:
+        query['status'] = {'$in': _status_query_values(status)}
     if focus:
-        orders = [o for o in orders if o.get('order_id') == focus or o.get('id') == focus]
+        query['$or'] = [{'order_id': focus}, {'id': focus}]
     elif q:
-        orders = [o for o in orders
-                  if q in (o.get('order_id') or '').lower()
-                  or q in (o.get('customer_name') or '').lower()
-                  or q in (o.get('customer_phone') or '')]
-    orders = sorted(orders, key=lambda x: x.get('created_at', ''), reverse=True)
-    total = len(orders)
+        rx = {'$regex': re.escape(q), '$options': 'i'}
+        query['$or'] = [
+            {'order_id': rx},
+            {'customer_name': rx},
+            {'customer_phone': {'$regex': re.escape(q)}},
+        ]
+
+    total = db_count('orders', query)
     start = (page - 1) * per_page
-    chunk = orders[start:start + per_page]
+    chunk = db_find('orders', query, sort=[('created_at', -1)], skip=start, limit=per_page)
+    stores_by_id = {
+        s['id']: s for s in _cached_collection('stores', lambda: db_find('stores'))
+    }
     for o in chunk:
-        s = db_find_one('stores', {'id': o.get('store_id')})
+        o['status'] = normalize_status(o.get('status'))
+        s = stores_by_id.get(o.get('store_id'))
         o['store_name'] = s['name'] if s else ''
     settings = get_settings()
     return jsonify({'items': chunk, 'total': total, 'page': page, 'per_page': per_page,
@@ -3252,49 +3452,98 @@ def api_admin_customers():
     page = max(1, int(request.args.get('page', 1)))
     per_page = min(100, int(request.args.get('per_page', 20)))
     store_id = resolve_store_scope(request.args.get('store_id'))
-    customers = db_find('customers')
-    all_orders = db_find('orders')
-    if store_id:
-        store_customer_ids = set()
-        store_phones = set()
-        for order in all_orders:
-            if order.get('store_id') != store_id:
-                continue
-            if order.get('customer_id'):
-                store_customer_ids.add(order['customer_id'])
-            if order.get('customer_phone'):
-                store_phones.add(str(order['customer_phone']))
+
+    if focus:
+        customers = db_find('customers', {'id': focus})
+    elif q:
+        rx = {'$regex': re.escape(q), '$options': 'i'}
+        customers = db_find('customers', {'$or': [
+            {'name': rx},
+            {'phone': {'$regex': re.escape(q)}},
+            {'email': rx},
+        ]})
+    elif store_id:
+        slim_orders = db_find(
+            'orders',
+            {'store_id': store_id},
+            projection={'customer_id': 1, 'customer_phone': 1},
+        )
+        store_customer_ids = {o['customer_id'] for o in slim_orders if o.get('customer_id')}
+        store_phones = {str(o['customer_phone']) for o in slim_orders if o.get('customer_phone')}
+        merged = {}
+        for c in db_find('customers', {'preferred_store_id': store_id}):
+            merged[c['id']] = c
+        if store_customer_ids:
+            for c in db_find('customers', {'id': {'$in': list(store_customer_ids)}}):
+                merged[c['id']] = c
+        if store_phones:
+            for c in db_find('customers', {'phone': {'$in': list(store_phones)}}):
+                merged[c['id']] = c
+        customers = list(merged.values())
+    else:
+        customers = db_find('customers')
+
+    if store_id and (focus or q):
+        slim_orders = db_find(
+            'orders',
+            {'store_id': store_id},
+            projection={'customer_id': 1, 'customer_phone': 1},
+        )
+        store_customer_ids = {o['customer_id'] for o in slim_orders if o.get('customer_id')}
+        store_phones = {str(o['customer_phone']) for o in slim_orders if o.get('customer_phone')}
         customers = [
             c for c in customers
             if c.get('id') in store_customer_ids
             or (c.get('phone') and str(c.get('phone')) in store_phones)
             or c.get('preferred_store_id') == store_id
         ]
-    if focus:
-        customers = [c for c in customers if c.get('id') == focus]
-    elif q:
-        customers = [c for c in customers if q in (c.get('name') or '').lower()
-                     or q in (c.get('phone') or '')
-                     or q in (c.get('email') or '').lower()]
+
     customers = sorted(customers, key=lambda x: x.get('created_at', ''), reverse=True)
     total = len(customers)
     start = (page - 1) * per_page
     chunk = customers[start:start + per_page]
+
+    # Load only orders needed for this page of customers
+    chunk_ids = [c.get('id') for c in chunk if c.get('id')]
+    chunk_phones = [str(c.get('phone')) for c in chunk if c.get('phone')]
+    order_clauses = []
+    if chunk_ids:
+        order_clauses.append({'customer_id': {'$in': chunk_ids}})
+    if chunk_phones:
+        order_clauses.append({'customer_phone': {'$in': chunk_phones}})
+    related_orders = []
+    if order_clauses:
+        order_query = {'$or': order_clauses} if len(order_clauses) > 1 else order_clauses[0]
+        if store_id:
+            order_query = {'$and': [order_query, {'store_id': store_id}]}
+        related_orders = db_find('orders', order_query, projection=_CUSTOMER_ORDER_PROJECTION)
+
+    orders_by_customer = {}
+    for order in related_orders:
+        keys = set()
+        if order.get('customer_id'):
+            keys.add(('id', order['customer_id']))
+        if order.get('customer_phone'):
+            keys.add(('phone', str(order['customer_phone'])))
+        for key in keys:
+            orders_by_customer.setdefault(key, []).append(order)
+
     for c in chunk:
-        orders = [
-            order for order in all_orders
-            if (
-                order.get('customer_id') == c.get('id')
-                or (
-                    c.get('phone')
-                    and order.get('customer_phone') == c.get('phone')
-                )
-            )
-            and (not store_id or order.get('store_id') == store_id)
-        ]
-        c['order_count'] = len(orders)
-        c['lifetime_value'] = sum(o.get('total', 0) for o in orders)
-        c['orders'] = sorted(orders, key=lambda x: x.get('created_at', ''), reverse=True)[:10]
+        matched = []
+        seen = set()
+        for key in (('id', c.get('id')), ('phone', str(c.get('phone') or ''))):
+            if not key[1]:
+                continue
+            for order in orders_by_customer.get(key, []):
+                oid = order.get('id') or order.get('order_id')
+                if oid in seen:
+                    continue
+                seen.add(oid)
+                matched.append(order)
+        matched = sorted(matched, key=lambda x: x.get('created_at', ''), reverse=True)
+        c['order_count'] = len(matched)
+        c['lifetime_value'] = sum(o.get('total', 0) for o in matched)
+        c['orders'] = matched[:10]
         c['has_account'] = bool(c.get('password_hash'))
         c.pop('password_hash', None)
     return jsonify({'items': chunk, 'total': total, 'page': page, 'per_page': per_page})
@@ -3468,14 +3717,14 @@ def api_admin_pos_orders():
     if request.method == 'GET':
         store_id = resolve_store_scope(request.args.get('store_id'))
         limit = min(100, max(1, int(request.args.get('limit', 20))))
-        orders = [o for o in db_find('orders') if o.get('channel') == 'in_store']
+        query = {'channel': 'in_store'}
         if store_id:
-            orders = [o for o in orders if o.get('store_id') == store_id]
-        orders.sort(key=lambda o: o.get('created_at', ''), reverse=True)
-        stores = {s['id']: s['name'] for s in db_find('stores')}
-        for order in orders[:limit]:
+            query['store_id'] = store_id
+        orders = db_find('orders', query, sort=[('created_at', -1)], limit=limit)
+        stores = {s['id']: s['name'] for s in _cached_collection('stores', lambda: db_find('stores'))}
+        for order in orders:
             order['store_name'] = stores.get(order.get('store_id'), '')
-        return jsonify(orders[:limit])
+        return jsonify(orders)
 
     data = parse_json()
     store_id = resolve_store_scope(data.get('store_id'))
@@ -3861,15 +4110,26 @@ def api_admin_badges():
     settings = get_settings()
     threshold = int(settings['low_stock_threshold'])
     store_id = resolve_store_scope(request.args.get('store_id'))
-    orders = db_find('orders')
-    inventory = db_find('inventory')
+    cache_key = store_id or '__all__'
+    cached = _badges_cache.get(cache_key)
+    if cached and (datetime.utcnow() - cached['at']).total_seconds() < _BADGES_CACHE_TTL:
+        return jsonify(cached['payload'])
+
+    order_query = {'status': {'$in': list(_OPEN_ORDER_STATUSES)}}
+    inv_query = {'stock': {'$lte': threshold}}
     if store_id:
-        orders = [o for o in orders if o.get('store_id') == store_id]
-        inventory = [i for i in inventory if i.get('store_id') == store_id]
-    open_orders = sum(1 for o in orders
-                      if normalize_status(o.get('status')) in ('new', 'confirmed', 'ready', 'out_for_delivery'))
-    low_stock = sum(1 for i in inventory if i.get('stock', 0) <= threshold)
-    return jsonify({'orders': open_orders, 'inventory': low_stock})
+        order_query['store_id'] = store_id
+        inv_query['store_id'] = store_id
+    payload = {
+        'orders': db_count('orders', order_query),
+        'inventory': db_count('inventory', inv_query),
+    }
+    _badges_cache[cache_key] = {'at': datetime.utcnow(), 'payload': payload}
+    if len(_badges_cache) > 20:
+        oldest = sorted(_badges_cache.items(), key=lambda kv: kv[1]['at'])[:10]
+        for key, _ in oldest:
+            _badges_cache.pop(key, None)
+    return jsonify(payload)
 
 
 # --- Global search ---
@@ -3880,24 +4140,41 @@ def api_admin_search():
     q = (request.args.get('q') or '').strip().lower()
     if len(q) < 2:
         return jsonify({'orders': [], 'products': [], 'customers': [], 'categories': [], 'staff': []})
-    orders = [o for o in db_find('orders')
-              if q in (o.get('order_id') or '').lower()
-              or q in (o.get('customer_name') or '').lower()
-              or q in (o.get('customer_phone') or '')][:6]
-    products = [p for p in db_find('products')
-                if q in (p.get('name') or '').lower()
-                or q in (p.get('sku') or '').lower()][:6]
-    customers = [c for c in db_find('customers')
-                 if q in (c.get('name') or '').lower()
-                 or q in (c.get('phone') or '')
-                 or q in (c.get('email') or '').lower()][:6]
-    categories = [c for c in db_find('categories')
-                  if q in (c.get('name') or '').lower()
-                  or q in (c.get('slug') or '').lower()][:6]
-    staff = [m for m in db_find('staff')
-             if q in (m.get('name') or '').lower()
-             or q in (m.get('phone') or '')
-             or q in (m.get('role') or '').lower()][:6]
+    rx = {'$regex': re.escape(q), '$options': 'i'}
+    phone_rx = {'$regex': re.escape(q)}
+    orders = db_find(
+        'orders',
+        {'$or': [{'order_id': rx}, {'customer_name': rx}, {'customer_phone': phone_rx}]},
+        sort=[('created_at', -1)],
+        limit=6,
+        projection={
+            'order_id': 1, 'customer_name': 1, 'total': 1, 'status': 1,
+        },
+    )
+    products = db_find(
+        'products',
+        {'$or': [{'name': rx}, {'sku': rx}]},
+        limit=6,
+        projection={'id': 1, 'name': 1, 'sku': 1},
+    )
+    customers = db_find(
+        'customers',
+        {'$or': [{'name': rx}, {'phone': phone_rx}, {'email': rx}]},
+        limit=6,
+        projection={'id': 1, 'name': 1, 'phone': 1},
+    )
+    categories = db_find(
+        'categories',
+        {'$or': [{'name': rx}, {'slug': rx}]},
+        limit=6,
+        projection={'id': 1, 'name': 1, 'slug': 1},
+    )
+    staff = db_find(
+        'staff',
+        {'$or': [{'name': rx}, {'phone': phone_rx}, {'role': rx}]},
+        limit=6,
+        projection={'id': 1, 'name': 1, 'role': 1, 'phone': 1},
+    )
     return jsonify({
         'orders': [{'order_id': o['order_id'], 'customer_name': o.get('customer_name'),
                     'total': o.get('total'), 'status': normalize_status(o.get('status'))} for o in orders],
@@ -3995,81 +4272,100 @@ def _report_dataset(store_id=None, period=None, anchor=None, store_ids=None):
             store_ids = [store_id]
         else:
             store_ids = []
-    orders = db_find('orders')
-    if store_ids:
-        allowed = set(store_ids)
-        orders = [o for o in orders if o.get('store_id') in allowed]
+
     period_caption = 'All time'
+    start = end = None
     if period in ('day', 'month', 'quarter', 'year'):
         if anchor is not None:
             normalized = _normalize_anchor(period, anchor)
             if not normalized:
                 raise ValueError('Invalid period selection')
-            orders = [o for o in orders if _matches_selection(o.get('created_at'), period, normalized)]
             period_caption = _selection_caption(period, normalized)
             anchor = normalized
+            start, end = _created_at_range(period, anchor)
         else:
-            buckets = _build_timeline_buckets(period)
-            valid_keys = set(buckets.keys())
-            orders = [o for o in orders if _timeline_key(o.get('created_at'), period) in valid_keys]
             period_caption = PERIOD_CAPTIONS.get(period, 'All time')
-    stores = {s['id']: s for s in db_find('stores')}
-    customers = db_find('customers')
-    if period in ('day', 'month', 'quarter', 'year') and anchor:
-        customers = [c for c in customers if _matches_selection(c.get('created_at'), period, anchor)]
+            start, end = _created_at_range(period, None)
+
+    orders = db_find('orders', _store_date_query(store_ids, start, end))
+    if period in ('day', 'month', 'quarter', 'year') and anchor is None:
+        buckets = _build_timeline_buckets(period)
+        valid_keys = set(buckets.keys())
+        orders = [o for o in orders if _timeline_key(o.get('created_at'), period) in valid_keys]
+
+    stores = {s['id']: s for s in _cached_collection('stores', lambda: db_find('stores'))}
+    customer_query = {}
+    if start or end:
+        created = {}
+        if start:
+            created['$gte'] = start
+        if end:
+            created['$lt'] = end
+        customer_query['created_at'] = created
+    customers = db_find('customers', customer_query)
+
     store_sales = {}
-    for o in orders:
-        sid = o.get('store_id')
-        store_sales.setdefault(sid, {'name': stores.get(sid, {}).get('name', sid), 'sales': 0, 'orders': 0})
-        store_sales[sid]['sales'] += o.get('total', 0)
-        store_sales[sid]['orders'] += 1
-    # Product performance
     product_perf = {}
+    status_counts = {}
+    sales_total = 0
     for o in orders:
+        total = o.get('total', 0) or 0
+        sales_total += total
+        sid = o.get('store_id')
+        row = store_sales.get(sid)
+        if row is None:
+            row = {'name': stores.get(sid, {}).get('name', sid), 'sales': 0, 'orders': 0}
+            store_sales[sid] = row
+        row['sales'] += total
+        row['orders'] += 1
+        st = normalize_status(o.get('status'))
+        status_counts[st] = status_counts.get(st, 0) + 1
         for it in o.get('items') or []:
             pid = it.get('product_id')
             if not pid:
                 continue
-            product_perf.setdefault(pid, {'name': it.get('name', pid), 'qty': 0, 'revenue': 0})
-            product_perf[pid]['qty'] += it.get('qty', 0)
-            product_perf[pid]['revenue'] += it.get('price', 0) * it.get('qty', 0)
+            pref = product_perf.get(pid)
+            if pref is None:
+                pref = {'name': it.get('name', pid), 'qty': 0, 'revenue': 0}
+                product_perf[pid] = pref
+            pref['qty'] += it.get('qty', 0) or 0
+            pref['revenue'] += (it.get('price', 0) or 0) * (it.get('qty', 0) or 0)
 
-    # Inventory snapshot
+    # Inventory snapshot (batch product lookup — no N+1)
     settings = get_settings()
     threshold = int(settings['low_stock_threshold'])
+    products_by_id = _cached_collection(
+        'products_by_id',
+        lambda: {p['id']: p for p in db_find('products')}
+    )
+    inv_query = _store_date_query(store_ids) if store_ids else {}
     inventory = []
-    for inv in db_find('inventory'):
-        if store_ids and inv.get('store_id') not in set(store_ids):
-            continue
-        p = db_find_one('products', {'id': inv.get('product_id')})
+    for inv in db_find('inventory', inv_query):
+        p = products_by_id.get(inv.get('product_id'))
         variant_label = ''
         if p:
             for v in p.get('variants') or []:
                 if v.get('id') == inv.get('variant_id'):
                     variant_label = v.get('label', '')
                     break
+        stock = inv.get('stock', 0) or 0
         inventory.append({
             'product': p['name'] if p else inv.get('product_id'),
             'variant': variant_label,
             'store': stores.get(inv.get('store_id'), {}).get('name', inv.get('store_id')),
             'price': inv.get('price', 0),
-            'stock': inv.get('stock', 0),
-            'low': inv.get('stock', 0) <= threshold,
+            'stock': stock,
+            'low': stock <= threshold,
         })
-
-    status_counts = {}
-    for o in orders:
-        st = normalize_status(o.get('status'))
-        status_counts[st] = status_counts.get(st, 0) + 1
 
     return {
         'orders': sorted(orders, key=lambda x: x.get('created_at', ''), reverse=True),
         'customers': sorted(customers, key=lambda x: x.get('created_at', ''), reverse=True),
         'customers_total': len(customers),
-        'sales_total': sum(o.get('total', 0) for o in orders),
+        'sales_total': sales_total,
         'orders_total': len(orders),
         'store_sales': list(store_sales.values()),
-        'avg_order': (sum(o.get('total', 0) for o in orders) / len(orders)) if orders else 0,
+        'avg_order': (sales_total / len(orders)) if orders else 0,
         'product_perf': sorted(product_perf.values(), key=lambda x: x['revenue'], reverse=True),
         'inventory': sorted(inventory, key=lambda x: x['stock']),
         'status_counts': status_counts,

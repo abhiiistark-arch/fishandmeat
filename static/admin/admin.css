@@ -331,6 +331,12 @@ a { color: var(--green); text-decoration: none; }
   color: var(--muted);
 }
 .seg-btn.active { background: var(--green); color: #fff; }
+.is-slicer-busy {
+  opacity: 0.72;
+  transition: opacity 0.12s ease;
+  pointer-events: none;
+}
+.report-slicer.is-slicer-busy { pointer-events: auto; opacity: 1; }
 .report-slicer {
   display: flex;
   align-items: center;
