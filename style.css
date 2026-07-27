@@ -59,7 +59,7 @@ img { max-width: 100%; height: auto; }
 /* HEADER */
 .header { position: sticky; top: 0; z-index: 50; background: #fff; border-bottom: 1px solid #E7E2D6; }
 .header-inner { display: flex; align-items: center; justify-content: space-between; padding: 14px 40px; max-width: 1400px; margin: 0 auto; gap: 16px; }
-.brand { display: flex; align-items: center; gap: 8px; cursor: pointer; min-width: 0; flex-shrink: 0; }
+.brand { display: flex; align-items: center; gap: 6px; cursor: pointer; min-width: 0; flex-shrink: 0; }
 .brand-logo { width: 100px; height: 100px; object-fit: contain; flex-shrink: 0; }
 .brand-name { font-family: 'Sora', sans-serif; font-weight: 800; font-size: 19px; letter-spacing: 0.3px; }
 .brand-tagline { font-size: 10px; color: #6b6f66; letter-spacing: 1px; font-weight: 600; }
