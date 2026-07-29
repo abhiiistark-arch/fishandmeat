@@ -7,7 +7,9 @@
   <meta http-equiv="Pragma" content="no-cache" />
   <meta http-equiv="Expires" content="0" />
   <title>{% block title %}Admin{% endblock %} — Fish and Meat</title>
-  <link rel="icon" href="/assets/logo.png" type="image/png" />
+  <link rel="icon" href="/assets/favicon.png" type="image/png" sizes="32x32" />
+  <link rel="icon" href="/assets/logo.png" type="image/png" sizes="512x512" />
+  <link rel="apple-touch-icon" href="/assets/logo.png" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="{{ url_for('static', filename='admin/admin.css') }}?v={{ cache_bust }}" />
