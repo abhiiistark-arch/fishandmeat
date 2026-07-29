@@ -59,6 +59,8 @@
       image: img,
       featured: !!p.featured,
       bestseller: !!p.bestseller,
+      parameters: p.parameters || [],
+      stock: Number(p.stock || 0),
       variant_id: variantId,
       variants: p.variants || [],
       store_inventory: p.store_inventory || []
@@ -662,6 +664,9 @@
     var el = document.getElementById('product-detail');
     var detailImage = imgTag(p.image, p.name, { width: 700, height: 700, eager: true })
       || '<div class="placeholder-label">[ ' + esc(p.image) + ' ]</div>';
+    var parameters = (p.parameters || []).map(function (item) {
+      return '<div class="detail-parameter"><span>' + esc(item.label) + '</span><strong>' + esc(item.value) + '</strong></div>';
+    }).join('');
     el.innerHTML = '' +
       '<div class="detail-grid">' +
         '<div class="detail-image' + ((typeof p.image === 'string' && p.image.indexOf('/') === 0) ? '' : ' placeholder placeholder-light') + '">' + detailImage + '</div>' +
@@ -671,6 +676,10 @@
           '<div class="badge">' + esc(p.badge) + '</div>' +
           '<div class="detail-price">&#8377;' + p.price + ' <span>/ ' + esc(p.unit) + '</span></div>' +
           '<p class="detail-desc">' + esc(p.desc) + '</p>' +
+          (parameters ? '<div class="detail-parameters" aria-label="Product parameters">' + parameters + '</div>' : '') +
+          '<div class="detail-stock ' + (p.stock > 0 ? 'in-stock' : 'out-of-stock') + '">' +
+            (p.stock > 0 ? esc(p.stock) + ' in stock at this store' : 'Currently out of stock') +
+          '</div>' +
           '<div class="qty-row">' +
             '<div class="qty-stepper"><button id="qty-dec">&minus;</button><span id="qty-val">' + state.detailQty + '</span><button id="qty-inc">+</button></div>' +
             '<span style="font-size:13px;color:#55594F;">' + esc(p.unit) + '(s)</span>' +

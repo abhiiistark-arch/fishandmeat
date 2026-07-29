@@ -7,6 +7,7 @@ import json
 import uuid
 import hashlib
 import calendar
+import threading
 from datetime import datetime, timedelta
 from functools import wraps
 from io import BytesIO
@@ -118,6 +119,7 @@ def add_security_headers(response):
 _mongo_client = None
 _mongo_db = None
 _use_mongo = False
+_local_db_lock = threading.RLock()
 
 
 def _connect_mongo():
@@ -283,9 +285,10 @@ def db_insert(collection, doc):
         clean = {k: v for k, v in doc.items() if k != '_id'}
         _mongo_db[collection].insert_one(clean)
         return clean
-    rows = _load_local(collection)
-    rows.append(doc)
-    _save_local(collection, rows)
+    with _local_db_lock:
+        rows = _load_local(collection)
+        rows.append(doc)
+        _save_local(collection, rows)
     return doc
 
 
@@ -293,15 +296,43 @@ def db_update(collection, query, updates):
     if _use_mongo:
         result = _mongo_db[collection].update_one(query, {'$set': updates})
         return result.modified_count
-    rows = _load_local(collection)
-    count = 0
-    for i, row in enumerate(rows):
-        if all(row.get(k) == v for k, v in query.items()):
-            rows[i] = {**row, **updates}
-            count += 1
-    if count:
-        _save_local(collection, rows)
+    with _local_db_lock:
+        rows = _load_local(collection)
+        count = 0
+        for i, row in enumerate(rows):
+            if all(row.get(k) == v for k, v in query.items()):
+                rows[i] = {**row, **updates}
+                count += 1
+        if count:
+            _save_local(collection, rows)
     return count
+
+
+def db_increment(collection, query, field, amount):
+    """Atomically increment one numeric field and return the updated document."""
+    if _use_mongo:
+        from pymongo import ReturnDocument
+        return _mongo_db[collection].find_one_and_update(
+            query,
+            {'$inc': {field: amount}, '$set': {'updated_at': now_iso()}},
+            projection={'_id': 0},
+            return_document=ReturnDocument.AFTER,
+        )
+    with _local_db_lock:
+        rows = _load_local(collection)
+        updated = None
+        for i, row in enumerate(rows):
+            if all(row.get(k) == v for k, v in query.items()):
+                rows[i] = {
+                    **row,
+                    field: (row.get(field, 0) or 0) + amount,
+                    'updated_at': now_iso(),
+                }
+                updated = dict(rows[i])
+                break
+        if updated:
+            _save_local(collection, rows)
+        return updated
 
 
 def db_upsert(collection, query, doc):
@@ -339,6 +370,21 @@ def db_mode():
 
 def now_iso():
     return datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+
+
+def normalize_parameters(value):
+    """Store display parameters as a small, safe list of label/value pairs."""
+    result = []
+    for item in value or []:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get('label', '')).strip()[:60]
+        item_value = str(item.get('value', '')).strip()[:80]
+        if label and item_value:
+            result.append({'label': label, 'value': item_value})
+        if len(result) >= 20:
+            break
+    return result
 
 
 def new_id(prefix=''):
@@ -1065,6 +1111,40 @@ def save_storefront_content(data):
 # Seed data (first run)
 # ---------------------------------------------------------------------------
 
+DEFAULT_PARAMETERS_BY_CATEGORY = {
+    'cat_fresh_meat': [
+        {'label': 'Protein', 'value': '24 g / 100 g'},
+        {'label': 'Carbohydrates', 'value': '0 g / 100 g'},
+        {'label': 'Energy', 'value': '180 kcal / 100 g'},
+    ],
+    'cat_frozen': [
+        {'label': 'Protein', 'value': '20 g / 100 g'},
+        {'label': 'Carbohydrates', 'value': '2 g / 100 g'},
+        {'label': 'Energy', 'value': '140 kcal / 100 g'},
+    ],
+    'cat_fish': [
+        {'label': 'Protein', 'value': '22 g / 100 g'},
+        {'label': 'Carbohydrates', 'value': '0 g / 100 g'},
+        {'label': 'Omega-3', 'value': 'Rich source'},
+    ],
+    'cat_rtc': [
+        {'label': 'Protein', 'value': '18 g / serving'},
+        {'label': 'Carbohydrates', 'value': '8 g / serving'},
+        {'label': 'Cooking time', 'value': '15 minutes'},
+    ],
+    'cat_marinades': [
+        {'label': 'Protein', 'value': '19 g / 100 g'},
+        {'label': 'Carbohydrates', 'value': '6 g / 100 g'},
+        {'label': 'Cooking time', 'value': '15–20 minutes'},
+    ],
+    'cat_veg': [
+        {'label': 'Fibre', 'value': '4 g / 100 g'},
+        {'label': 'Carbohydrates', 'value': '12 g / 100 g'},
+        {'label': 'Freshness', 'value': 'Seasonal selection'},
+    ],
+}
+
+
 def seed_if_empty():
     if db_count('stores') > 0:
         return
@@ -1113,6 +1193,7 @@ def seed_if_empty():
          'banner': '/uploads/products/seed_p14.png', 'sort_order': 6, 'created_at': now_iso()},
     ]
     for c in categories:
+        c['parameters'] = DEFAULT_PARAMETERS_BY_CATEGORY.get(c['id'], [])
         db_insert('categories', c)
 
     products_seed = [
@@ -1207,6 +1288,7 @@ def seed_if_empty():
             'status': 'available',
             'expiry_info': '',
             'nutritional_info': '',
+            'parameters': DEFAULT_PARAMETERS_BY_CATEGORY.get(cat, []),
             'seo_title': name,
             'seo_description': desc[:140],
             'featured': featured,
@@ -1289,6 +1371,25 @@ def seed_if_empty():
     print('[db] Seeded stores, categories, products, inventory, demo orders')
 
 
+def ensure_default_parameters():
+    """Backfill existing records once without overwriting admin-entered values."""
+    for category in db_find('categories'):
+        if 'parameters' not in category:
+            db_update('categories', {'id': category['id']}, {
+                'parameters': DEFAULT_PARAMETERS_BY_CATEGORY.get(category['id'], []),
+                'updated_at': now_iso(),
+            })
+    for product in db_find('products'):
+        if 'parameters' not in product:
+            db_update('products', {'id': product['id']}, {
+                'parameters': DEFAULT_PARAMETERS_BY_CATEGORY.get(product.get('category_id'), [
+                    {'label': 'Protein', 'value': '20 g / 100 g'},
+                    {'label': 'Carbohydrates', 'value': '0 g / 100 g'},
+                ]),
+                'updated_at': now_iso(),
+            })
+
+
 def ensure_media_assets():
     """Attach existing design/upload images to records that still have empty image fields."""
     hero_url = '/assets/hero.webp'
@@ -1345,6 +1446,7 @@ def ensure_media_assets():
 
 
 seed_if_empty()
+ensure_default_parameters()
 ensure_media_assets()
 sync_local_uploads_to_media()
 ensure_admin_users()
@@ -2990,10 +3092,12 @@ def api_admin_categories():
         'seo_title': data.get('seo_title', name),
         'seo_description': data.get('seo_description', ''),
         'banner': data.get('banner', ''),
+        'parameters': normalize_parameters(data.get('parameters')),
         'sort_order': int(data.get('sort_order', 99)),
         'created_at': now_iso(),
     }
     db_insert('categories', cat)
+    _invalidate_ref_cache('categories')
     return jsonify(cat), 201
 
 
@@ -3009,18 +3113,25 @@ def api_admin_category_detail(cat_id):
     if request.method == 'DELETE':
         delete_upload_file(category.get('banner'))
         db_delete('categories', {'id': cat_id})
+        _invalidate_ref_cache('categories')
         log_activity('system', f"Category {category.get('name', cat_id)} deleted")
         return jsonify({'ok': True})
 
     data = parse_json()
-    allowed = ['name', 'slug', 'enabled', 'seo_title', 'seo_description', 'banner', 'sort_order']
+    allowed = [
+        'name', 'slug', 'enabled', 'seo_title', 'seo_description', 'banner',
+        'parameters', 'sort_order'
+    ]
     updates = {k: data[k] for k in allowed if k in data}
+    if 'parameters' in updates:
+        updates['parameters'] = normalize_parameters(updates['parameters'])
     if 'sort_order' in updates:
         updates['sort_order'] = int(updates['sort_order'])
     updates['updated_at'] = now_iso()
     if 'banner' in updates and updates.get('banner') != category.get('banner'):
         delete_upload_file(category.get('banner'))
     db_update('categories', {'id': cat_id}, updates)
+    _invalidate_ref_cache('categories')
     return jsonify(db_find_one('categories', {'id': cat_id}))
 
 
@@ -3048,6 +3159,12 @@ def api_admin_products():
         if not v.get('id'):
             v['id'] = new_id('v')
     stores = _cached_collection('stores', lambda: db_find('stores'))
+    category = db_find_one('categories', {'id': data.get('category_id', '')})
+    parameters = (
+        normalize_parameters(data.get('parameters'))
+        if 'parameters' in data
+        else normalize_parameters((category or {}).get('parameters'))
+    )
     product = {
         'id': new_id('p'),
         'name': name,
@@ -3059,6 +3176,7 @@ def api_admin_products():
         'gst_percent': float(data.get('gst_percent', 0) or 0),
         'expiry_info': data.get('expiry_info', ''),
         'nutritional_info': data.get('nutritional_info', ''),
+        'parameters': parameters,
         'seo_title': data.get('seo_title', name),
         'seo_description': data.get('seo_description', ''),
         'featured': bool(data.get('featured', False)),
@@ -3101,9 +3219,12 @@ def api_admin_product_detail(product_id):
     allowed = [
         'name', 'description', 'sku', 'category_id', 'images', 'status',
         'gst_percent', 'expiry_info', 'nutritional_info', 'seo_title', 'seo_description',
-        'featured', 'bestseller', 'inventory_model', 'variants', 'store_availability'
+        'featured', 'bestseller', 'inventory_model', 'variants', 'store_availability',
+        'parameters'
     ]
     updates = {k: data[k] for k in allowed if k in data}
+    if 'parameters' in updates:
+        updates['parameters'] = normalize_parameters(updates['parameters'])
     if 'gst_percent' in updates:
         updates['gst_percent'] = float(updates['gst_percent'] or 0)
     updates['updated_at'] = now_iso()
@@ -3162,9 +3283,33 @@ def api_admin_product_image(product_id):
 
 # --- Inventory & pricing ---
 
-@app.route('/api/admin/inventory')
+@app.route('/api/admin/inventory', methods=['GET', 'POST'])
 @admin_required
 def api_admin_inventory():
+    if request.method == 'POST':
+        data = parse_json()
+        row = db_find_one('inventory', {'id': data.get('inventory_id')})
+        if not row:
+            return jsonify({'error': 'Inventory row not found'}), 404
+        denied = assert_store_access(row.get('store_id'))
+        if denied:
+            return denied
+        try:
+            quantity = int(data.get('quantity', 0))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Quantity must be a whole number'}), 400
+        if quantity < 1 or quantity > 1000000:
+            return jsonify({'error': 'Quantity must be between 1 and 1,000,000'}), 400
+        updated = db_increment('inventory', {'id': row['id']}, 'stock', quantity)
+        _badges_cache.clear()
+        log_activity(
+            'inventory',
+            f"Added {quantity} units of stock",
+            {'inventory_id': row['id'], 'store_id': row.get('store_id'),
+             'product_id': row.get('product_id'), 'quantity': quantity},
+        )
+        return jsonify(updated)
+
     store_id = resolve_store_scope(request.args.get('store_id'))
     low_stock_threshold = int(get_settings().get('low_stock_threshold', 10))
     query = {}
@@ -3214,10 +3359,15 @@ def api_admin_inventory_update(inv_id):
         return denied
     data = parse_json()
     updates = {}
-    if 'price' in data:
-        updates['price'] = float(data['price'])
-    if 'stock' in data:
-        updates['stock'] = int(data['stock'])
+    try:
+        if 'price' in data:
+            updates['price'] = float(data['price'])
+        if 'stock' in data:
+            updates['stock'] = int(data['stock'])
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Price and stock must be valid numbers'}), 400
+    if updates.get('price', 0) < 0 or updates.get('stock', 0) < 0:
+        return jsonify({'error': 'Price and stock cannot be negative'}), 400
     updates['updated_at'] = now_iso()
     db_update('inventory', {'id': inv_id}, updates)
     _badges_cache.clear()

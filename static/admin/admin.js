@@ -189,6 +189,11 @@
                 if (AdminReports.renderStoreFilter) AdminReports.renderStoreFilter();
                 AdminReports.scheduleLoad();
               }
+              var invFilter = document.getElementById('inv-store-filter');
+              if (invFilter && window.AdminInventory) {
+                invFilter.value = sel.value;
+                AdminInventory.load();
+              }
             };
           } else {
             var locked = stores.find(function (s) { return s.id === self.admin.storeId; })
@@ -602,6 +607,46 @@
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+  function renderParameterEditor(hostId, parameters) {
+    var host = document.getElementById(hostId);
+    if (!host) return;
+    host.innerHTML = (parameters || []).map(function (item) {
+      return '<div class="parameter-row">' +
+        '<input class="parameter-label" placeholder="Parameter (e.g. Protein)" value="' + esc(item.label || '') + '" />' +
+        '<input class="parameter-value" placeholder="Value (e.g. 20 g / 100 g)" value="' + esc(item.value || '') + '" />' +
+        '<button type="button" class="parameter-remove" aria-label="Remove parameter">&times;</button>' +
+        '</div>';
+    }).join('');
+    host.querySelectorAll('.parameter-remove').forEach(function (btn) {
+      btn.onclick = function () { btn.closest('.parameter-row').remove(); };
+    });
+  }
+
+  function addParameterRow(hostId, item) {
+    var host = document.getElementById(hostId);
+    if (!host) return;
+    var wrap = document.createElement('div');
+    wrap.className = 'parameter-row';
+    wrap.innerHTML =
+      '<input class="parameter-label" placeholder="Parameter (e.g. Protein)" value="' + esc((item || {}).label || '') + '" />' +
+      '<input class="parameter-value" placeholder="Value (e.g. 20 g / 100 g)" value="' + esc((item || {}).value || '') + '" />' +
+      '<button type="button" class="parameter-remove" aria-label="Remove parameter">&times;</button>';
+    wrap.querySelector('.parameter-remove').onclick = function () { wrap.remove(); };
+    host.appendChild(wrap);
+    wrap.querySelector('.parameter-label').focus();
+  }
+
+  function readParameters(hostId) {
+    var host = document.getElementById(hostId);
+    if (!host) return [];
+    return Array.from(host.querySelectorAll('.parameter-row')).map(function (row) {
+      return {
+        label: row.querySelector('.parameter-label').value.trim(),
+        value: row.querySelector('.parameter-value').value.trim()
+      };
+    }).filter(function (item) { return item.label && item.value; });
+  }
+
   // -------- Stores --------
   var AdminStores = {
     init: function () {
@@ -680,6 +725,9 @@
       document.getElementById('cat-form').onsubmit = function (e) {
         e.preventDefault();
         self.save();
+      };
+      document.getElementById('cat-add-parameter').onclick = function () {
+        addParameterRow('cat-parameters');
       };
       document.getElementById('cat-image-file').onchange = async function (e) {
         var file = e.target.files[0];
@@ -767,6 +815,7 @@
       document.getElementById('cat-seo-title').value = c.seo_title || '';
       document.getElementById('cat-seo-desc').value = c.seo_description || '';
       document.getElementById('cat-banner').value = c.banner || '';
+      renderParameterEditor('cat-parameters', c.parameters || []);
       this.renderImage(c.banner || '');
       openModal('cat-modal');
     },
@@ -779,7 +828,8 @@
         enabled: document.getElementById('cat-enabled').value === 'true',
         seo_title: document.getElementById('cat-seo-title').value,
         seo_description: document.getElementById('cat-seo-desc').value,
-        banner: document.getElementById('cat-banner').value
+        banner: document.getElementById('cat-banner').value,
+        parameters: readParameters('cat-parameters')
       };
       if (id) await api('/api/admin/categories/' + id, { method: 'PUT', body: JSON.stringify(body) });
       else await api('/api/admin/categories', { method: 'POST', body: JSON.stringify(body) });
@@ -805,6 +855,9 @@
       document.getElementById('product-form').onsubmit = function (e) {
         e.preventDefault();
         self.save();
+      };
+      document.getElementById('p-add-parameter').onclick = function () {
+        addParameterRow('p-parameters');
       };
       this.load();
     },
@@ -880,12 +933,25 @@
       document.getElementById('p-seo-desc').value = p.seo_description || '';
       document.getElementById('p-default-price').value = 0;
       document.getElementById('p-gst').value = p.gst_percent != null ? p.gst_percent : 0;
-      document.getElementById('p-image-wrap').style.display = isEdit ? 'block' : 'none';
+      document.getElementById('p-image-wrap').style.display = 'block';
+      document.getElementById('p-image').value = '';
+      var selectedCategory = this.categories.find(function (c) {
+        return c.id === (p.category_id || (this.categories[0] && this.categories[0].id));
+      }, this);
+      renderParameterEditor(
+        'p-parameters',
+        p.parameters || (!isEdit && selectedCategory && selectedCategory.parameters) || []
+      );
 
       var catSel = document.getElementById('p-category');
       catSel.innerHTML = this.categories.map(function (c) {
         return '<option value="' + c.id + '"' + (p.category_id === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>';
       }).join('');
+      catSel.onchange = function () {
+        if (isEdit || readParameters('p-parameters').length) return;
+        var category = self.categories.find(function (c) { return c.id === catSel.value; });
+        renderParameterEditor('p-parameters', (category && category.parameters) || []);
+      };
 
       var lines = (p.variants || []).map(function (v) {
         return (v.label || '') + ' | ' + (v.unit || '');
@@ -927,9 +993,8 @@
 
       openModal('product-modal');
 
+      var fileInput = document.getElementById('p-image');
       if (isEdit) {
-        var fileInput = document.getElementById('p-image');
-        fileInput.value = '';
         fileInput.onchange = async function () {
           if (!fileInput.files[0]) return;
           var fd = new FormData();
@@ -943,10 +1008,13 @@
           renderImages(data.images);
           self.load();
         };
+      } else {
+        fileInput.onchange = null;
       }
     },
     save: async function () {
       var id = document.getElementById('product-id').value;
+      var imageWarning = false;
       var variantLines = document.getElementById('p-variants').value.split('\n').filter(Boolean);
       var variants = variantLines.map(function (line, i) {
         var parts = line.split('|').map(function (x) { return x.trim(); });
@@ -971,6 +1039,7 @@
         bestseller: document.getElementById('p-bestseller').value === 'true',
         expiry_info: document.getElementById('p-expiry').value,
         nutritional_info: document.getElementById('p-nutrition').value,
+        parameters: readParameters('p-parameters'),
         seo_title: document.getElementById('p-seo-title').value,
         seo_description: document.getElementById('p-seo-desc').value,
         variants: variants,
@@ -978,6 +1047,7 @@
         default_price: Number(document.getElementById('p-default-price').value || 0),
         gst_percent: Number(document.getElementById('p-gst').value || 0)
       };
+      var saved;
       if (id) {
         // preserve existing variant ids when labels match
         var existing = this.products.find(function (x) { return x.id === id; });
@@ -988,31 +1058,86 @@
             return v;
           });
         }
-        await api('/api/admin/products/' + id, { method: 'PUT', body: JSON.stringify(body) });
+        saved = await api('/api/admin/products/' + id, { method: 'PUT', body: JSON.stringify(body) });
       } else {
-        await api('/api/admin/products', { method: 'POST', body: JSON.stringify(body) });
+        saved = await api('/api/admin/products', { method: 'POST', body: JSON.stringify(body) });
+        var pendingImage = document.getElementById('p-image').files[0];
+        if (pendingImage && saved && saved.id) {
+          var fd = new FormData();
+          fd.append('image', pendingImage);
+          var uploadRes = await fetch('/api/admin/products/' + saved.id + '/image', {
+            method: 'POST', body: fd, credentials: 'same-origin'
+          });
+          var uploadData = await uploadRes.json();
+          if (!uploadRes.ok) imageWarning = true;
+        }
       }
       closeModal('product-modal');
-      toast('Product saved');
+      toast(imageWarning ? 'Product saved, but the image upload failed' : 'Product saved', imageWarning);
       this.load();
     }
   };
 
   // -------- Inventory --------
   var AdminInventory = {
+    stores: [],
+    categories: [],
+    products: [],
+    rows: [],
     loadToken: 0,
     abortCtrl: null,
     init: async function () {
       var self = this;
-      var stores = await api('/api/admin/stores');
+      var initial = await Promise.all([
+        api('/api/admin/stores'),
+        api('/api/admin/categories'),
+        api('/api/admin/products')
+      ]);
+      this.stores = initial[0];
+      this.categories = initial[1];
+      this.products = initial[2];
       var sel = document.getElementById('inv-store-filter');
-      sel.innerHTML = '<option value="">All stores</option>' + stores.map(function (s) {
+      sel.innerHTML = '<option value="">All stores</option>' + this.stores.map(function (s) {
         return '<option value="' + s.id + '">' + esc(s.name) + '</option>';
       }).join('');
-      sel.onchange = function () { self.load(); };
+      if (AdminShell.storeId && this.stores.some(function (s) { return s.id === AdminShell.storeId; })) {
+        sel.value = AdminShell.storeId;
+      }
+      sel.onchange = function () {
+        AdminShell.storeId = sel.value;
+        localStorage.setItem('fam_admin_store', sel.value);
+        var globalSel = document.getElementById('global-store-filter');
+        if (globalSel && !globalSel.disabled) globalSel.value = sel.value;
+        self.load();
+      };
+      document.getElementById('btn-add-stock').onclick = function () { self.openStockForm(); };
+      document.getElementById('stock-cancel').onclick = function () { closeModal('stock-modal'); };
+      document.getElementById('stock-form').onsubmit = function (e) {
+        e.preventDefault();
+        self.addStock();
+      };
+      document.getElementById('stock-store').onchange = function () { self.refreshStockProducts(); };
+      document.getElementById('stock-product').onchange = function () {
+        if (this.value === '__new__') {
+          closeModal('stock-modal');
+          self.openProductForm();
+          return;
+        }
+        self.refreshStockVariants();
+      };
+      document.getElementById('stock-variant').onchange = function () { self.renderStockSummary(); };
+      document.getElementById('inventory-product-cancel').onclick = function () { closeModal('inventory-product-modal'); };
+      document.getElementById('inventory-product-form').onsubmit = function (e) {
+        e.preventDefault();
+        self.createProduct();
+      };
+      document.getElementById('ip-add-parameter').onclick = function () { addParameterRow('ip-parameters'); };
+      document.getElementById('ip-cat-add-parameter').onclick = function () { addParameterRow('ip-cat-parameters'); };
+      document.getElementById('ip-category').onchange = function () { self.onProductCategoryChange(); };
       this.load();
     },
     load: async function () {
+      var self = this;
       var token = ++this.loadToken;
       if (this.abortCtrl) this.abortCtrl.abort();
       this.abortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
@@ -1022,6 +1147,7 @@
       try {
         var rows = await api(url, { signal: this.abortCtrl ? this.abortCtrl.signal : undefined });
         if (token !== this.loadToken) return;
+        this.rows = rows;
         tbody.innerHTML = rows.map(function (r) {
           return '<tr data-id="' + r.id + '">' +
             '<td><strong>' + (r.low_stock ? '<span class="alert-dot" title="Low stock"></span>' : '') +
@@ -1044,12 +1170,178 @@
               body: JSON.stringify({ price: Number(price), stock: Number(stock) })
             });
             toast('Inventory updated');
+            await self.load();
+            AdminShell.refreshBadges();
           };
         });
       } catch (e) {
         if (isAbortError(e) || token !== this.loadToken) return;
         toast(e.message || 'Could not load inventory', true);
       }
+    },
+    openStockForm: async function () {
+      this.rows = await api('/api/admin/inventory');
+      var selectedStore = document.getElementById('inv-store-filter').value;
+      var storeSel = document.getElementById('stock-store');
+      storeSel.innerHTML = this.stores.map(function (s) {
+        return '<option value="' + s.id + '"' + (s.id === selectedStore ? ' selected' : '') + '>' + esc(s.name) + '</option>';
+      }).join('');
+      document.getElementById('stock-quantity').value = 1;
+      this.refreshStockProducts();
+      openModal('stock-modal');
+    },
+    refreshStockProducts: function () {
+      var storeId = document.getElementById('stock-store').value;
+      var availableIds = {};
+      this.rows.forEach(function (r) {
+        if (r.store_id === storeId) availableIds[r.product_id] = true;
+      });
+      var options = ['<option value="">Select a product…</option>'];
+      options = options.concat(this.products.filter(function (p) { return availableIds[p.id]; }).map(function (p) {
+        return '<option value="' + p.id + '">' + esc(p.name) + ' · ' + esc(p.sku) + '</option>';
+      }));
+      options.push('<option value="__new__">+ Add a new product…</option>');
+      document.getElementById('stock-product').innerHTML = options.join('');
+      this.refreshStockVariants();
+    },
+    refreshStockVariants: function () {
+      var storeId = document.getElementById('stock-store').value;
+      var productId = document.getElementById('stock-product').value;
+      var matching = this.rows.filter(function (r) {
+        return r.store_id === storeId && r.product_id === productId;
+      });
+      document.getElementById('stock-variant').innerHTML = matching.map(function (r) {
+        return '<option value="' + r.id + '">' + esc(r.variant_label || 'Default') + ' · current stock ' + r.stock + '</option>';
+      }).join('');
+      this.renderStockSummary();
+    },
+    renderStockSummary: function () {
+      var rowId = document.getElementById('stock-variant').value;
+      var row = this.rows.find(function (r) { return r.id === rowId; });
+      var product = row && this.products.find(function (p) { return p.id === row.product_id; });
+      var category = product && this.categories.find(function (c) { return c.id === product.category_id; });
+      var host = document.getElementById('stock-product-summary');
+      if (!row || !product) {
+        host.innerHTML = '<span class="muted">Choose a product and variant.</span>';
+        return;
+      }
+      var image = product.images && product.images[0]
+        ? '<img src="' + esc(product.images[0]) + '" alt="">'
+        : '<div class="stock-summary-placeholder">No image</div>';
+      host.innerHTML = image + '<div><strong>' + esc(product.name) + '</strong>' +
+        '<span>' + esc((category && category.name) || '') + ' · ' + esc(row.variant_label) + '</span>' +
+        '<span>Price ' + money(row.price) + ' · Current stock <b>' + row.stock + '</b></span></div>';
+    },
+    addStock: async function () {
+      var inventoryId = document.getElementById('stock-variant').value;
+      if (!inventoryId) { toast('Choose a product variant', true); return; }
+      var quantity = Number(document.getElementById('stock-quantity').value);
+      await api('/api/admin/inventory', {
+        method: 'POST',
+        body: JSON.stringify({ inventory_id: inventoryId, quantity: quantity })
+      });
+      closeModal('stock-modal');
+      toast(quantity + ' units added to stock');
+      await this.load();
+      AdminShell.refreshBadges();
+    },
+    openProductForm: function () {
+      document.getElementById('inventory-product-form').reset();
+      document.getElementById('ip-variants').value = '500 gm | 500g\n1 kg | 1kg';
+      document.getElementById('ip-category').innerHTML = this.categories.map(function (c) {
+        return '<option value="' + c.id + '">' + esc(c.name) + '</option>';
+      }).join('') + '<option value="__new__">+ Add a new category…</option>';
+      document.getElementById('ip-stores').innerHTML = this.stores.map(function (s) {
+        return '<label><input type="checkbox" value="' + s.id + '" checked /> ' + esc(s.name) + '</label>';
+      }).join('');
+      renderParameterEditor('ip-cat-parameters', []);
+      this.onProductCategoryChange();
+      openModal('inventory-product-modal');
+    },
+    onProductCategoryChange: function () {
+      var categoryId = document.getElementById('ip-category').value;
+      var isNew = categoryId === '__new__';
+      document.getElementById('ip-new-category').classList.toggle('hidden', !isNew);
+      document.getElementById('ip-cat-name').required = isNew;
+      var category = this.categories.find(function (c) { return c.id === categoryId; });
+      renderParameterEditor('ip-parameters', (category && category.parameters) || []);
+    },
+    uploadImage: async function (url, file) {
+      if (!file) return null;
+      var fd = new FormData();
+      fd.append('image', file);
+      var res = await fetch(url, { method: 'POST', body: fd, credentials: 'same-origin' });
+      var data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Image upload failed');
+      return data;
+    },
+    createProduct: async function () {
+      var categoryId = document.getElementById('ip-category').value;
+      if (categoryId === '__new__') {
+        var categoryImage = await this.uploadImage(
+          '/api/admin/content-image',
+          document.getElementById('ip-cat-image').files[0]
+        );
+        var category = await api('/api/admin/categories', {
+          method: 'POST',
+          body: JSON.stringify({
+            name: document.getElementById('ip-cat-name').value,
+            slug: document.getElementById('ip-cat-slug').value,
+            sort_order: Number(document.getElementById('ip-cat-order').value || 99),
+            enabled: document.getElementById('ip-cat-enabled').value === 'true',
+            seo_title: document.getElementById('ip-cat-seo-title').value,
+            seo_description: document.getElementById('ip-cat-seo-desc').value,
+            banner: categoryImage ? categoryImage.url : '',
+            parameters: readParameters('ip-cat-parameters')
+          })
+        });
+        categoryId = category.id;
+        this.categories.push(category);
+      }
+      var variants = document.getElementById('ip-variants').value.split('\n').filter(Boolean).map(function (line, i) {
+        var parts = line.split('|').map(function (x) { return x.trim(); });
+        return {
+          id: 'v' + (i + 1),
+          label: parts[0] || ('Variant ' + (i + 1)),
+          unit: parts[1] || 'unit',
+          sku_suffix: (parts[0] || 'V').toUpperCase().replace(/\s+/g, '-').slice(0, 12)
+        };
+      });
+      var stores = Array.from(document.querySelectorAll('#ip-stores input:checked')).map(function (el) { return el.value; });
+      var product = await api('/api/admin/products', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: document.getElementById('ip-name').value,
+          sku: document.getElementById('ip-sku').value,
+          category_id: categoryId,
+          status: document.getElementById('ip-status').value,
+          description: document.getElementById('ip-desc').value,
+          parameters: readParameters('ip-parameters'),
+          gst_percent: Number(document.getElementById('ip-gst').value || 0),
+          featured: document.getElementById('ip-featured').value === 'true',
+          bestseller: document.getElementById('ip-bestseller').value === 'true',
+          expiry_info: document.getElementById('ip-expiry').value,
+          nutritional_info: document.getElementById('ip-nutrition').value,
+          variants: variants,
+          store_availability: stores,
+          default_price: Number(document.getElementById('ip-price').value || 0),
+          default_stock: Number(document.getElementById('ip-stock').value || 0)
+        })
+      });
+      var imageWarning = false;
+      try {
+        await this.uploadImage('/api/admin/products/' + product.id + '/image', document.getElementById('ip-image').files[0]);
+      } catch (e) {
+        imageWarning = true;
+      }
+      this.products = await api('/api/admin/products');
+      closeModal('inventory-product-modal');
+      toast(
+        imageWarning ? 'Product and stock created, but the image upload failed' : 'Product, images and stock created',
+        imageWarning
+      );
+      await this.load();
+      AdminShell.refreshBadges();
     }
   };
 

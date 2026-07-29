@@ -36,6 +36,12 @@
         </select>
       </div>
       <div class="field full"><label>Description</label><textarea id="p-desc" rows="3"></textarea></div>
+      <div class="field full">
+        <label>Parameters</label>
+        <div id="p-parameters" class="parameter-editor"></div>
+        <button type="button" class="btn btn-outline btn-sm add-parameter" id="p-add-parameter">+ Add Parameter</button>
+        <small class="field-hint">Shown below the description on the product page, for example Protein — 20 g / 100 g.</small>
+      </div>
       <div class="field"><label>Inventory Model</label>
         <select id="p-inv-model">
           <option value="variant">Variant-Level Inventory</option>
@@ -58,9 +64,10 @@
         <textarea id="p-variants" rows="4" placeholder="500 gm | 500g&#10;1 kg | 1kg&#10;Skinless 1 kg | 1kg"></textarea>
       </div>
       <div class="field full"><label>Store Availability</label><div id="p-stores" class="check-grid"></div></div>
-      <div class="field full" id="p-image-wrap" style="display:none">
-        <label>Upload Image</label>
+      <div class="field full" id="p-image-wrap">
+        <label>Product Images</label>
         <input type="file" id="p-image" accept="image/*" />
+        <small class="field-hint">For a new product, the selected image uploads immediately after the product is saved.</small>
         <div id="p-images-preview" class="img-preview"></div>
       </div>
     </div>

@@ -502,6 +502,29 @@ dialog.modal:has(.wide) { max-width: 720px; }
   box-shadow: 0 0 0 3px rgba(30,58,34,.1);
 }
 .field textarea { resize: vertical; line-height: 1.5; }
+.field input[type="file"] { max-width: 100%; padding: 9px 10px; font-size: 13px; }
+.field-hint { color: var(--muted); font-size: 11px; line-height: 1.4; }
+.parameter-editor { display: flex; flex-direction: column; gap: 8px; }
+.parameter-row { display: grid; grid-template-columns: minmax(120px, .8fr) minmax(160px, 1.2fr) 34px; gap: 8px; align-items: center; }
+.parameter-row input { min-width: 0; }
+.parameter-remove {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--red);
+  font-size: 20px;
+  cursor: pointer;
+}
+.add-parameter { align-self: flex-start; margin-top: 2px; }
+.form-subheading { margin: 6px 0 14px; font-size: 15px; }
+.nested-form-grid { padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: rgba(255,255,255,.45); }
+.stock-product-summary { min-height: 86px; display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 12px; border: 1px solid var(--border); border-radius: 8px; background: #fff; }
+.stock-product-summary img, .stock-summary-placeholder { width: 66px; height: 66px; border-radius: 7px; object-fit: cover; flex: 0 0 auto; }
+.stock-summary-placeholder { display: grid; place-items: center; background: #eee8da; color: var(--muted); font-size: 10px; }
+.stock-product-summary > div:last-child { display: flex; flex-direction: column; gap: 5px; }
+.stock-product-summary span { color: var(--muted); font-size: 12px; }
 .modal-actions {
   display: flex;
   justify-content: flex-end;
@@ -1103,6 +1126,8 @@ dialog.modal:has(.wide) { max-width: 720px; }
   .search-input { min-width: 0; width: 100%; }
   .report-actions { flex-wrap: wrap; }
   #global-store-filter { max-width: 160px; }
+  .nested-form-grid { padding: 14px; }
+  .stock-product-summary > div:last-child { flex: 1 1 180px; }
 }
 @media (max-width: 560px) {
   .kpi-grid { grid-template-columns: 1fr; }
@@ -1114,4 +1139,13 @@ dialog.modal:has(.wide) { max-width: 720px; }
   .order-item-row { grid-template-columns: 1fr 70px 80px 28px; font-size: 12px; }
   .seg-btn { padding: 8px 12px; font-size: 12px; }
   .panel { padding: 16px; }
+  .top-actions { width: 100%; }
+  .top-actions > .btn, .top-actions > .select-dark { flex: 1 1 auto; }
+  .inline-edit { width: 74px; }
+  .nested-form-grid { padding: 12px; }
+  .parameter-row { grid-template-columns: minmax(0, 1fr) 34px; gap: 6px; }
+  .parameter-row .parameter-label { grid-area: 1 / 1 / 2 / 2; }
+  .parameter-row .parameter-value { grid-area: 2 / 1 / 3 / 2; }
+  .parameter-row .parameter-remove { grid-area: 1 / 2 / 3 / 3; height: 100%; }
+  .parameter-row + .parameter-row { padding-top: 8px; border-top: 1px dashed var(--border); }
 }

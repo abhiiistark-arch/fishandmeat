@@ -2,6 +2,7 @@
 {% block title %}Inventory{% endblock %}
 {% block heading %}Inventory &amp; Pricing{% endblock %}
 {% block top_actions %}
+<button class="btn btn-gold" id="btn-add-stock">+ Add Stock</button>
 <select id="inv-store-filter" class="select-dark"></select>
 {% endblock %}
 {% block content %}
@@ -18,5 +19,68 @@
     </table>
   </div>
 </section>
+
+<dialog id="stock-modal" class="modal">
+  <form method="dialog" id="stock-form" class="modal-card wide">
+    <h2>Add Stock</h2>
+    <div class="form-grid">
+      <div class="field"><label>Store</label><select id="stock-store" required></select></div>
+      <div class="field"><label>Product</label><select id="stock-product" required></select></div>
+      <div class="field"><label>Variant</label><select id="stock-variant" required></select></div>
+      <div class="field"><label>Quantity to Add</label><input id="stock-quantity" type="number" min="1" step="1" value="1" required /></div>
+      <div class="field full"><div id="stock-product-summary" class="stock-product-summary"></div></div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline" id="stock-cancel">Cancel</button>
+      <button type="submit" class="btn btn-dark">Add Stock</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="inventory-product-modal" class="modal">
+  <form method="dialog" id="inventory-product-form" class="modal-card wide">
+    <h2>Add New Product &amp; Stock</h2>
+    <div class="form-grid">
+      <div class="field"><label>Product Name</label><input id="ip-name" required /></div>
+      <div class="field"><label>SKU</label><input id="ip-sku" placeholder="Auto if blank" /></div>
+      <div class="field"><label>Category</label><select id="ip-category"></select></div>
+      <div class="field"><label>Status</label><select id="ip-status"><option value="available">Available</option><option value="out_of_stock">Out of Stock</option><option value="disabled">Disabled</option></select></div>
+      <div class="field full"><label>Description</label><textarea id="ip-desc" rows="3"></textarea></div>
+      <div class="field full">
+        <label>Parameters</label>
+        <div id="ip-parameters" class="parameter-editor"></div>
+        <button type="button" class="btn btn-outline btn-sm add-parameter" id="ip-add-parameter">+ Add Parameter</button>
+      </div>
+      <div class="field"><label>GST Percentage (%)</label><input id="ip-gst" type="number" min="0" max="28" step="0.1" value="0" /></div>
+      <div class="field"><label>Featured</label><select id="ip-featured"><option value="false">No</option><option value="true">Yes</option></select></div>
+      <div class="field"><label>Bestseller</label><select id="ip-bestseller"><option value="false">No</option><option value="true">Yes</option></select></div>
+      <div class="field"><label>Expiry Information</label><input id="ip-expiry" /></div>
+      <div class="field full"><label>Nutritional Information</label><textarea id="ip-nutrition" rows="2"></textarea></div>
+      <div class="field full"><label>Variants (one per line: Label | unit)</label><textarea id="ip-variants" rows="3">500 gm | 500g&#10;1 kg | 1kg</textarea></div>
+      <div class="field full"><label>Stores</label><div id="ip-stores" class="check-grid"></div></div>
+      <div class="field"><label>Starting Price (₹)</label><input id="ip-price" type="number" min="0" step="1" value="0" /></div>
+      <div class="field"><label>Starting Stock per Variant</label><input id="ip-stock" type="number" min="0" step="1" value="0" /></div>
+      <div class="field full"><label>Product Image</label><input id="ip-image" type="file" accept="image/*" /></div>
+
+      <div class="field full hidden" id="ip-new-category">
+        <h3 class="form-subheading">New Category</h3>
+        <div class="form-grid nested-form-grid">
+          <div class="field"><label>Name</label><input id="ip-cat-name" /></div>
+          <div class="field"><label>Slug</label><input id="ip-cat-slug" placeholder="Auto from name" /></div>
+          <div class="field"><label>Sort Order</label><input id="ip-cat-order" type="number" value="99" /></div>
+          <div class="field"><label>Enabled</label><select id="ip-cat-enabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></div>
+          <div class="field"><label>SEO Title</label><input id="ip-cat-seo-title" /></div>
+          <div class="field"><label>SEO Description</label><input id="ip-cat-seo-desc" /></div>
+          <div class="field full"><label>Default Parameters</label><div id="ip-cat-parameters" class="parameter-editor"></div><button type="button" class="btn btn-outline btn-sm add-parameter" id="ip-cat-add-parameter">+ Add Parameter</button></div>
+          <div class="field full"><label>Category Image / Banner</label><input id="ip-cat-image" type="file" accept="image/*" /></div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline" id="inventory-product-cancel">Cancel</button>
+      <button type="submit" class="btn btn-dark">Create Product &amp; Stock</button>
+    </div>
+  </form>
+</dialog>
 {% endblock %}
 {% block scripts %}<script>AdminInventory.init();</script>{% endblock %}
