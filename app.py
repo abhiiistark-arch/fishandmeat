@@ -1029,6 +1029,11 @@ def admin_is_super():
     return session.get('admin_role') == ROLE_SUPER
 
 
+def admin_can_manage_qr_units():
+    """Super Admin and Store Admin (store manager) may view/delete unit QRs."""
+    return session.get('admin_role') in (ROLE_SUPER, ROLE_STORE)
+
+
 def role_required(*roles):
     def decorator(f):
         @wraps(f)
@@ -4830,6 +4835,137 @@ def api_admin_qr_unit_image(unit_id):
     resp = send_file(png, mimetype='image/png')
     resp.headers['Cache-Control'] = 'no-store'
     return resp
+
+
+@app.route('/api/admin/products/<product_id>/qr-units', methods=['GET'])
+@admin_required
+@page_required('products')
+def api_admin_product_qr_units(product_id):
+    """List unique QR units for one product (all stores for Super; own store for Store Admin)."""
+    product = db_find_one('products', {'id': product_id})
+    if not product:
+        return jsonify({'error': 'Product not found'}), 404
+    store_id = (request.args.get('store_id') or '').strip()
+    if not admin_is_super():
+        locked = (session.get('admin_store_id') or '').strip()
+        if not locked:
+            return jsonify({'error': 'Your account is not assigned to a store'}), 403
+        store_id = locked
+    query = {'product_id': product_id}
+    if store_id:
+        query['store_id'] = store_id
+    status = (request.args.get('status') or 'active').strip() or 'active'
+    if status == 'active':
+        query['status'] = {'$in': ['pending', 'in_stock']}
+    elif status != 'all':
+        query['status'] = status
+    categories_by_id = {c['id']: c for c in db_find('categories')}
+    stores_by_id = {s['id']: s for s in db_find('stores')}
+    cat = categories_by_id.get(product.get('category_id')) or {}
+    units = db_find('qr_units', query, sort=[('created_at', -1)])
+    items = []
+    for unit in units:
+        store = stores_by_id.get(unit.get('store_id')) or {}
+        variant_label = ''
+        for v in product.get('variants') or []:
+            if v.get('id') == unit.get('variant_id'):
+                variant_label = v.get('label') or ''
+                break
+        serial = (unit.get('unit_serial') or (unit.get('code') or '')[-3:]).upper()
+        items.append({
+            'id': unit.get('id'),
+            'unit_id': unit.get('id'),
+            'product_id': product.get('id'),
+            'name': product.get('name'),
+            'sku': product.get('sku', ''),
+            'category_id': product.get('category_id', ''),
+            'category_name': cat.get('name', ''),
+            'variant_id': unit.get('variant_id'),
+            'variant_label': variant_label or unit.get('variant_id') or '—',
+            'store_id': unit.get('store_id'),
+            'store_name': store.get('name', ''),
+            'stock': 1,
+            'price': float(unit.get('price') or 0),
+            'qr_code': unit.get('code') or '',
+            'qr_serial': serial,
+            'unit_serial': serial,
+            'qr_uid': serial,
+            'qr_generated': True,
+            'qr_generated_at': unit.get('created_at') or '',
+            'status': unit.get('status') or 'pending',
+            'unit_status': unit.get('status') or 'pending',
+        })
+    return jsonify({
+        'product': {
+            'id': product.get('id'),
+            'name': product.get('name'),
+            'sku': product.get('sku', ''),
+        },
+        'items': items,
+        'units': items,
+        'can_delete': admin_can_manage_qr_units(),
+    })
+
+
+@app.route('/api/admin/qr-codes/unit/<unit_id>', methods=['DELETE'])
+@admin_required
+def api_admin_qr_unit_delete(unit_id):
+    """Delete one unique QR unit. Store Admin + Super Admin only. Syncs inventory if in_stock."""
+    if not admin_can_manage_qr_units():
+        return jsonify({'error': 'Only Super Admin or Store Admin can delete QR units'}), 403
+    unit = db_find_one('qr_units', {'id': unit_id})
+    if not unit:
+        return jsonify({'error': 'QR unit not found'}), 404
+    denied = assert_store_access(unit.get('store_id'))
+    if denied:
+        return denied
+    status = (unit.get('status') or '').strip()
+    if status == 'sold':
+        return jsonify({'error': 'Sold QR units cannot be deleted'}), 409
+
+    stock_before = None
+    stock_after = None
+    if status == 'in_stock':
+        inv = db_find_one('inventory', {
+            'store_id': unit.get('store_id'),
+            'product_id': unit.get('product_id'),
+            'variant_id': unit.get('variant_id') or 'v1',
+        })
+        if inv:
+            stock_before = int(inv.get('stock') or 0)
+            if stock_before > 0:
+                updated = db_increment('inventory', {'id': inv['id']}, 'stock', -1)
+                stock_after = int((updated or {}).get('stock') or 0)
+            else:
+                stock_after = stock_before
+
+    deleted = db_delete('qr_units', {'id': unit_id})
+    if not deleted:
+        return jsonify({'error': 'Could not delete QR unit'}), 500
+
+    _invalidate_ref_cache('products_by_id')
+    _badges_cache.clear()
+    product = db_find_one('products', {'id': unit.get('product_id')}) or {}
+    log_activity(
+        'inventory',
+        f"QR unit deleted · {product.get('name') or unit.get('product_id')} · "
+        f"{unit.get('unit_serial') or unit.get('code')} · was {status or 'pending'}",
+        {
+            'unit_id': unit_id,
+            'product_id': unit.get('product_id'),
+            'store_id': unit.get('store_id'),
+            'status_was': status,
+            'stock_before': stock_before,
+            'stock_after': stock_after,
+        },
+    )
+    return jsonify({
+        'ok': True,
+        'deleted_id': unit_id,
+        'status_was': status,
+        'stock_before': stock_before,
+        'stock_after': stock_after,
+    })
 
 
 @app.route('/api/admin/qr-codes/<product_id>/image')

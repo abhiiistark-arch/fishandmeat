@@ -2,12 +2,13 @@
 {% block title %}Products{% endblock %}
 {% block heading %}Product Catalog{% endblock %}
 {% block top_actions %}
+<button class="btn btn-outline" id="btn-view-all-qrs" type="button">View all product QRs</button>
 <button class="btn btn-gold" id="btn-add-product">+ Add Product</button>
 {% endblock %}
 {% block content %}
 <section class="panel">
   <div id="focus-bar" class="focus-bar hidden"></div>
-  <p class="muted panel-intro">Manage name, SKU, images, variants, SEO, featured/bestseller tags, and store availability. Changes sync to the storefront.</p>
+  <p class="muted panel-intro">Manage name, SKU, images, variants, SEO, featured/bestseller tags, and store availability. Use <strong>View QRs</strong> to see each unique unit QR for a product (one row per physical stock unit). Changes sync to the storefront.</p>
   <div class="table-wrap">
     <table class="data-table" id="products-table">
       <thead>
@@ -19,6 +20,35 @@
     </table>
   </div>
 </section>
+
+<dialog id="product-qr-units-modal" class="modal">
+  <div class="modal-card wide qr-print-card">
+    <h2 id="product-qr-units-title">Product QR units</h2>
+    <p class="muted" id="product-qr-units-copy">Each row is one unique physical unit QR.</p>
+    <div class="qr-print-toolbar">
+      <input id="product-qr-units-search" type="search" placeholder="Search unique code, store…" autocomplete="off" />
+      <select id="product-qr-units-store"><option value="">All stores</option></select>
+    </div>
+    <div class="table-wrap">
+      <table class="data-table" id="product-qr-units-table">
+        <thead>
+          <tr>
+            <th>Unique</th>
+            <th>Store</th>
+            <th>Variant</th>
+            <th>Status</th>
+            <th>Price</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-outline" id="product-qr-units-close">Close</button>
+    </div>
+  </div>
+</dialog>
 
 <dialog id="product-modal" class="modal">
   <form method="dialog" id="product-form" class="modal-card wide">

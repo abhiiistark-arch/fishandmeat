@@ -1242,11 +1242,8 @@ dialog.modal:has(.wide) { max-width: 720px; }
   .pos-qr-row { grid-template-columns: 1fr; }
 }
 
-.qr-store-slicer {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 14px;
+.actions-cell {
+  white-space: nowrap;
 }
 .qr-store-chip {
   border: 1px solid var(--border);

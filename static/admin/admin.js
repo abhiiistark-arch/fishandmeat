@@ -124,7 +124,12 @@
       username: document.body.getAttribute('data-admin-username') || '',
       role: document.body.getAttribute('data-admin-role') || '',
       storeId: document.body.getAttribute('data-admin-store') || '',
-      isSuper: document.body.getAttribute('data-admin-super') === '1'
+      isSuper: document.body.getAttribute('data-admin-super') === '1',
+      canManageQrUnits: (function () {
+        var role = document.body.getAttribute('data-admin-role') || '';
+        var isSuper = document.body.getAttribute('data-admin-super') === '1';
+        return isSuper || role === 'Store Admin';
+      })()
     },
     initSidebarScroll: function () {
       var nav = document.querySelector('.sidebar-nav');
@@ -888,6 +893,25 @@
       await this.prepareCatalog();
       var addBtn = document.getElementById('btn-add-product');
       if (addBtn) addBtn.onclick = function () { self.openForm(); };
+      var viewAll = document.getElementById('btn-view-all-qrs');
+      if (viewAll) {
+        viewAll.onclick = function () { self.openAllProductQrPicker(); };
+      }
+      var qrClose = document.getElementById('product-qr-units-close');
+      if (qrClose) qrClose.onclick = function () { closeModal('product-qr-units-modal'); };
+      var qrSearch = document.getElementById('product-qr-units-search');
+      if (qrSearch) {
+        qrSearch.oninput = function () {
+          if (self.qrUnitsProduct) self.renderProductQrUnits();
+          else self.openAllProductQrPicker();
+        };
+      }
+      var qrStore = document.getElementById('product-qr-units-store');
+      if (qrStore) {
+        qrStore.onchange = function () {
+          if (self.qrUnitsProduct) self.loadProductQrUnits();
+        };
+      }
       this.load();
     },
     load: async function () {
@@ -928,9 +952,17 @@
           '<td>' + statusBadge(p.status) + '</td>' +
           '<td>' + (tags.join(' ') || '—') + '</td>' +
           '<td>' + ((p.variants || []).length) + '</td>' +
-          '<td><button class="btn btn-sm btn-outline" data-edit="' + p.id + '">Edit</button> ' +
+          '<td class="actions-cell">' +
+          '<button class="btn btn-sm btn-outline" data-view-qr="' + p.id + '">View QRs</button> ' +
+          '<button class="btn btn-sm btn-outline" data-edit="' + p.id + '">Edit</button> ' +
           '<button class="btn btn-sm btn-outline" data-del="' + p.id + '">Delete</button></td></tr>';
       }).join('') || '<tr><td colspan="7">' + (focus ? 'No matching product found.' : 'No products') + '</td></tr>';
+      tbody.querySelectorAll('[data-view-qr]').forEach(function (btn) {
+        btn.onclick = function () {
+          var product = self.products.find(function (x) { return x.id === btn.getAttribute('data-view-qr'); });
+          self.openProductQrUnits(product);
+        };
+      });
       tbody.querySelectorAll('[data-edit]').forEach(function (btn) {
         btn.onclick = function () {
           self.openForm(self.products.find(function (x) { return x.id === btn.getAttribute('data-edit'); }));
@@ -942,6 +974,139 @@
           await api('/api/admin/products/' + btn.getAttribute('data-del'), { method: 'DELETE' });
           toast('Product deleted');
           self.load();
+        };
+      });
+    },
+    openAllProductQrPicker: function () {
+      var self = this;
+      this.qrUnitsProduct = null;
+      this.qrUnits = [];
+      this.qrUnitsCanDelete = AdminShell.admin.canManageQrUnits;
+      document.getElementById('product-qr-units-title').textContent = 'All products — pick one';
+      document.getElementById('product-qr-units-copy').textContent =
+        'Select a product to see its unique unit QR entries (one per physical stock / pending code).';
+      var storeSel = document.getElementById('product-qr-units-store');
+      if (storeSel) {
+        storeSel.style.display = AdminShell.admin.isSuper ? '' : 'none';
+        storeSel.innerHTML = '<option value="">All stores</option>' +
+          (this.stores || []).map(function (s) {
+            return '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>';
+          }).join('');
+      }
+      var tbody = document.querySelector('#product-qr-units-table tbody');
+      var q = (document.getElementById('product-qr-units-search').value || '').trim().toLowerCase();
+      var rows = (this.products || []).filter(function (p) {
+        if (!q) return true;
+        return (p.name || '').toLowerCase().indexOf(q) !== -1 ||
+          (p.sku || '').toLowerCase().indexOf(q) !== -1 ||
+          (p.category_name || '').toLowerCase().indexOf(q) !== -1;
+      });
+      tbody.innerHTML = rows.map(function (p) {
+        return '<tr>' +
+          '<td colspan="5"><strong>' + esc(p.name) + '</strong>' +
+          '<div class="muted">' + esc(p.sku || '') +
+          (p.category_name ? ' · ' + esc(p.category_name) : '') + '</div></td>' +
+          '<td><button type="button" class="btn btn-sm btn-gold" data-pick-product="' +
+          esc(p.id) + '">Open QRs</button></td></tr>';
+      }).join('') || '<tr><td colspan="6">No products found.</td></tr>';
+      tbody.querySelectorAll('[data-pick-product]').forEach(function (btn) {
+        btn.onclick = function () {
+          var product = self.products.find(function (x) {
+            return x.id === btn.getAttribute('data-pick-product');
+          });
+          self.openProductQrUnits(product);
+        };
+      });
+      openModal('product-qr-units-modal');
+    },
+    openProductQrUnits: async function (product) {
+      if (!product || !product.id) {
+        toast('Product not found', true);
+        return;
+      }
+      this.qrUnitsProduct = product;
+      document.getElementById('product-qr-units-title').textContent =
+        (product.name || 'Product') + ' — QR units';
+      document.getElementById('product-qr-units-copy').textContent =
+        'Each row is one unique physical unit. Delete removes the QR and syncs inventory if it was in stock.';
+      var storeSel = document.getElementById('product-qr-units-store');
+      if (storeSel) {
+        storeSel.style.display = AdminShell.admin.isSuper ? '' : 'none';
+        if (!storeSel.options.length || storeSel.options.length === 1) {
+          storeSel.innerHTML = '<option value="">All stores</option>' +
+            (this.stores || []).map(function (s) {
+              return '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>';
+            }).join('');
+        }
+        if (!AdminShell.admin.isSuper && AdminShell.admin.storeId) {
+          storeSel.value = AdminShell.admin.storeId;
+        }
+      }
+      openModal('product-qr-units-modal');
+      await this.loadProductQrUnits();
+    },
+    loadProductQrUnits: async function () {
+      var product = this.qrUnitsProduct;
+      if (!product) return;
+      var tbody = document.querySelector('#product-qr-units-table tbody');
+      tbody.innerHTML = '<tr><td colspan="6">Loading…</td></tr>';
+      try {
+        var storeId = (document.getElementById('product-qr-units-store') || {}).value || '';
+        var qs = storeId ? ('?store_id=' + encodeURIComponent(storeId)) : '';
+        var data = await api('/api/admin/products/' + encodeURIComponent(product.id) + '/qr-units' + qs);
+        this.qrUnits = data.items || data.units || [];
+        this.qrUnitsCanDelete = !!(data.can_delete || AdminShell.admin.canManageQrUnits);
+        this.renderProductQrUnits();
+      } catch (e) {
+        tbody.innerHTML = '<tr><td colspan="6" class="form-error">' + esc(e.message || 'Failed') + '</td></tr>';
+      }
+    },
+    renderProductQrUnits: function () {
+      var self = this;
+      var tbody = document.querySelector('#product-qr-units-table tbody');
+      var q = (document.getElementById('product-qr-units-search').value || '').trim().toLowerCase();
+      var rows = (this.qrUnits || []).filter(function (u) {
+        if (!q) return true;
+        return (u.unit_serial || '').toLowerCase().indexOf(q) !== -1 ||
+          (u.qr_code || '').toLowerCase().indexOf(q) !== -1 ||
+          (u.store_name || '').toLowerCase().indexOf(q) !== -1 ||
+          (u.variant_label || '').toLowerCase().indexOf(q) !== -1 ||
+          (u.status || '').toLowerCase().indexOf(q) !== -1;
+      });
+      tbody.innerHTML = rows.map(function (u) {
+        var st = (u.unit_status || u.status || '').toLowerCase();
+        var badgeCls = st === 'in_stock' ? 'green' : (st === 'pending' ? 'gold' : 'red');
+        var badgeLabel = st === 'in_stock' ? 'In inventory' : (st === 'pending' ? 'Pending punch' : st || '—');
+        var delBtn = self.qrUnitsCanDelete
+          ? '<button type="button" class="btn btn-sm btn-outline" data-del-unit="' +
+            esc(u.unit_id || u.id) + '">Delete</button>'
+          : '';
+        return '<tr>' +
+          '<td><span class="qr-unique-code">' + esc((u.unit_serial || u.qr_uid || '—').toString().slice(-3).toUpperCase()) +
+          '</span><div class="code muted">' + esc(u.qr_code || '') + '</div></td>' +
+          '<td>' + esc(u.store_name || '—') + '</td>' +
+          '<td>' + esc(u.variant_label || '—') + '</td>' +
+          '<td><span class="badge ' + badgeCls + '">' + esc(badgeLabel) + '</span></td>' +
+          '<td>' + money(u.price) + '</td>' +
+          '<td>' + delBtn + '</td></tr>';
+      }).join('') || '<tr><td colspan="6">No unique QR units for this product yet. Generate or punch first.</td></tr>';
+      tbody.querySelectorAll('[data-del-unit]').forEach(function (btn) {
+        btn.onclick = async function () {
+          if (!AdminShell.admin.canManageQrUnits) {
+            toast('Only Super Admin or Store Admin can delete QR units', true);
+            return;
+          }
+          if (!confirm('Delete this unique QR unit? If it is in inventory, stock will decrease by 1.')) return;
+          try {
+            await api('/api/admin/qr-codes/unit/' + encodeURIComponent(btn.getAttribute('data-del-unit')), {
+              method: 'DELETE'
+            });
+            toast('QR unit deleted · inventory synced');
+            await self.loadProductQrUnits();
+            if (window.AdminShell && AdminShell.refreshBadges) AdminShell.refreshBadges();
+          } catch (e) {
+            toast(e.message || 'Could not delete', true);
+          }
         };
       });
     },
@@ -3184,16 +3349,17 @@
         this.products = catalog[2] || [];
         this.rows = this.products;
         if (!this.selectedStoreId || !this.stores.some(function (s) { return s.id === self.selectedStoreId; })) {
-          this.selectedStoreId = (this.stores[0] && this.stores[0].id) || '';
+          this.selectedStoreId = (AdminShell.storeId && this.stores.some(function (s) {
+            return s.id === AdminShell.storeId;
+          }) ? AdminShell.storeId : '') || (this.stores[0] && this.stores[0].id) || '';
         }
       } catch (e) {
         toast(e.message || 'Could not load stores / categories / products', true);
       }
 
       try {
-        var qrPayload = await api('/api/admin/qr-codes' + (this.selectedStoreId
-          ? ('?store_id=' + encodeURIComponent(this.selectedStoreId))
-          : ''));
+        // All stores — no store slicer filter on the main QR table
+        var qrPayload = await api('/api/admin/qr-codes');
         this.lineItems = Array.isArray(qrPayload)
           ? qrPayload
           : (qrPayload.units || qrPayload.items || []);
@@ -3212,34 +3378,13 @@
         toast(e.message || 'Could not load QR units', true);
       }
 
-      this.renderStoreSlicer();
       this.renderFilters();
       this.render();
     },
-    renderStoreSlicer: function () {
-      var self = this;
-      var el = document.getElementById('qr-store-slicer');
-      if (!el) return;
-      el.innerHTML = this.stores.map(function (s) {
-        return '<button type="button" class="qr-store-chip' +
-          (s.id === self.selectedStoreId ? ' active' : '') +
-          '" data-store="' + esc(s.id) + '">' + esc(s.name) + '</button>';
-      }).join('') || '<span class="muted">No active stores</span>';
-      el.querySelectorAll('[data-store]').forEach(function (btn) {
-        btn.onclick = function () {
-          self.selectedStoreId = btn.getAttribute('data-store');
-          self.renderStoreSlicer();
-          self.load();
-        };
-      });
-    },
     renderFilters: function () {
-      var storeId = this.selectedStoreId;
       var productsInStore = {};
       this.lineItems.forEach(function (line) {
-        if (!storeId || line.store_id === storeId) {
-          productsInStore[line.product_id] = line.name;
-        }
+        productsInStore[line.product_id] = line.name;
       });
       (this.products || []).forEach(function (p) {
         productsInStore[p.id] = p.name;
@@ -3460,7 +3605,7 @@
           (r.variant_label ? ' · ' + esc(r.variant_label) : '') +
           (r.qr_generated_at ? ' · ' + esc(String(r.qr_generated_at).slice(0, 19).replace('T', ' ')) : '') +
           '</div></span></label>';
-      }).join('') || '<p class="muted">No unit QR codes match your search for this store.</p>';
+      }).join('') || '<p class="muted">No unit QR codes match your search.</p>';
       el.querySelectorAll('[data-print-id]').forEach(function (cb) {
         cb.onchange = function () {
           var id = cb.getAttribute('data-print-id');
@@ -3502,9 +3647,7 @@
       var q = (document.getElementById('qr-search').value || '').trim().toLowerCase();
       var cat = document.getElementById('qr-filter-category').value;
       var productId = document.getElementById('qr-filter-product').value;
-      var storeId = this.selectedStoreId;
       var rows = this.lineItems.filter(function (line) {
-        if (storeId && line.store_id !== storeId) return false;
         if (cat && line.category_id !== cat) return false;
         if (productId && line.product_id !== productId) return false;
         if (!q) return true;
@@ -3514,7 +3657,8 @@
           (line.variant_label || '').toLowerCase().indexOf(q) !== -1 ||
           unique.indexOf(q) !== -1 ||
           (line.qr_code || '').toLowerCase().indexOf(q) !== -1 ||
-          (line.category_name || '').toLowerCase().indexOf(q) !== -1;
+          (line.category_name || '').toLowerCase().indexOf(q) !== -1 ||
+          (line.store_name || '').toLowerCase().indexOf(q) !== -1;
       });
       rows.sort(function (a, b) {
         return String(b.qr_generated_at || '').localeCompare(String(a.qr_generated_at || ''));
@@ -3538,6 +3682,7 @@
         return '<tr>' +
           '<td><span class="qr-unique-code">' + esc(unique) + '</span></td>' +
           '<td><strong>' + esc(r.name) + '</strong><div class="muted">' + esc(r.sku || '') + '</div></td>' +
+          '<td>' + esc(r.store_name || '—') + '</td>' +
           '<td>' + esc(r.variant_label || '—') + '</td>' +
           '<td>' + esc(r.category_name || '—') + '</td>' +
           '<td>1</td>' +
@@ -3546,7 +3691,7 @@
           '<td>' + ((r.qr_generated || r.qr_code)
             ? '<button type="button" class="btn btn-sm btn-outline" data-qr="' + esc(unitKey) + '">View QR</button>'
             : '') + '</td></tr>';
-      }).join('') || '<tr><td colspan="8">No unit QRs for this store / filter. Use Generate &amp; Print QR first.</td></tr>';
+      }).join('') || '<tr><td colspan="9">No unit QRs yet. Use Generate &amp; Print QR first.</td></tr>';
       tbody.querySelectorAll('[data-qr]').forEach(function (btn) {
         btn.onclick = function () {
           var id = btn.getAttribute('data-qr');
@@ -3556,14 +3701,18 @@
           if (row) self.showPreview(row);
         };
       });
-      var storeName = ((this.stores.find(function (s) { return s.id === self.selectedStoreId; }) || {}).name) || 'store';
       var countEl = document.getElementById('qr-count-bar');
       if (countEl) {
         var productIds = {};
-        rows.forEach(function (r) { if (r.product_id) productIds[r.product_id] = true; });
+        var storeIds = {};
+        rows.forEach(function (r) {
+          if (r.product_id) productIds[r.product_id] = true;
+          if (r.store_id) storeIds[r.store_id] = true;
+        });
         var productCount = Object.keys(productIds).length;
+        var storeCount = Object.keys(storeIds).length;
         countEl.textContent = 'Showing ' + rows.length + ' unique unit' + (rows.length === 1 ? '' : 's') +
-          ' (newest first) · ' + storeName +
+          ' (newest first) · ' + storeCount + ' store' + (storeCount === 1 ? '' : 's') +
           ' · ' + productCount + ' product' + (productCount === 1 ? '' : 's');
       }
     },
