@@ -3,14 +3,15 @@
 Fish and Meat applies layered controls in `security.py` + `app.py`.
 
 ## Progressive login delays
-| Failures | Delay before answer |
-|---------|---------------------|
-| 5 | 2 seconds |
-| 10 | 5 seconds |
-| 20 | 30 seconds |
-| 50 | 5 minutes (+ temporary lock / IP cooldown) |
+| Failures | Retry gate (instant 429 — **no server sleep**) |
+|---------|-----------------------------------------------|
+| **5** | wait 2 seconds |
+| **10** | wait 5 seconds |
+| **20** | wait 30 seconds |
+| **50** | wait 5 minutes (+ temporary lock) |
 
-Also: >10 failures / 10 minutes → 15-minute IP cooldown; >100 API req / minute → HTTP 429 for 1 minute.
+Also: >10 login fails / 10 minutes → 15-minute **login-only** cooldown (does not block the rest of the site).
+API burst: high limits; **GET requests are not rate-counted** so admin UI stays instant.
 
 ## Never exposed to clients
 Tracebacks, database/SQL errors, internal file paths, and raw Python exceptions are suppressed. Clients get generic messages; details stay in security logs.

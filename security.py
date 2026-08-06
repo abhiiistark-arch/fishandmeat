@@ -26,7 +26,7 @@ LOGIN_FAIL_LIMIT = 10
 LOGIN_FAIL_WINDOW_SEC = 10 * 60
 LOGIN_COOLDOWN_SEC = 15 * 60
 
-# Progressive delay ladder (failures → forced wait before next attempt is answered)
+# Progressive retry gate (no thread sleep — instant 429 until window passes)
 # 5 → 2s | 10 → 5s | 20 → 30s | 50 → 5 minutes
 PROGRESSIVE_DELAYS = (
     (50, 5 * 60),
@@ -35,9 +35,11 @@ PROGRESSIVE_DELAYS = (
     (5, 2),
 )
 
-API_RATE_LIMIT = 100
+# Admin SPA fires many parallel GETs; keep this high so UI stays snappy
+API_RATE_LIMIT = 1200
 API_RATE_WINDOW_SEC = 60
-API_COOLDOWN_SEC = 60
+API_COOLDOWN_SEC = 10
+API_RATE_LIMIT_AUTHED = 3000
 
 ACCOUNT_LOCK_FAILS = 50
 ACCOUNT_LOCK_WINDOW_SEC = 30 * 60
@@ -72,6 +74,7 @@ _ip_hits: dict[str, deque] = defaultdict(deque)
 _ip_cooldown_until: dict[str, float] = {}
 _login_fails: dict[str, deque] = defaultdict(deque)
 _login_cooldown_until: dict[str, float] = {}
+_login_next_allowed: dict[str, float] = {}
 _account_fails: dict[str, deque] = defaultdict(deque)
 _account_lock_until: dict[str, float] = {}
 _security_log: deque = deque(maxlen=2000)
@@ -128,14 +131,14 @@ def _prune_deque(dq: deque, window: float, now: float) -> None:
 
 
 def is_ip_cooling(ip: str | None = None) -> tuple[bool, int]:
+    """API abuse cooldown only — never apply login cooldowns to the whole site."""
     ip = ip or client_ip()
     now = _now()
     with _lock:
-        until = _ip_cooldown_until.get(ip) or _login_cooldown_until.get(ip) or 0
+        until = _ip_cooldown_until.get(ip, 0)
         if until > now:
             return True, int(until - now)
         _ip_cooldown_until.pop(ip, None)
-        _login_cooldown_until.pop(ip, None)
     return False, 0
 
 
@@ -147,9 +150,14 @@ def set_ip_cooldown(seconds: int, ip: str | None = None, reason: str = '') -> No
 
 
 def record_api_hit(ip: str | None = None) -> tuple[bool, str]:
-    """Return (blocked, message). Temporary cooldown if > API_RATE_LIMIT / minute."""
+    """Return (blocked, message). High limits so admin/UI stay instant."""
     ip = ip or client_ip()
     now = _now()
+    authed = bool(session.get('admin_ok') or session.get('customer_id'))
+    auth = (request.headers.get('Authorization') or '') if request else ''
+    if auth.lower().startswith('bearer '):
+        authed = True
+    limit = API_RATE_LIMIT_AUTHED if authed else API_RATE_LIMIT
     with _lock:
         until = _ip_cooldown_until.get(ip, 0)
         if until > now:
@@ -157,9 +165,9 @@ def record_api_hit(ip: str | None = None) -> tuple[bool, str]:
         dq = _ip_hits[ip]
         _prune_deque(dq, API_RATE_WINDOW_SEC, now)
         dq.append(now)
-        if len(dq) > API_RATE_LIMIT:
+        if len(dq) > limit:
             _ip_cooldown_until[ip] = now + API_COOLDOWN_SEC
-            security_log('api_rate_limit', f'>{API_RATE_LIMIT}/min → {API_COOLDOWN_SEC}s cooldown')
+            security_log('api_rate_limit', f'>{limit}/min → {API_COOLDOWN_SEC}s cooldown')
             return True, f'Too many requests. Try again in {API_COOLDOWN_SEC}s.'
     return False, ''
 
@@ -186,18 +194,25 @@ def _fail_count(identity: str = '', ip: str | None = None) -> int:
         return count
 
 
+def _gate_key(identity: str = '', ip: str | None = None) -> str:
+    ip = ip or client_ip()
+    identity = (identity or '').strip().lower()[:80]
+    return f'{ip}:{identity}' if identity else ip
+
+
 def apply_progressive_delay(identity: str = '', ip: str | None = None) -> int:
-    """Block the worker briefly based on failure ladder. Returns seconds slept."""
-    delay = progressive_delay_seconds(_fail_count(identity, ip))
-    if delay > 0:
-        # Cap hard sleep so a single request cannot hold forever
-        time.sleep(min(delay, 5 * 60))
-        security_log('progressive_delay', f'{delay}s', identity=(identity or None))
-    return delay
+    """No thread sleep. Sets a next-allowed timestamp; returns delay seconds if still waiting."""
+    key = _gate_key(identity, ip)
+    now = _now()
+    with _lock:
+        until = _login_next_allowed.get(key, 0)
+        if until > now:
+            return int(until - now)
+    return 0
 
 
 def record_login_failure(identity: str = '', ip: str | None = None) -> int:
-    """Record a failed login. Returns progressive delay seconds applied after the failure."""
+    """Record a failed login and set progressive retry gate (no sleep)."""
     ip = ip or client_ip()
     identity = (identity or '').strip().lower()[:80]
     now = _now()
@@ -225,49 +240,63 @@ def record_login_failure(identity: str = '', ip: str | None = None) -> int:
                     f'{ACCOUNT_LOCK_FAILS}+ fails → {ACCOUNT_LOCK_SEC}s lock',
                     identity=identity,
                 )
-        # 50 failures also forces a 5-minute IP cooldown
-        if fail_n >= 50:
-            _ip_cooldown_until[ip] = max(_ip_cooldown_until.get(ip, 0), now + 5 * 60)
+        delay = progressive_delay_seconds(fail_n)
+        if delay > 0:
+            key = _gate_key(identity, ip)
+            _login_next_allowed[key] = now + delay
+            security_log('progressive_gate', f'{delay}s', identity=identity or None, fails=fail_n)
     security_log('login_failure', identity=identity or None, fails=fail_n)
-    delay = progressive_delay_seconds(fail_n)
-    if delay > 0:
-        time.sleep(min(delay, 5 * 60))
-    return delay
+    return progressive_delay_seconds(fail_n)
 
 
 def clear_login_failures(identity: str = '', ip: str | None = None) -> None:
     ip = ip or client_ip()
     identity = (identity or '').strip().lower()[:80]
+    key = _gate_key(identity, ip)
     with _lock:
         _login_fails.pop(ip, None)
+        _login_next_allowed.pop(key, None)
+        _login_next_allowed.pop(ip, None)
         if identity:
             _account_fails.pop(identity, None)
             _account_lock_until.pop(identity, None)
 
 
 def login_blocked(identity: str = '', ip: str | None = None) -> tuple[bool, str]:
-    """Hard temporary lock / IP cooldown (no sleep)."""
+    """Hard temporary lock / login cooldown / progressive gate (instant reject, no sleep)."""
     ip = ip or client_ip()
     identity = (identity or '').strip().lower()[:80]
     now = _now()
     with _lock:
-        until = max(_login_cooldown_until.get(ip, 0), _ip_cooldown_until.get(ip, 0))
+        until = _login_cooldown_until.get(ip, 0)
         if until > now:
             return True, f'Too many login attempts. Try again in {int(until - now)}s.'
         if identity:
             a_until = _account_lock_until.get(identity, 0)
             if a_until > now:
                 return True, f'Account temporarily locked. Try again in {int(a_until - now)}s.'
+        key = _gate_key(identity, ip)
+        gate = max(_login_next_allowed.get(key, 0), _login_next_allowed.get(ip, 0))
+        if gate > now:
+            return True, f'Too many attempts. Please wait {int(gate - now)}s before trying again.'
     return False, ''
 
 
 def prepare_login_attempt(identity: str = '', ip: str | None = None) -> tuple[bool, str]:
-    """Hard-block check + progressive delay based on prior failures."""
-    blocked, msg = login_blocked(identity, ip)
-    if blocked:
-        return True, msg
-    apply_progressive_delay(identity, ip)
-    return False, ''
+    """Hard-block / progressive gate check only — never sleeps the request worker."""
+    return login_blocked(identity, ip)
+
+
+def clear_all_security_cooldowns() -> None:
+    """Reset in-memory gates (useful after deploy / when recovering from false locks)."""
+    with _lock:
+        _ip_hits.clear()
+        _ip_cooldown_until.clear()
+        _login_fails.clear()
+        _login_cooldown_until.clear()
+        _login_next_allowed.clear()
+        _account_fails.clear()
+        _account_lock_until.clear()
 
 
 def detect_bot(req: Optional[Request] = None, strict: bool = False) -> tuple[bool, str]:
@@ -538,6 +567,7 @@ def validate_image_bytes(data: bytes, declared_ext: str = '') -> tuple[bool, str
 
 def register_security(app: Flask, *, secret_key: str, production: bool = False) -> None:
     """Attach before/after hooks and error handlers."""
+    clear_all_security_cooldowns()
 
     @app.before_request
     def _security_before_request():
@@ -548,16 +578,21 @@ def register_security(app: Flask, *, secret_key: str, production: bool = False) 
         if request.method == 'OPTIONS' and path.startswith('/api/mobile'):
             return ('', 204)
 
-        # Global temporary IP cooldown + API rate window
-        if not any(path.startswith(p) for p in _RATE_EXEMPT_PREFIXES):
-            blocked, msg = is_ip_cooling()
-            if blocked:
-                security_log('rejected_cooldown', msg)
-                return jsonify({'error': 'Too many requests. Please try again later.'}), 429
-            if path.startswith('/api/') or path.startswith('/admin/login'):
-                limited, msg = record_api_hit()
-                if limited:
-                    return jsonify({'error': msg}), 429
+        # Skip rate accounting for static assets
+        if any(path.startswith(p) for p in _RATE_EXEMPT_PREFIXES):
+            return None
+
+        # API abuse cooldown (not login cooldown — that was freezing the whole UI)
+        blocked, msg = is_ip_cooling()
+        if blocked:
+            security_log('rejected_cooldown', msg)
+            return jsonify({'error': 'Too many requests. Please try again later.'}), 429
+
+        # Count only mutating + login traffic toward the burst limit (GETs stay free/fast)
+        if request.method in _MUTATING or path in _LOGIN_PATHS:
+            limited, msg = record_api_hit()
+            if limited:
+                return jsonify({'error': msg}), 429
 
         # Login throttling gate (API auth endpoints)
         if path in _LOGIN_PATHS and request.method == 'POST':
