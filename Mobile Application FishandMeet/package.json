@@ -1,0 +1,23 @@
+{
+  "name": "fishandmeet-mobile",
+  "version": "1.0.0",
+  "description": "Fish and Meat stock / QR punching — PWA + Android APK",
+  "private": true,
+  "scripts": {
+    "build:web": "echo Web assets live in /www — served at /mobile/ by Flask",
+    "cap:add": "npx cap add android",
+    "cap:sync": "npx cap sync android",
+    "cap:open": "npx cap open android",
+    "android:sync": "npx cap sync android",
+    "android:open": "npx cap open android",
+    "android:build-hint": "echo Open Android Studio → Build → Build Bundle(s) / APK(s) → Build APK(s)"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.0",
+    "@capacitor/camera": "^6.1.0",
+    "@capacitor/core": "^6.2.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0"
+  }
+}

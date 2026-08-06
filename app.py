@@ -5,6 +5,8 @@ import os
 import re
 import json
 import uuid
+import hmac
+import base64
 import hashlib
 import calendar
 import threading
@@ -87,29 +89,58 @@ def add_security_headers(response):
         'camera=(), microphone=(), geolocation=(), payment=()',
     )
     response.headers.setdefault('Cross-Origin-Opener-Policy', 'same-origin')
-    response.headers.setdefault(
-        'Content-Security-Policy',
-        "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
-        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
-        "font-src 'self' https://fonts.gstatic.com; "
-        "img-src 'self' data: blob:; "
-        "connect-src 'self'; "
-        "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; "
-        "form-action 'self'",
-    )
+    path = request.path or ''
+    # Mobile punch UI needs camera + CDN scanner + installable PWA.
+    if path.startswith('/mobile'):
+        response.headers['Permissions-Policy'] = (
+            'camera=(self), microphone=(), geolocation=(), payment=()'
+        )
+        response.headers['Content-Security-Policy'] = (
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "img-src 'self' data: blob:; "
+            "media-src 'self' blob:; "
+            "connect-src 'self'; "
+            "worker-src 'self' blob:; "
+            "object-src 'none'; base-uri 'self'; "
+            "frame-ancestors 'none'; form-action 'self'"
+        )
+    else:
+        response.headers.setdefault(
+            'Content-Security-Policy',
+            "default-src 'self'; "
+            "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+            "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+            "font-src 'self' https://fonts.gstatic.com; "
+            "img-src 'self' data: blob:; "
+            "connect-src 'self'; "
+            "worker-src 'self' blob:; "
+            "object-src 'none'; base-uri 'self'; frame-ancestors 'none'; "
+            "form-action 'self'",
+        )
     if request.is_secure:
         response.headers.setdefault(
             'Strict-Transport-Security',
             'max-age=31536000; includeSubDomains',
         )
-    path = request.path or ''
     if (
         path.startswith('/admin')
         or path.startswith('/api/admin')
         or path.startswith('/static/admin/')
     ):
         _apply_admin_no_cache(response)
+    # Mobile APK / PWA calls /api/mobile/* over Wi‑Fi from a different origin.
+    if path.startswith('/api/mobile'):
+        origin = request.headers.get('Origin')
+        if origin:
+            response.headers['Access-Control-Allow-Origin'] = origin
+            response.headers['Access-Control-Allow-Credentials'] = 'true'
+        else:
+            response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
     return response
 
 # ---------------------------------------------------------------------------
@@ -166,7 +197,18 @@ def _connect_mongo():
         _mongo_db.orders.create_index([('channel', ASCENDING), ('store_id', ASCENDING), ('created_at', ASCENDING)])
         _mongo_db.products.create_index([('sku', ASCENDING)], unique=True)
         _mongo_db.products.create_index([('id', ASCENDING)])
+        _mongo_db.products.create_index([('qr_code', ASCENDING)], sparse=True)
+        _mongo_db.products.create_index([('qr_product_code', ASCENDING)], sparse=True)
+        _mongo_db.qr_units.create_index([('id', ASCENDING)])
+        _mongo_db.qr_units.create_index([('code', ASCENDING)], unique=True)
+        _mongo_db.qr_units.create_index([('unit_serial', ASCENDING)], unique=True)
+        _mongo_db.qr_units.create_index([('store_id', ASCENDING), ('status', ASCENDING)])
+        _mongo_db.qr_units.create_index([
+            ('store_id', ASCENDING), ('product_id', ASCENDING),
+            ('variant_id', ASCENDING), ('status', ASCENDING),
+        ])
         _mongo_db.categories.create_index([('id', ASCENDING)])
+        _mongo_db.categories.create_index([('code', ASCENDING)], sparse=True)
         _mongo_db.stores.create_index([('id', ASCENDING)])
         _mongo_db.inventory.create_index([('id', ASCENDING)])
         _mongo_db.inventory.create_index([('store_id', ASCENDING)])
@@ -391,6 +433,533 @@ def new_id(prefix=''):
     return f'{prefix}{uuid.uuid4().hex[:12]}' if prefix else uuid.uuid4().hex[:12]
 
 
+# ---------------------------------------------------------------------------
+# QR code helpers — format: FNM + DDMMYY + CCC + PPP + SSS
+#   CCC = category (3), PPP = product (3), SSS = unique serial (3) appended
+# ---------------------------------------------------------------------------
+
+_BASE36 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+
+
+def _sanitize_code_chars(text, length=3):
+    cleaned = re.sub(r'[^A-Za-z0-9]', '', (text or '').upper())
+    if len(cleaned) >= length:
+        return cleaned[:length]
+    return (cleaned + ('X' * length))[:length]
+
+
+def _used_category_codes(exclude_id=None):
+    used = set()
+    for cat in db_find('categories'):
+        if exclude_id and cat.get('id') == exclude_id:
+            continue
+        code = (cat.get('code') or '').strip().upper()
+        if len(code) == 3:
+            used.add(code)
+    return used
+
+
+def _used_product_codes(exclude_id=None):
+    used = set()
+    for product in db_find('products'):
+        if exclude_id and product.get('id') == exclude_id:
+            continue
+        code = (product.get('qr_product_code') or '').strip().upper()
+        if len(code) == 3:
+            used.add(code)
+    return used
+
+
+def _used_product_serials(exclude_id=None):
+    used = set()
+    for product in db_find('products'):
+        if exclude_id and product.get('id') == exclude_id:
+            continue
+        code = (product.get('qr_serial') or '').strip().upper()
+        if len(code) == 3:
+            used.add(code)
+        # Also reserve last-3 of legacy 15-char codes to avoid collisions when upgrading
+        legacy = (product.get('qr_code') or '').strip().upper()
+        if len(legacy) >= 3 and not code:
+            used.add(legacy[-3:])
+    return used
+
+
+def allocate_unique_code(seed_text, used, length=3):
+    """Allocate a unique 3-character alphanumeric code."""
+    base = _sanitize_code_chars(seed_text, length)
+    if base not in used:
+        return base
+    for i in range(1, 36 * 36 * 36):
+        n = i
+        chars = []
+        for _ in range(length):
+            chars.append(_BASE36[n % 36])
+            n //= 36
+        candidate = ''.join(reversed(chars))
+        if base and candidate[0] != base[0]:
+            candidate = base[0] + candidate[1:]
+        if candidate not in used:
+            return candidate
+    return uuid.uuid4().hex[:length].upper()
+
+
+def ensure_category_code(category):
+    """Ensure category has a unique 3-char code; persist if missing."""
+    if not category:
+        return None
+    existing = (category.get('code') or '').strip().upper()
+    if len(existing) == 3 and existing.isalnum():
+        return existing
+    used = _used_category_codes(exclude_id=category.get('id'))
+    code = allocate_unique_code(category.get('name') or category.get('slug') or 'CAT', used)
+    db_update('categories', {'id': category['id']}, {
+        'code': code,
+        'updated_at': now_iso(),
+    })
+    category['code'] = code
+    return code
+
+
+def allocate_product_qr_code(product_name, category, exclude_product_id=None):
+    """Ensure category + product template codes (unit serials are separate)."""
+    cat_code = ensure_category_code(category)
+    if not cat_code:
+        raise ValueError('Category is required to generate a QR code')
+    used_prd = _used_product_codes(exclude_id=exclude_product_id)
+    product_code = allocate_unique_code(product_name or 'PRD', used_prd)
+    stamp = datetime.utcnow().strftime('%d%m%y')
+    # Template prefix only — real identity is per-unit serial in qr_units
+    full = f'FNM{stamp}{cat_code}{product_code}'
+    return full, cat_code, product_code
+
+
+def product_qr_uid(product):
+    """Product-level template uid (category+product), not a stock unit."""
+    if not product:
+        return ''
+    prd = (product.get('qr_product_code') or '').strip().upper()
+    cat = (product.get('qr_category_code') or '').strip().upper()
+    if cat and prd:
+        return cat + prd
+    code = (product.get('qr_code') or '').strip().upper()
+    if len(code) >= 6:
+        return code[-6:]
+    return code
+
+
+def _used_unit_serials():
+    used = set()
+    for unit in db_find('qr_units', projection={'unit_serial': 1, 'code': 1}):
+        serial = (unit.get('unit_serial') or '').strip().upper()
+        if len(serial) >= 3:
+            used.add(serial[-3:] if len(serial) > 3 else serial)
+        code = (unit.get('code') or '').strip().upper()
+        if len(code) >= 3:
+            used.add(code[-3:])
+    return used
+
+
+def _used_unit_codes():
+    used = set()
+    for unit in db_find('qr_units', projection={'code': 1}):
+        code = (unit.get('code') or '').strip().upper()
+        if code:
+            used.add(code)
+    return used
+
+
+def allocate_unit_serial(seed='U', used=None):
+    """Globally unique last-3 identity for one physical stock unit."""
+    if used is None:
+        used = _used_unit_serials()
+    serial = allocate_unique_code(seed, used, length=3)
+    used.add(serial)
+    return serial
+
+
+def ensure_product_template_codes(product, category=None):
+    """Persist FNM template + CAT/PRD on the product (shared by all its units)."""
+    if not product or not product.get('id'):
+        return product
+    category = category or db_find_one('categories', {'id': product.get('category_id')})
+    if not category:
+        return product
+    has = (
+        (product.get('qr_category_code') or '').strip()
+        and (product.get('qr_product_code') or '').strip()
+    )
+    if has:
+        return product
+    full, cat_code, prd_code = allocate_product_qr_code(
+        product.get('name'), category, exclude_product_id=product.get('id')
+    )
+    product['qr_code'] = full  # template prefix (units append their own serial)
+    product['qr_category_code'] = cat_code
+    product['qr_product_code'] = prd_code
+    product['qr_generated_at'] = now_iso()
+    product['updated_at'] = now_iso()
+    db_update('products', {'id': product['id']}, {
+        'qr_code': full,
+        'qr_category_code': cat_code,
+        'qr_product_code': prd_code,
+        'qr_generated_at': product['qr_generated_at'],
+        'updated_at': product['updated_at'],
+    })
+    return product
+
+
+# Back-compat aliases used by older generate flow
+def apply_qr_to_product(product, category=None, regenerate=False):
+    if regenerate:
+        category = category or db_find_one('categories', {'id': product.get('category_id')})
+        full, cat_code, prd_code = allocate_product_qr_code(
+            product.get('name'), category, exclude_product_id=product.get('id')
+        )
+        product['qr_code'] = full
+        product['qr_category_code'] = cat_code
+        product['qr_product_code'] = prd_code
+        product['qr_generated_at'] = now_iso()
+        product['updated_at'] = now_iso()
+        db_update('products', {'id': product['id']}, {
+            'qr_code': full,
+            'qr_category_code': cat_code,
+            'qr_product_code': prd_code,
+            'qr_generated_at': product['qr_generated_at'],
+            'updated_at': product['updated_at'],
+        })
+        return product
+    return ensure_product_template_codes(product, category=category)
+
+
+def create_qr_units(product, store_id, variant_id, count, price=0, status='pending'):
+    """Create `count` unique QR units. status: pending (awaiting punch) | in_stock."""
+    if count < 1:
+        return []
+    status = (status or 'pending').strip() or 'pending'
+    product = ensure_product_template_codes(product)
+    cat = (product.get('qr_category_code') or 'XXX').upper()
+    prd = (product.get('qr_product_code') or 'XXX').upper()
+    stamp = datetime.utcnow().strftime('%d%m%y')
+    used_serials = _used_unit_serials()
+    used_codes = _used_unit_codes()
+    created = []
+
+    def _insert_unit(serial, code):
+        unit = {
+            'id': new_id('qru_'),
+            'code': code,
+            'unit_serial': serial,
+            'product_id': product['id'],
+            'variant_id': variant_id or 'v1',
+            'store_id': store_id,
+            'status': status,
+            'price': float(price or 0),
+            'created_at': now_iso(),
+            'updated_at': now_iso(),
+        }
+        try:
+            db_insert('qr_units', unit)
+            return unit
+        except Exception as exc:  # noqa: BLE001 — catch Mongo DuplicateKeyError / local races
+            msg = str(exc).lower()
+            if 'duplicate' in msg or 'e11000' in msg:
+                return None
+            raise
+
+    for i in range(int(count)):
+        unit = None
+        for attempt in range(64):
+            seed = f'{prd}{i}{attempt}{uuid.uuid4().hex[:4]}'
+            serial = allocate_unique_code(seed, used_serials, length=3)
+            used_serials.add(serial)
+            code = f'FNM{stamp}{cat}{prd}{serial}'
+            if code in used_codes:
+                continue
+            used_codes.add(code)
+            unit = _insert_unit(serial, code)
+            if unit:
+                created.append(unit)
+                break
+            continue
+        if not unit:
+            for _ in range(32):
+                serial = uuid.uuid4().hex[:3].upper()
+                if serial in used_serials:
+                    continue
+                used_serials.add(serial)
+                code = f'FNM{stamp}{cat}{prd}{serial}'
+                if code in used_codes:
+                    continue
+                used_codes.add(code)
+                unit = _insert_unit(serial, code)
+                if unit:
+                    created.append(unit)
+                    break
+    return created
+
+
+def sync_qr_units_for_inventory_row(inv_row, product=None):
+    """Make in_stock unit count match inventory stock for this store×product×variant."""
+    if not inv_row:
+        return 0
+    product = product or db_find_one('products', {'id': inv_row.get('product_id')})
+    if not product:
+        return 0
+    ensure_product_template_codes(product)
+    store_id = inv_row.get('store_id')
+    product_id = inv_row.get('product_id')
+    variant_id = inv_row.get('variant_id') or 'v1'
+    try:
+        stock = max(0, int(inv_row.get('stock') or 0))
+    except (TypeError, ValueError):
+        stock = 0
+    existing = [
+        u for u in db_find('qr_units', {
+            'store_id': store_id,
+            'product_id': product_id,
+            'variant_id': variant_id,
+            'status': 'in_stock',
+        })
+    ]
+    existing.sort(key=lambda u: u.get('created_at') or '')
+    created_n = 0
+    if len(existing) < stock:
+        created = create_qr_units(
+            product, store_id, variant_id, stock - len(existing),
+            price=inv_row.get('price') or 0,
+            status='in_stock',
+        )
+        created_n = len(created)
+    elif len(existing) > stock:
+        for unit in existing[stock:]:
+            db_update('qr_units', {'id': unit['id']}, {
+                'status': 'void',
+                'updated_at': now_iso(),
+            })
+    return created_n
+
+
+def sync_all_qr_units_from_inventory():
+    """Backfill: every inventory stock unit gets its own unique QR identity."""
+    products_by_id = {p['id']: p for p in db_find('products')}
+    created = 0
+    for inv in db_find('inventory'):
+        product = products_by_id.get(inv.get('product_id'))
+        if not product:
+            continue
+        try:
+            created += sync_qr_units_for_inventory_row(inv, product=product)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[qr] sync skipped for inventory {inv.get('id')}: {exc}")
+            continue
+    if created:
+        _invalidate_ref_cache('products_by_id')
+    return created
+
+
+def find_qr_unit_by_code(code):
+    """Resolve a scanned code to a qr_units row."""
+    raw = re.sub(r'[^A-Za-z0-9]', '', (code or '')).upper()
+    if not raw:
+        return None
+    unit = db_find_one('qr_units', {'code': raw})
+    if unit:
+        return unit
+    # Match by unique last-3 serial
+    if len(raw) >= 3:
+        serial = raw[-3:]
+        unit = db_find_one('qr_units', {'unit_serial': serial})
+        if unit:
+            return unit
+        for row in db_find('qr_units'):
+            if (row.get('code') or '').upper().endswith(serial):
+                return row
+            if (row.get('unit_serial') or '').upper() == serial:
+                return row
+    return None
+
+
+def find_product_by_qr(code):
+    """Resolve QR → product (unit-aware, with legacy product-level fallback)."""
+    unit = find_qr_unit_by_code(code)
+    if unit:
+        return db_find_one('products', {'id': unit.get('product_id')})
+    raw = re.sub(r'[^A-Za-z0-9]', '', (code or '')).upper()
+    if not raw:
+        return None
+    product = db_find_one('products', {'qr_code': raw})
+    if product:
+        return product
+    if len(raw) >= 6:
+        uid = raw[-6:]
+        for row in db_find('products'):
+            if product_qr_uid(row) == uid:
+                return row
+            if (row.get('qr_code') or '').upper().endswith(uid):
+                return row
+    return None
+
+
+def mark_qr_units_sold(unit_ids, order_id=''):
+    for uid in unit_ids or []:
+        unit = db_find_one('qr_units', {'id': uid})
+        if not unit or unit.get('status') != 'in_stock':
+            continue
+        db_update('qr_units', {'id': uid}, {
+            'status': 'sold',
+            'sold_at': now_iso(),
+            'order_id': order_id or '',
+            'updated_at': now_iso(),
+        })
+
+
+def claim_qr_units_for_sale(store_id, product_id, variant_id, qty, preferred_unit_ids=None):
+    """
+    Pick `qty` in-stock units for a sale. Preferred unit ids (from scanned QRs)
+    are claimed first; remaining slots come from oldest stock.
+    """
+    qty = int(qty or 0)
+    if qty < 1:
+        return []
+    claimed = []
+    preferred = [str(x).strip() for x in (preferred_unit_ids or []) if str(x).strip()]
+    for uid in preferred:
+        if len(claimed) >= qty:
+            break
+        unit = db_find_one('qr_units', {'id': uid})
+        if not unit or unit.get('status') != 'in_stock':
+            continue
+        if unit.get('store_id') != store_id:
+            continue
+        if unit.get('product_id') != product_id:
+            continue
+        if variant_id and unit.get('variant_id') and unit.get('variant_id') != variant_id:
+            continue
+        if any(c.get('id') == unit.get('id') for c in claimed):
+            continue
+        claimed.append(unit)
+    need = qty - len(claimed)
+    if need > 0:
+        # Ensure unit rows exist for current stock before claiming
+        inv = db_find_one('inventory', {
+            'store_id': store_id,
+            'product_id': product_id,
+            'variant_id': variant_id,
+        })
+        if inv:
+            sync_qr_units_for_inventory_row(inv)
+        pool = db_find('qr_units', {
+            'store_id': store_id,
+            'product_id': product_id,
+            'variant_id': variant_id,
+            'status': 'in_stock',
+        }, sort=[('created_at', 1)])
+        claimed_ids = {c.get('id') for c in claimed}
+        for unit in pool:
+            if unit.get('id') in claimed_ids:
+                continue
+            claimed.append(unit)
+            if len(claimed) >= qty:
+                break
+    return claimed[:qty]
+
+
+def backfill_all_product_qrs():
+    """Legacy name — syncs per-unit QR codes from inventory stock levels."""
+    try:
+        for product in db_find('products'):
+            category = db_find_one('categories', {'id': product.get('category_id')})
+            if category:
+                ensure_product_template_codes(product, category=category)
+        return sync_all_qr_units_from_inventory()
+    except Exception as exc:  # noqa: BLE001
+        print(f'[qr] backfill aborted: {exc}')
+        return 0
+
+
+def issue_mobile_token(member):
+    """Signed bearer token for the mobile APK (valid 7 days)."""
+    payload = {
+        'uid': member.get('id'),
+        'username': member.get('username') or '',
+        'role': member.get('role') or '',
+        'store_id': member.get('store_id') or '',
+        'name': member.get('name') or member.get('username') or 'Staff',
+        'exp': int((datetime.utcnow() + timedelta(days=7)).timestamp()),
+    }
+    raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(',', ':')).encode()).decode().rstrip('=')
+    sig = hmac.new(SECRET_KEY.encode(), raw.encode(), hashlib.sha256).hexdigest()
+    return f'{raw}.{sig}'
+
+
+def verify_mobile_token(token):
+    if not token or '.' not in token:
+        return None
+    raw, sig = token.rsplit('.', 1)
+    expected = hmac.new(SECRET_KEY.encode(), raw.encode(), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, sig):
+        return None
+    pad = '=' * (-len(raw) % 4)
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(raw + pad).decode())
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if int(payload.get('exp') or 0) < int(datetime.utcnow().timestamp()):
+        return None
+    member = db_find_one('staff', {'id': payload.get('uid')})
+    if not member or member.get('active') is False:
+        return None
+    return {
+        'id': member.get('id'),
+        'name': member.get('name') or payload.get('name') or 'Staff',
+        'username': member.get('username') or '',
+        'role': member.get('role') or ROLE_STORE,
+        'store_id': member.get('store_id') or '',
+    }
+
+
+def mobile_auth_required(f):
+    """Accept Bearer mobile tokens (APK) or an active admin session."""
+    @wraps(f)
+    def wrapped(*args, **kwargs):
+        staff = None
+        auth = request.headers.get('Authorization') or ''
+        if auth.lower().startswith('bearer '):
+            staff = verify_mobile_token(auth[7:].strip())
+        if not staff and session.get('admin_ok'):
+            staff = current_admin()
+        if not staff:
+            return jsonify({'error': 'Unauthorized — login required'}), 401
+        request.mobile_staff = staff
+        return f(*args, **kwargs)
+    return wrapped
+
+
+def _authenticate_staff_credentials(username, password):
+    username = (username or '').strip().lower()
+    password = password or ''
+    if not username or not password:
+        return None, 'Username and password required'
+    member = None
+    for row in db_find('staff'):
+        if (row.get('username') or '').strip().lower() == username:
+            member = row
+            break
+    if member and member.get('active') is False:
+        return None, 'This account is disabled'
+    if member and member.get('password_hash') and check_password_hash(member['password_hash'], password):
+        if member.get('role') in (ROLE_STORE, ROLE_BILLING) and not member.get('store_id'):
+            return None, 'This account has no store assigned'
+        return member, None
+    if username in ('abhi', 'admin') and password == ADMIN_PASSWORD and password:
+        ensure_admin_users()
+        member = db_find_one('staff', {'username': 'abhi'})
+        if member:
+            return member, None
+    return None, 'Incorrect username or password'
+
+
 def admin_required(f):
     @wraps(f)
     def wrapped(*args, **kwargs):
@@ -411,7 +980,8 @@ STAFF_ROLES = [ROLE_SUPER, ROLE_STORE, ROLE_BILLING]
 ROLE_PAGES = {
     ROLE_SUPER: {
         'dashboard', 'reports', 'in_store', 'orders', 'inventory', 'stores',
-        'storefront', 'products', 'categories', 'coupons', 'customers', 'staff', 'settings',
+        'storefront', 'products', 'categories', 'qr_codes', 'coupons', 'customers',
+        'staff', 'settings',
     },
     ROLE_STORE: {
         'dashboard', 'reports', 'in_store', 'orders', 'inventory', 'products',
@@ -439,7 +1009,7 @@ _OPEN_ORDER_STATUSES = (
 )
 _CUSTOMER_ORDER_PROJECTION = {
     'id': 1, 'order_id': 1, 'store_id': 1, 'customer_id': 1, 'customer_phone': 1,
-    'created_at': 1, 'total': 1, 'status': 1,
+    'created_at': 1, 'total': 1, 'status': 1, 'items': 1, 'channel': 1,
 }
 
 
@@ -628,6 +1198,7 @@ def inject_admin_session():
             'manage_staff': role == ROLE_SUPER,
             'manage_stores': role == ROLE_SUPER,
             'manage_catalog': role == ROLE_SUPER,
+            'manage_qr': role == ROLE_SUPER,
             'manage_settings': role == ROLE_SUPER,
             'manage_coupons': role == ROLE_SUPER,
             'manage_storefront': role == ROLE_SUPER,
@@ -1173,22 +1744,22 @@ def seed_if_empty():
         db_insert('stores', s)
 
     categories = [
-        {'id': 'cat_fresh_meat', 'name': 'Fresh Meat', 'slug': 'fresh-meat', 'enabled': True,
+        {'id': 'cat_fresh_meat', 'name': 'Fresh Meat', 'slug': 'fresh-meat', 'code': 'FMT', 'enabled': True,
          'seo_title': 'Fresh Meat Online', 'seo_description': 'Farm fresh chicken and mutton',
          'banner': '/uploads/products/seed_p5.png', 'sort_order': 1, 'created_at': now_iso()},
-        {'id': 'cat_frozen', 'name': 'Frozen Food', 'slug': 'frozen-food', 'enabled': True,
+        {'id': 'cat_frozen', 'name': 'Frozen Food', 'slug': 'frozen-food', 'code': 'FRZ', 'enabled': True,
          'seo_title': 'Frozen Food', 'seo_description': 'Peak-frozen fish and meat',
          'banner': '/uploads/products/seed_p4.png', 'sort_order': 2, 'created_at': now_iso()},
-        {'id': 'cat_rtc', 'name': 'Ready-To-Cook', 'slug': 'ready-to-cook', 'enabled': True,
+        {'id': 'cat_rtc', 'name': 'Ready-To-Cook', 'slug': 'ready-to-cook', 'code': 'RTC', 'enabled': True,
          'seo_title': 'Ready To Cook', 'seo_description': 'Marinated packs ready in minutes',
          'banner': '/uploads/products/seed_p11.png', 'sort_order': 3, 'created_at': now_iso()},
-        {'id': 'cat_marinades', 'name': 'Marinades', 'slug': 'marinades', 'enabled': True,
+        {'id': 'cat_marinades', 'name': 'Marinades', 'slug': 'marinades', 'code': 'MAR', 'enabled': True,
          'seo_title': 'Marinades', 'seo_description': 'House marinades and spice kits',
          'banner': '/uploads/products/seed_p12.png', 'sort_order': 4, 'created_at': now_iso()},
-        {'id': 'cat_fish', 'name': 'Fish & Seafood', 'slug': 'fish', 'enabled': True,
+        {'id': 'cat_fish', 'name': 'Fish & Seafood', 'slug': 'fish', 'code': 'FSH', 'enabled': True,
          'seo_title': 'Fresh Fish', 'seo_description': 'Day-fresh fish and prawns',
          'banner': '/uploads/products/seed_p1.png', 'sort_order': 5, 'created_at': now_iso()},
-        {'id': 'cat_veg', 'name': 'Vegetables', 'slug': 'veg', 'enabled': True,
+        {'id': 'cat_veg', 'name': 'Vegetables', 'slug': 'veg', 'code': 'VEG', 'enabled': True,
          'seo_title': 'Farm Vegetables', 'seo_description': 'Seasonal farm veg',
          'banner': '/uploads/products/seed_p14.png', 'sort_order': 6, 'created_at': now_iso()},
     ]
@@ -1505,6 +2076,41 @@ def script_js():
 @app.route('/assets/<path:filename>')
 def assets(filename):
     return _cached_send(BASE_DIR / 'assets', filename, max_age=604800)
+
+
+MOBILE_WWW = BASE_DIR / 'Mobile Application FishandMeet' / 'www'
+
+
+@app.route('/mobile')
+def mobile_app_redirect():
+    """Force trailing slash so relative CSS/JS/assets resolve under /mobile/."""
+    return redirect('/mobile/', code=308)
+
+
+@app.route('/mobile/')
+def mobile_app_index():
+    """Installable punch PWA — open on phone (Android + iOS) or desktop."""
+    index_path = MOBILE_WWW / 'index.html'
+    if not index_path.is_file():
+        abort(404)
+    html = index_path.read_text(encoding='utf-8')
+    # Ensure asset paths resolve correctly when served from Flask (not Capacitor file://)
+    if '<base ' not in html.lower():
+        html = html.replace('<head>', '<head>\n  <base href="/mobile/" />', 1)
+    resp = make_response(html)
+    resp.headers['Content-Type'] = 'text/html; charset=utf-8'
+    resp.headers['Cache-Control'] = 'no-cache'
+    return resp
+
+
+@app.route('/mobile/<path:filename>')
+def mobile_app_assets(filename):
+    target = (MOBILE_WWW / filename).resolve()
+    if not str(target).startswith(str(MOBILE_WWW.resolve())):
+        abort(404)
+    if not target.is_file():
+        abort(404)
+    return send_from_directory(MOBILE_WWW, filename)
 
 
 @app.route('/uploads/products/<path:filename>')
@@ -2386,6 +2992,12 @@ def admin_in_store():
     return render_template('admin/in_store.html', page='in_store', db_mode=db_mode())
 
 
+@app.route('/admin/qr-codes')
+@page_required('qr_codes')
+def admin_qr_codes():
+    return render_template('admin/qr_codes.html', page='qr_codes', db_mode=db_mode())
+
+
 def _add_months(year, month, delta):
     month += delta
     while month > 12:
@@ -3088,6 +3700,7 @@ def api_admin_categories():
         'id': new_id('cat_'),
         'name': name,
         'slug': slug,
+        'code': '',
         'enabled': data.get('enabled', True),
         'seo_title': data.get('seo_title', name),
         'seo_description': data.get('seo_description', ''),
@@ -3097,6 +3710,7 @@ def api_admin_categories():
         'created_at': now_iso(),
     }
     db_insert('categories', cat)
+    ensure_category_code(cat)
     _invalidate_ref_cache('categories')
     return jsonify(cat), 201
 
@@ -3301,6 +3915,8 @@ def api_admin_inventory():
         if quantity < 1 or quantity > 1000000:
             return jsonify({'error': 'Quantity must be between 1 and 1,000,000'}), 400
         updated = db_increment('inventory', {'id': row['id']}, 'stock', quantity)
+        if updated:
+            sync_qr_units_for_inventory_row(updated)
         _badges_cache.clear()
         log_activity(
             'inventory',
@@ -3370,9 +3986,11 @@ def api_admin_inventory_update(inv_id):
         return jsonify({'error': 'Price and stock cannot be negative'}), 400
     updates['updated_at'] = now_iso()
     db_update('inventory', {'id': inv_id}, updates)
+    updated = db_find_one('inventory', {'id': inv_id})
+    if 'stock' in updates and updated:
+        sync_qr_units_for_inventory_row(updated)
     _badges_cache.clear()
-    return jsonify(db_find_one('inventory', {'id': inv_id}))
-
+    return jsonify(updated)
 
 # --- Orders ---
 
@@ -3838,7 +4456,8 @@ def api_admin_media_sync():
 # --- In-store POS ---
 
 def _pos_adjust_stock(inventory_id, quantity_delta):
-    """Atomically adjust a POS inventory row where possible."""
+    """Atomically adjust a POS inventory row where possible; keep qr_units in sync."""
+    ok = False
     if _use_mongo:
         query = {'id': inventory_id}
         if quantity_delta < 0:
@@ -3847,18 +4466,24 @@ def _pos_adjust_stock(inventory_id, quantity_delta):
             query,
             {'$inc': {'stock': quantity_delta}, '$set': {'updated_at': now_iso()}},
         )
-        return result.modified_count == 1
-    inv = db_find_one('inventory', {'id': inventory_id})
-    if not inv:
-        return False
-    new_stock = inv.get('stock', 0) + quantity_delta
-    if new_stock < 0:
-        return False
-    db_update('inventory', {'id': inventory_id}, {
-        'stock': new_stock,
-        'updated_at': now_iso(),
-    })
-    return True
+        ok = result.modified_count == 1
+    else:
+        inv = db_find_one('inventory', {'id': inventory_id})
+        if not inv:
+            return False
+        new_stock = inv.get('stock', 0) + quantity_delta
+        if new_stock < 0:
+            return False
+        db_update('inventory', {'id': inventory_id}, {
+            'stock': new_stock,
+            'updated_at': now_iso(),
+        })
+        ok = True
+    if ok and quantity_delta > 0:
+        inv = db_find_one('inventory', {'id': inventory_id})
+        if inv:
+            sync_qr_units_for_inventory_row(inv)
+    return ok
 
 
 @app.route('/api/admin/pos/orders', methods=['GET', 'POST'])
@@ -3894,6 +4519,7 @@ def api_admin_pos_orders():
     lines = []
     subtotal = 0.0
     deductions = []
+    claimed_by_line = []
     for raw in raw_items:
         try:
             qty = int(raw.get('qty', 0))
@@ -3915,12 +4541,36 @@ def api_admin_pos_orders():
             return jsonify({
                 'error': f'Only {inv.get("stock", 0)} units available for {product["name"]}'
             }), 409
+        preferred_unit_ids = []
+        if raw.get('unit_id'):
+            preferred_unit_ids.append(raw.get('unit_id'))
+        for uid in (raw.get('unit_ids') or []):
+            preferred_unit_ids.append(uid)
+        claimed = claim_qr_units_for_sale(
+            store_id, product_id, variant_id, qty, preferred_unit_ids=preferred_unit_ids
+        )
+        if len(claimed) < qty:
+            # Last attempt: sync then claim again
+            sync_qr_units_for_inventory_row(inv, product=product)
+            claimed = claim_qr_units_for_sale(
+                store_id, product_id, variant_id, qty, preferred_unit_ids=preferred_unit_ids
+            )
+        if len(claimed) < qty:
+            return jsonify({
+                'error': f'Not enough unique QR units for {product["name"]} '
+                         f'(need {qty}, found {len(claimed)}). Generate/sync QR first.'
+            }), 409
         variant = next(
             (v for v in product.get('variants') or [] if v.get('id') == variant_id),
             {},
         )
         price = float(inv.get('price', 0))
         line_total = round(price * qty, 2)
+        unit_payload = [{
+            'unit_id': u.get('id'),
+            'qr_code': u.get('code'),
+            'unit_serial': u.get('unit_serial'),
+        } for u in claimed]
         lines.append({
             'product_id': product_id,
             'variant_id': variant_id,
@@ -3930,8 +4580,12 @@ def api_admin_pos_orders():
             'price': price,
             'gst_percent': float(product.get('gst_percent', 0) or 0),
             'line_total': line_total,
+            'qr_units': unit_payload,
+            'qr_codes': [u['qr_code'] for u in unit_payload if u.get('qr_code')],
+            'unit_serials': [u['unit_serial'] for u in unit_payload if u.get('unit_serial')],
         })
         deductions.append((inv['id'], qty))
+        claimed_by_line.append([u.get('id') for u in claimed])
         subtotal += line_total
 
     try:
@@ -4011,12 +4665,1124 @@ def api_admin_pos_orders():
         for inventory_id, qty in deducted:
             _pos_adjust_stock(inventory_id, qty)
         raise
+    sold_ids = [uid for group in claimed_by_line for uid in group]
+    mark_qr_units_sold(sold_ids, order_id=order_id)
     log_activity(
         'order',
         f'In-store bill {order_id} created — ₹{total:,.0f} · {store["name"]}',
-        {'order_id': order_id, 'store_id': store_id, 'channel': 'in_store'},
+        {'order_id': order_id, 'store_id': store_id, 'channel': 'in_store', 'qr_units': len(sold_ids)},
     )
     return jsonify({'ok': True, 'order': order}), 201
+
+
+# --- QR Codes (Super Admin) ---
+
+def _enrich_qr_product_row(product, categories_by_id, stores_by_id, inventory_rows):
+    cat = categories_by_id.get(product.get('category_id')) or {}
+    store_ids = product.get('store_availability') or []
+    related = [r for r in inventory_rows if r.get('product_id') == product.get('id')]
+    total_stock = sum(int(r.get('stock', 0) or 0) for r in related)
+    prices = [float(r.get('price', 0) or 0) for r in related if float(r.get('price', 0) or 0) > 0]
+    store_names = []
+    store_details = []
+    for sid in store_ids:
+        store = stores_by_id.get(sid)
+        if store:
+            store_names.append(store.get('name', sid))
+    for row in related:
+        store = stores_by_id.get(row.get('store_id'))
+        variant_label = ''
+        for v in product.get('variants') or []:
+            if v.get('id') == row.get('variant_id'):
+                variant_label = v.get('label', '')
+                break
+        store_details.append({
+            'store_id': row.get('store_id'),
+            'store_name': store.get('name') if store else row.get('store_id'),
+            'variant_id': row.get('variant_id'),
+            'variant_label': variant_label,
+            'price': float(row.get('price', 0) or 0),
+            'stock': int(row.get('stock', 0) or 0),
+            'inventory_id': row.get('id'),
+        })
+    return {
+        'id': product.get('id'),
+        'name': product.get('name'),
+        'sku': product.get('sku', ''),
+        'category_id': product.get('category_id', ''),
+        'category_name': cat.get('name', ''),
+        'category_code': (product.get('qr_category_code') or cat.get('code') or ''),
+        'product_code': product.get('qr_product_code') or '',
+        'qr_serial': product.get('qr_serial') or '',
+        'qr_uid': product_qr_uid(product),
+        'qr_code': product.get('qr_code') or '',
+        'qr_generated': bool((product.get('qr_code') or '').strip()),
+        'qr_generated_at': product.get('qr_generated_at') or product.get('updated_at') or product.get('created_at') or '',
+        'status': product.get('status', 'available'),
+        'total_stock': total_stock,
+        'price_min': min(prices) if prices else 0,
+        'price_max': max(prices) if prices else 0,
+        'stores': store_names,
+        'store_details': store_details,
+        'variants': product.get('variants') or [],
+        'updated_at': product.get('updated_at') or product.get('created_at') or '',
+    }
+
+
+@app.route('/api/admin/qr-codes', methods=['GET'])
+@admin_required
+def api_admin_qr_codes():
+    """Return one row per in-stock QR unit (unique last-3 identity), optionally filtered by store."""
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can manage QR codes'}), 403
+    # Optional full stock→QR sync (avoid on every page load — races / slowness)
+    sync_flag = (request.args.get('sync') or '').strip().lower() in ('1', 'true', 'yes')
+    backfilled = backfill_all_product_qrs() if sync_flag else 0
+    store_id = (request.args.get('store_id') or '').strip()
+    category_id = (request.args.get('category_id') or '').strip()
+    product_id = (request.args.get('product_id') or '').strip()
+    status = (request.args.get('status') or 'active').strip() or 'active'
+
+    products = db_find('products')
+    categories_by_id = {c['id']: c for c in db_find('categories')}
+    stores_by_id = {s['id']: s for s in db_find('stores')}
+    products_by_id = {p['id']: p for p in products}
+    inventory_rows = db_find('inventory')
+    for cat in categories_by_id.values():
+        if not (cat.get('code') or '').strip():
+            ensure_category_code(cat)
+
+    query = {}
+    if status == 'active':
+        query['status'] = {'$in': ['pending', 'in_stock']}
+    elif status != 'all':
+        query['status'] = status
+    units = db_find('qr_units', query, sort=[('created_at', -1)])
+    items = []
+    for unit in units:
+        if store_id and unit.get('store_id') != store_id:
+            continue
+        product = products_by_id.get(unit.get('product_id'))
+        if not product:
+            continue
+        if product_id and product.get('id') != product_id:
+            continue
+        if category_id and product.get('category_id') != category_id:
+            continue
+        cat = categories_by_id.get(product.get('category_id')) or {}
+        store = stores_by_id.get(unit.get('store_id')) or {}
+        variant_label = ''
+        for v in product.get('variants') or []:
+            if v.get('id') == unit.get('variant_id'):
+                variant_label = v.get('label') or ''
+                break
+        serial = (unit.get('unit_serial') or (unit.get('code') or '')[-3:]).upper()
+        items.append({
+            'id': unit.get('id'),
+            'unit_id': unit.get('id'),
+            'product_id': product.get('id'),
+            'name': product.get('name'),
+            'sku': product.get('sku', ''),
+            'category_id': product.get('category_id', ''),
+            'category_name': cat.get('name', ''),
+            'category_code': product.get('qr_category_code') or cat.get('code') or '',
+            'product_code': product.get('qr_product_code') or '',
+            'variant_id': unit.get('variant_id'),
+            'variant_label': variant_label or unit.get('variant_id') or '—',
+            'store_id': unit.get('store_id'),
+            'store_name': store.get('name', ''),
+            'stock': 1,
+            'price': float(unit.get('price') or 0),
+            'qr_code': unit.get('code') or '',
+            'qr_serial': serial,
+            'unit_serial': serial,
+            'qr_uid': serial,
+            'qr_generated': True,
+            'qr_generated_at': unit.get('created_at') or '',
+            'status': unit.get('status') or 'pending',
+            'unit_status': unit.get('status') or 'pending',
+        })
+
+    catalog = [
+        _enrich_qr_product_row(p, categories_by_id, stores_by_id, inventory_rows)
+        for p in products
+    ]
+    catalog.sort(key=lambda r: (r.get('name') or '').lower())
+    return jsonify({
+        'items': items,
+        'units': items,
+        'products': catalog,
+        'backfilled': backfilled,
+        'unit_count': len(items),
+    })
+
+
+@app.route('/api/admin/qr-codes/unit/<unit_id>/image')
+@admin_required
+def api_admin_qr_unit_image(unit_id):
+    unit = db_find_one('qr_units', {'id': unit_id})
+    if not unit:
+        return jsonify({'error': 'QR unit not found'}), 404
+    code = (unit.get('code') or '').strip()
+    if not code:
+        return jsonify({'error': 'QR code missing'}), 404
+    png = _qr_png_bytes(code, box_size=10, border=2)
+    resp = send_file(png, mimetype='image/png')
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
+
+
+@app.route('/api/admin/qr-codes/<product_id>/image')
+@admin_required
+def api_admin_qr_image(product_id):
+    """Serve QR PNG — prefers a live unit code, falls back to product template."""
+    unit = db_find_one('qr_units', {'id': product_id})
+    if unit and unit.get('code'):
+        png = _qr_png_bytes(unit['code'], box_size=10, border=2)
+        resp = send_file(png, mimetype='image/png')
+        resp.headers['Cache-Control'] = 'no-store'
+        return resp
+    product = db_find_one('products', {'id': product_id})
+    if not product:
+        return jsonify({'error': 'Product not found'}), 404
+    units = db_find('qr_units', {'product_id': product_id, 'status': 'in_stock'}, limit=1)
+    if units and units[0].get('code'):
+        code = units[0]['code']
+    else:
+        code = (product.get('qr_code') or '').strip()
+        if not code:
+            category = db_find_one('categories', {'id': product.get('category_id')})
+            if category:
+                apply_qr_to_product(product, category=category)
+                product = db_find_one('products', {'id': product_id})
+                code = (product.get('qr_code') or '').strip()
+    if not code:
+        return jsonify({'error': 'QR not generated for this product'}), 404
+    png = _qr_png_bytes(code, box_size=10, border=2)
+    resp = send_file(png, mimetype='image/png')
+    resp.headers['Cache-Control'] = 'no-store'
+    return resp
+
+
+@app.route('/api/admin/qr-codes/lookup', methods=['GET'])
+@admin_required
+def api_admin_qr_lookup():
+    code = request.args.get('code') or request.args.get('q') or ''
+    unit = find_qr_unit_by_code(code)
+    product = find_product_by_qr(code)
+    if not product:
+        return jsonify({'error': 'QR code not found'}), 404
+    store_id = resolve_store_scope(request.args.get('store_id'))
+    if unit and store_id and unit.get('store_id') and unit.get('store_id') != store_id:
+        return jsonify({'error': 'This QR belongs to a different store'}), 409
+    if unit and unit.get('status') == 'sold':
+        return jsonify({'error': 'This unit QR was already sold'}), 409
+    categories_by_id = {c['id']: c for c in db_find('categories')}
+    stores_by_id = {s['id']: s for s in db_find('stores')}
+    inv_query = {'product_id': product['id']}
+    if store_id:
+        inv_query['store_id'] = store_id
+    elif unit:
+        inv_query['store_id'] = unit.get('store_id')
+    inventory_rows = db_find('inventory', inv_query)
+    enriched = _enrich_qr_product_row(product, categories_by_id, stores_by_id, inventory_rows)
+    preferred_variant = (unit or {}).get('variant_id')
+    preferred = None
+    for detail in enriched.get('store_details') or []:
+        if preferred_variant and detail.get('variant_id') != preferred_variant:
+            continue
+        if store_id and detail.get('store_id') != store_id:
+            continue
+        preferred = detail
+        if detail.get('stock', 0) > 0:
+            break
+    if not preferred and enriched.get('store_details'):
+        preferred = enriched['store_details'][0]
+    enriched['preferred_variant_id'] = preferred_variant or (preferred or {}).get('variant_id') or (
+        (product.get('variants') or [{}])[0].get('id')
+    )
+    enriched['preferred_price'] = float((unit or {}).get('price') or (preferred or {}).get('price') or 0)
+    enriched['preferred_stock'] = int((preferred or {}).get('stock') or 0)
+    if unit:
+        enriched['unit_id'] = unit.get('id')
+        enriched['qr_code'] = unit.get('code')
+        enriched['qr_serial'] = unit.get('unit_serial')
+        enriched['qr_uid'] = unit.get('unit_serial')
+        enriched['unit_status'] = unit.get('status')
+    return jsonify(enriched)
+
+
+@app.route('/api/admin/qr-codes/generate', methods=['POST'])
+@admin_required
+def api_admin_qr_generate():
+    """Create or update a product QR and sync inventory for the chosen store."""
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can generate QR codes'}), 403
+    data = parse_json()
+    category_id = (data.get('category_id') or '').strip()
+    category = db_find_one('categories', {'id': category_id})
+    if not category:
+        return jsonify({'error': 'Select a valid category'}), 400
+    store_id = (data.get('store_id') or '').strip()
+    store = db_find_one('stores', {'id': store_id})
+    if not store:
+        return jsonify({'error': 'Select a valid store'}), 400
+    try:
+        price = float(data.get('price', 0) or 0)
+        stock = int(data.get('stock', 0) or 0)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Price and stock must be valid numbers'}), 400
+    if price < 0 or stock < 0:
+        return jsonify({'error': 'Price and stock cannot be negative'}), 400
+    if stock > 1000000:
+        return jsonify({'error': 'Stock is too large'}), 400
+
+    product_id = (data.get('product_id') or '').strip()
+    product_name = (data.get('product_name') or '').strip()
+    variant_label = (data.get('variant_label') or '1 kg').strip() or '1 kg'
+    variant_unit = (data.get('variant_unit') or variant_label).strip()
+    regenerate = bool(data.get('regenerate', False))
+    created = False
+
+    if product_id:
+        product = db_find_one('products', {'id': product_id})
+        if not product:
+            return jsonify({'error': 'Product not found'}), 404
+        if product_name:
+            product['name'] = product_name
+    else:
+        if not product_name:
+            return jsonify({'error': 'Product name is required'}), 400
+        stores = db_find('stores')
+        product = {
+            'id': new_id('p'),
+            'name': product_name,
+            'description': data.get('description', ''),
+            'sku': data.get('sku') or f'FAM-{uuid.uuid4().hex[:6].upper()}',
+            'category_id': category_id,
+            'images': [],
+            'status': 'available',
+            'gst_percent': float(data.get('gst_percent', 0) or 0),
+            'expiry_info': '',
+            'nutritional_info': '',
+            'parameters': normalize_parameters(category.get('parameters')),
+            'seo_title': product_name,
+            'seo_description': '',
+            'featured': False,
+            'bestseller': False,
+            'inventory_model': 'variant',
+            'variants': [{
+                'id': 'v1',
+                'label': variant_label,
+                'sku_suffix': _sanitize_code_chars(variant_unit, 4) or 'UNIT',
+                'unit': variant_unit,
+            }],
+            'store_availability': [s['id'] for s in stores] if data.get('all_stores') else [store_id],
+            'created_at': now_iso(),
+            'updated_at': now_iso(),
+        }
+        db_insert('products', product)
+        created = True
+
+    # Keep category in sync
+    if product_id:
+        product['category_id'] = category_id
+
+    try:
+        apply_qr_to_product(product, category=category, regenerate=regenerate)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    # Ensure selected store is available
+    availability = list(product.get('store_availability') or [])
+    if store_id not in availability:
+        availability.append(store_id)
+    product['store_availability'] = availability
+    product['updated_at'] = now_iso()
+
+    variants = product.get('variants') or []
+    if not variants:
+        variants = [{'id': 'v1', 'label': variant_label, 'sku_suffix': 'UNIT', 'unit': variant_unit}]
+        product['variants'] = variants
+    variant_id = (data.get('variant_id') or '').strip() or variants[0].get('id')
+    if not any(v.get('id') == variant_id for v in variants):
+        variant_id = variants[0].get('id')
+
+    db_update('products', {'id': product['id']}, {
+        'name': product.get('name'),
+        'category_id': category_id,
+        'qr_code': product.get('qr_code'),
+        'qr_category_code': product.get('qr_category_code'),
+        'qr_product_code': product.get('qr_product_code'),
+        'qr_serial': product.get('qr_serial'),
+        'qr_generated_at': product.get('qr_generated_at') or now_iso(),
+        'store_availability': availability,
+        'variants': variants,
+        'status': product.get('status', 'available'),
+        'updated_at': product['updated_at'],
+    })
+    product = db_find_one('products', {'id': product['id']})
+    # Ensure inventory row exists for price metadata — do NOT increase stock on generate
+    _ensure_product_inventory_rows(product, default_price=price, default_stock=0)
+    inv = db_find_one('inventory', {
+        'store_id': store_id,
+        'product_id': product['id'],
+        'variant_id': variant_id,
+    })
+    if not inv:
+        inv = {
+            'id': new_id('inv_'),
+            'store_id': store_id,
+            'product_id': product['id'],
+            'variant_id': variant_id,
+            'price': price if price > 0 else 0,
+            'stock': 0,
+            'updated_at': now_iso(),
+        }
+        db_insert('inventory', inv)
+    elif price > 0:
+        db_update('inventory', {'id': inv['id']}, {
+            'price': price,
+            'updated_at': now_iso(),
+        })
+        inv = db_find_one('inventory', {'id': inv['id']})
+
+    # Generate unique QRs as pending — inventory stock only increases after punch
+    qty = stock if stock > 0 else int(data.get('qty') or 0)
+    if qty < 1:
+        return jsonify({'error': 'Enter how many unique QR codes to generate (at least 1)'}), 400
+    new_units = create_qr_units(
+        product, store_id, variant_id, qty,
+        price=float((inv or {}).get('price') or price or 0),
+        status='pending',
+    )
+    created_unit_ids = [u.get('id') for u in new_units if u.get('id')]
+    created_unit_codes = [u.get('code') for u in new_units if u.get('code')]
+    created_unit_serials = [u.get('unit_serial') for u in new_units if u.get('unit_serial')]
+
+    _invalidate_ref_cache('products_by_id')
+    _badges_cache.clear()
+    log_activity(
+        'inventory',
+        f"QR generated (pending punch) · {product.get('name')} · +{len(created_unit_ids)} · {store.get('name')}",
+        {
+            'product_id': product['id'],
+            'store_id': store_id,
+            'units_created': len(created_unit_ids),
+            'status': 'pending',
+        },
+    )
+    categories_by_id = {c['id']: c for c in db_find('categories')}
+    stores_by_id = {s['id']: s for s in db_find('stores')}
+    inventory_rows = db_find('inventory', {'product_id': product['id']})
+    enriched = _enrich_qr_product_row(product, categories_by_id, stores_by_id, inventory_rows)
+    enriched['units_created'] = len(created_unit_ids)
+    return jsonify({
+        'ok': True,
+        'created': created,
+        'product': enriched,
+        'units_created': len(created_unit_ids),
+        'created_unit_ids': created_unit_ids,
+        'created_unit_codes': created_unit_codes,
+        'created_unit_serials': created_unit_serials,
+        'inventory_unchanged': True,
+    }), (201 if created else 200)
+
+
+def _qr_png_bytes(code, box_size=8, border=2):
+    """Render a QR payload to PNG bytes for PDF embedding."""
+    import qrcode
+    qr = qrcode.QRCode(version=None, error_correction=qrcode.constants.ERROR_CORRECT_M,
+                       box_size=box_size, border=border)
+    qr.add_data(code)
+    qr.make(fit=True)
+    img = qr.make_image(fill_color='#1E3A22', back_color='white')
+    buf = BytesIO()
+    img.save(buf, format='PNG')
+    buf.seek(0)
+    return buf
+
+
+def _build_qr_pdf(products):
+    """One A4 page per QR unit (or legacy product row): QR image + code + name."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image, PageBreak, KeepTogether
+    from reportlab.lib.enums import TA_CENTER
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        rightMargin=48, leftMargin=48, topMargin=56, bottomMargin=48,
+    )
+    styles = getSampleStyleSheet()
+    brand = ParagraphStyle(
+        'FamBrand', parent=styles['Heading1'],
+        fontName='Helvetica-Bold', fontSize=18, textColor='#1E3A22',
+        alignment=TA_CENTER, spaceAfter=8,
+    )
+    code_style = ParagraphStyle(
+        'FamCode', parent=styles['Normal'],
+        fontName='Courier-Bold', fontSize=14, textColor='#1E3A22',
+        alignment=TA_CENTER, spaceBefore=14, spaceAfter=8,
+    )
+    meta = ParagraphStyle(
+        'FamMeta', parent=styles['Normal'],
+        fontName='Helvetica', fontSize=12, textColor='#55594F',
+        alignment=TA_CENTER, leading=16,
+    )
+    story = []
+    for idx, product in enumerate(products):
+        code = (product.get('qr_code') or '').strip().upper()
+        if not code:
+            continue
+        png = _qr_png_bytes(code, box_size=10, border=2)
+        img = Image(png, width=3.2 * inch, height=3.2 * inch)
+        img.hAlign = 'CENTER'
+        unique = (
+            product.get('unit_serial')
+            or product.get('qr_serial')
+            or product.get('qr_uid')
+            or (code[-3:] if len(code) >= 3 else '')
+        )
+        block = [
+            Paragraph('FISH AND MEAT', brand),
+            Spacer(1, 18),
+            img,
+            Paragraph(code, code_style),
+            Paragraph(
+                f"<b>{product.get('name') or 'Product'}</b>",
+                meta,
+            ),
+            Spacer(1, 6),
+            Paragraph(
+                f"{product.get('category_name') or ''}"
+                f"{(' · ' + product.get('sku')) if product.get('sku') else ''}"
+                f"{(' · Unique ' + str(unique)) if unique else ''}"
+                f"{(' · ' + product.get('store_name')) if product.get('store_name') else ''}",
+                meta,
+            ),
+        ]
+        story.append(KeepTogether(block))
+        if idx < len(products) - 1:
+            story.append(PageBreak())
+    if not story:
+        raise ValueError('No QR codes to print')
+    doc.build(story)
+    buf.seek(0)
+    return buf
+
+
+def _units_for_qr_print(unit_ids=None, product_ids=None, codes=None):
+    """Resolve print rows from unit ids, product ids, or raw QR codes."""
+    categories_by_id = {c['id']: c for c in db_find('categories')}
+    stores_by_id = {s['id']: s for s in db_find('stores')}
+    products_by_id = {p['id']: p for p in db_find('products')}
+    rows = []
+    seen = set()
+
+    def append_unit(unit):
+        if not unit or not unit.get('code'):
+            return
+        uid = unit.get('id') or unit.get('code')
+        if uid in seen:
+            return
+        seen.add(uid)
+        product = products_by_id.get(unit.get('product_id')) or {}
+        cat = categories_by_id.get(product.get('category_id')) or {}
+        store = stores_by_id.get(unit.get('store_id')) or {}
+        rows.append({
+            'id': unit.get('id'),
+            'name': product.get('name') or 'Product',
+            'sku': product.get('sku') or '',
+            'category_name': cat.get('name') or '',
+            'store_name': store.get('name') or '',
+            'qr_code': unit.get('code'),
+            'unit_serial': unit.get('unit_serial') or '',
+            'qr_uid': unit.get('unit_serial') or '',
+            'qr_serial': unit.get('unit_serial') or '',
+        })
+
+    for uid in unit_ids or []:
+        unit = db_find_one('qr_units', {'id': str(uid).strip()})
+        if unit:
+            append_unit(unit)
+
+    for code in codes or []:
+        unit = find_qr_unit_by_code(code)
+        if unit:
+            append_unit(unit)
+
+    for pid in product_ids or []:
+        # Prefer in-stock units for this product; fall back to template once
+        units = db_find('qr_units', {
+            'product_id': str(pid).strip(),
+            'status': 'in_stock',
+        }, sort=[('created_at', 1)])
+        if units:
+            for unit in units:
+                append_unit(unit)
+            continue
+        product = products_by_id.get(str(pid).strip())
+        if product and product.get('qr_code'):
+            key = 'p:' + product['id']
+            if key in seen:
+                continue
+            seen.add(key)
+            cat = categories_by_id.get(product.get('category_id')) or {}
+            rows.append({
+                'id': product['id'],
+                'name': product.get('name'),
+                'sku': product.get('sku') or '',
+                'category_name': cat.get('name') or '',
+                'store_name': '',
+                'qr_code': product.get('qr_code'),
+                'unit_serial': '',
+                'qr_uid': product_qr_uid(product),
+                'qr_serial': product.get('qr_serial') or '',
+            })
+    return rows
+
+
+def _products_for_qr_print(product_ids):
+    """Back-compat wrapper — expands products into their in-stock unit QRs."""
+    return _units_for_qr_print(product_ids=product_ids)
+
+
+@app.route('/api/admin/qr-codes/print', methods=['POST'])
+@admin_required
+def api_admin_qr_print():
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can print QR codes'}), 403
+    data = parse_json()
+    unit_ids = data.get('unit_ids') or []
+    product_ids = data.get('product_ids') or []
+    if isinstance(unit_ids, str):
+        unit_ids = [unit_ids]
+    if isinstance(product_ids, str):
+        product_ids = [product_ids]
+    unit_ids = [str(x).strip() for x in unit_ids if str(x).strip()]
+    product_ids = [str(x).strip() for x in product_ids if str(x).strip()]
+    if not unit_ids and not product_ids:
+        return jsonify({'error': 'Select at least one QR unit'}), 400
+    if len(unit_ids) + len(product_ids) > 500:
+        return jsonify({'error': 'Select up to 500 QR units at a time'}), 400
+    rows = _units_for_qr_print(unit_ids=unit_ids, product_ids=product_ids)
+    if not rows:
+        return jsonify({'error': 'None of the selected items have a QR code yet'}), 400
+    try:
+        pdf = _build_qr_pdf(rows)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({'error': f'Could not build PDF: {exc}'}), 500
+    filename = f'fam_qr_{datetime.utcnow().strftime("%Y%m%d_%H%M")}.pdf'
+    return send_file(pdf, as_attachment=True, download_name=filename, mimetype='application/pdf')
+
+
+@app.route('/api/mobile/qr-print', methods=['POST'])
+@mobile_auth_required
+def api_mobile_qr_print():
+    """Download a multi-page QR PDF for punched / selected units."""
+    data = parse_json()
+    unit_ids = data.get('unit_ids') or []
+    product_ids = data.get('product_ids') or []
+    codes = data.get('qr_codes') or []
+    if isinstance(unit_ids, str):
+        unit_ids = [unit_ids]
+    if isinstance(product_ids, str):
+        product_ids = [product_ids]
+    unit_ids = [str(x).strip() for x in unit_ids if str(x).strip()]
+    product_ids = [str(x).strip() for x in product_ids if str(x).strip()]
+    if not unit_ids and not product_ids and codes:
+        for code in codes:
+            unit = find_qr_unit_by_code(code)
+            if unit:
+                unit_ids.append(unit['id'])
+            else:
+                product = find_product_by_qr(code)
+                if product and product.get('id'):
+                    product_ids.append(product['id'])
+    seen = set()
+    ordered_units = []
+    for uid in unit_ids:
+        if uid not in seen:
+            seen.add(uid)
+            ordered_units.append(uid)
+    seen_p = set()
+    ordered_products = []
+    for pid in product_ids:
+        if pid not in seen_p:
+            seen_p.add(pid)
+            ordered_products.append(pid)
+    if not ordered_units and not ordered_products:
+        return jsonify({'error': 'No QR units to print'}), 400
+    rows = _units_for_qr_print(unit_ids=ordered_units, product_ids=ordered_products, codes=codes)
+    if not rows:
+        return jsonify({'error': 'No QR codes found'}), 400
+    try:
+        pdf = _build_qr_pdf(rows)
+    except Exception as exc:  # noqa: BLE001
+        return jsonify({'error': f'Could not build PDF: {exc}'}), 500
+    filename = f'fam_punch_qr_{datetime.utcnow().strftime("%Y%m%d_%H%M")}.pdf'
+    return send_file(pdf, as_attachment=True, download_name=filename, mimetype='application/pdf')
+
+
+# --- Mobile APK APIs (Wi‑Fi + Bearer token) ---
+
+@app.route('/api/mobile', methods=['OPTIONS'])
+@app.route('/api/mobile/<path:_rest>', methods=['OPTIONS'])
+def api_mobile_options(_rest=None):
+    return ('', 204)
+
+
+@app.route('/api/mobile/login', methods=['POST'])
+def api_mobile_login():
+    data = parse_json()
+    member, error = _authenticate_staff_credentials(data.get('username'), data.get('password'))
+    if error:
+        return jsonify({'error': error}), 401
+    token = issue_mobile_token(member)
+    log_activity('system', f"{member.get('name')} signed in via mobile APK ({member.get('role')})")
+    return jsonify({
+        'ok': True,
+        'token': token,
+        'admin': {
+            'id': member.get('id'),
+            'name': member.get('name') or member.get('username') or 'Staff',
+            'username': member.get('username') or '',
+            'role': member.get('role') or ROLE_STORE,
+            'store_id': member.get('store_id') or '',
+        },
+        'api_base': '/api/mobile',
+    })
+
+
+@app.route('/api/mobile/me', methods=['GET'])
+@mobile_auth_required
+def api_mobile_me():
+    staff = request.mobile_staff
+    return jsonify({'ok': True, 'admin': staff})
+
+
+@app.route('/api/mobile/stores', methods=['GET'])
+@mobile_auth_required
+def api_mobile_stores():
+    staff = request.mobile_staff
+    stores = [s for s in db_find('stores', sort=[('name', 1)]) if s.get('status') == 'active']
+    if staff.get('role') != ROLE_SUPER:
+        locked = (staff.get('store_id') or '').strip()
+        stores = [s for s in stores if s.get('id') == locked] if locked else []
+    return jsonify(stores)
+
+
+@app.route('/api/mobile/dashboard', methods=['GET'])
+@mobile_auth_required
+def api_mobile_dashboard():
+    """Sales cards for the signed-in staff (same metrics flavor as admin dashboard)."""
+    staff = request.mobile_staff
+    store_id = ''
+    if staff.get('role') != ROLE_SUPER:
+        store_id = (staff.get('store_id') or '').strip()
+    else:
+        store_id = (request.args.get('store_id') or '').strip()
+
+    query = {}
+    if store_id:
+        query['store_id'] = store_id
+    orders = db_find('orders', query, sort=[('created_at', -1)], limit=500)
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    today_orders = [o for o in orders if (o.get('created_at') or '').startswith(today)]
+    today_sales = sum(float(o.get('total', 0) or 0) for o in today_orders)
+    open_count = sum(
+        1 for o in orders
+        if normalize_status(o.get('status')) in (
+            'new', 'confirmed', 'ready', 'out_for_delivery', 'pending', 'placed'
+        )
+    )
+    delivered_today = sum(
+        1 for o in today_orders if normalize_status(o.get('status')) == 'delivered'
+    )
+    inv_query = {'store_id': store_id} if store_id else {}
+    inventory = db_find('inventory', inv_query)
+    threshold = int(get_settings().get('low_stock_threshold', 10))
+    low_stock = sum(1 for r in inventory if int(r.get('stock', 0) or 0) <= threshold)
+    total_stock = sum(int(r.get('stock', 0) or 0) for r in inventory)
+    return jsonify({
+        'ok': True,
+        'admin': staff,
+        'cards': {
+            'today_sales': round(today_sales, 2),
+            'today_orders': len(today_orders),
+            'open_orders': open_count,
+            'delivered_today': delivered_today,
+            'low_stock': low_stock,
+            'total_stock_units': total_stock,
+        },
+    })
+
+
+@app.route('/api/mobile/qr-lookup', methods=['GET'])
+@mobile_auth_required
+def api_mobile_qr_lookup():
+    """Fast QR resolve for punch — only pending unit QRs are punchable."""
+    code = request.args.get('code') or ''
+    purpose = (request.args.get('purpose') or 'punch').strip().lower()
+    unit = find_qr_unit_by_code(code)
+    if not unit:
+        return jsonify({'error': 'Scan a unique unit QR (not a catalog/product template)'}), 404
+    product = db_find_one('products', {'id': unit.get('product_id')})
+    if not product:
+        return jsonify({'error': 'QR code not found'}), 404
+    store_id = (request.args.get('store_id') or '').strip()
+    staff = request.mobile_staff
+    if staff.get('role') != ROLE_SUPER:
+        store_id = (staff.get('store_id') or store_id or '').strip()
+    if store_id and unit.get('store_id') and unit.get('store_id') != store_id:
+        return jsonify({'error': 'This QR belongs to a different store'}), 409
+
+    unit_status = (unit.get('status') or '').strip()
+    if purpose == 'punch':
+        if unit_status == 'in_stock':
+            return jsonify({'error': 'Already in inventory — cannot punch again'}), 409
+        if unit_status == 'sold':
+            return jsonify({'error': 'This QR was already sold'}), 409
+        if unit_status == 'void':
+            return jsonify({'error': 'This QR is void'}), 409
+        if unit_status not in ('pending', ''):
+            return jsonify({'error': f'QR status is {unit_status} — not punchable'}), 409
+
+    categories_by_id = {c['id']: c for c in db_find('categories')}
+    stores_by_id = {s['id']: s for s in db_find('stores')}
+    inv_query = {'product_id': product['id'], 'store_id': unit.get('store_id') or store_id}
+    inventory_rows = db_find('inventory', inv_query) if inv_query.get('store_id') else db_find('inventory', {'product_id': product['id']})
+    enriched = _enrich_qr_product_row(product, categories_by_id, stores_by_id, inventory_rows)
+    preferred = None
+    for detail in enriched.get('store_details') or []:
+        if detail.get('variant_id') == unit.get('variant_id'):
+            preferred = detail
+            break
+    if not preferred and enriched.get('store_details'):
+        preferred = enriched['store_details'][0]
+    enriched['id'] = product['id']
+    enriched['preferred_variant_id'] = unit.get('variant_id') or (preferred or {}).get('variant_id')
+    enriched['inventory_id'] = (preferred or {}).get('inventory_id')
+    enriched['preferred_price'] = float(unit.get('price') or (preferred or {}).get('price') or 0)
+    enriched['preferred_stock'] = int((preferred or {}).get('stock') or 0)
+    enriched['unit_id'] = unit.get('id')
+    enriched['qr_code'] = unit.get('code')
+    enriched['qr_serial'] = unit.get('unit_serial')
+    enriched['qr_uid'] = unit.get('unit_serial')
+    enriched['unit_status'] = unit_status or 'pending'
+    enriched['store_id'] = unit.get('store_id')
+    enriched['punchable'] = unit_status in ('pending', '')
+    return jsonify(enriched)
+
+
+@app.route('/api/mobile/punch', methods=['POST'])
+@mobile_auth_required
+def api_mobile_punch():
+    """Punch ONE pending unit QR into inventory (qty 1). Rejects already in-stock units."""
+    staff = request.mobile_staff
+    data = parse_json()
+    store_id = (data.get('store_id') or '').strip()
+    if staff.get('role') != ROLE_SUPER:
+        locked = (staff.get('store_id') or '').strip()
+        if not locked:
+            return jsonify({'error': 'Your account is not assigned to a store'}), 403
+        store_id = locked
+    store = db_find_one('stores', {'id': store_id})
+    if not store:
+        return jsonify({'error': 'Select a valid store'}), 400
+    items = data.get('items') or []
+    if not items:
+        return jsonify({'error': 'Scan one QR to punch'}), 400
+    if len(items) > 1:
+        return jsonify({'error': 'Only one product can be punched at a time'}), 400
+
+    raw = items[0]
+    code = raw.get('qr_code') or raw.get('code') or ''
+    unit_id = (raw.get('unit_id') or '').strip()
+    unit = db_find_one('qr_units', {'id': unit_id}) if unit_id else find_qr_unit_by_code(code)
+    if not unit:
+        return jsonify({'error': 'Scan a unique pending unit QR'}), 404
+    if unit.get('store_id') and unit.get('store_id') != store_id:
+        return jsonify({'error': 'This QR belongs to a different store'}), 409
+    status = (unit.get('status') or '').strip()
+    if status == 'in_stock':
+        return jsonify({'error': 'Already in inventory — cannot punch again'}), 409
+    if status == 'sold':
+        return jsonify({'error': 'This QR was already sold'}), 409
+    if status not in ('pending', ''):
+        return jsonify({'error': 'This QR is not awaiting punch'}), 409
+
+    product = db_find_one('products', {'id': unit.get('product_id')})
+    if not product:
+        return jsonify({'error': 'Product not found for this QR'}), 404
+    variant_id = unit.get('variant_id') or 'v1'
+    availability = list(product.get('store_availability') or [])
+    if store_id not in availability:
+        availability.append(store_id)
+        db_update('products', {'id': product['id']}, {
+            'store_availability': availability,
+            'updated_at': now_iso(),
+        })
+    _ensure_product_inventory_rows(product, default_price=float(unit.get('price') or 0), default_stock=0)
+    inv = db_find_one('inventory', {
+        'store_id': store_id,
+        'product_id': product['id'],
+        'variant_id': variant_id,
+    })
+    if not inv:
+        inv = {
+            'id': new_id('inv_'),
+            'store_id': store_id,
+            'product_id': product['id'],
+            'variant_id': variant_id,
+            'price': float(unit.get('price') or 0),
+            'stock': 0,
+            'updated_at': now_iso(),
+        }
+        db_insert('inventory', inv)
+
+    before_stock = int(inv.get('stock') or 0)
+    # Claim pending unit (prevents double-punch). Empty status treated as pending.
+    claim_status = status if status else 'pending'
+    claim_updates = {
+        'status': 'in_stock',
+        'punched_at': now_iso(),
+        'punched_by': staff.get('id') or '',
+        'updated_at': now_iso(),
+    }
+    claimed = db_update('qr_units', {'id': unit['id'], 'status': claim_status}, claim_updates)
+    if not claimed and not status:
+        # Legacy rows with missing status field
+        current = db_find_one('qr_units', {'id': unit['id']})
+        if current and (current.get('status') or '') in ('', 'pending'):
+            claimed = db_update('qr_units', {'id': unit['id']}, claim_updates)
+    if not claimed:
+        return jsonify({'error': 'Already in inventory — cannot punch again'}), 409
+
+    updated_row = db_increment('inventory', {'id': inv['id']}, 'stock', 1)
+    if unit.get('price') is not None and float(unit.get('price') or 0) > 0:
+        db_update('inventory', {'id': inv['id']}, {
+            'price': float(unit.get('price') or 0),
+            'updated_at': now_iso(),
+        })
+        updated_row = db_find_one('inventory', {'id': inv['id']})
+
+    _invalidate_ref_cache('products_by_id')
+    _badges_cache.clear()
+    updated = [{
+        'qr_code': unit.get('code'),
+        'unit_id': unit.get('id'),
+        'unit_serial': unit.get('unit_serial'),
+        'product_id': product['id'],
+        'product_name': product.get('name'),
+        'variant_id': variant_id,
+        'qty_added': 1,
+        'stock_before': before_stock,
+        'stock': int((updated_row or {}).get('stock', 0) or 0),
+        'price': float((updated_row or {}).get('price', 0) or 0),
+        'unit_serials': [unit.get('unit_serial')],
+        'unit_ids': [unit.get('id')],
+    }]
+    log_activity(
+        'inventory',
+        f"Mobile punch · {product.get('name')} · UID {unit.get('unit_serial')} · "
+        f"{store.get('name')} · {staff.get('name')}",
+        {'store_id': store_id, 'unit_id': unit.get('id'), 'staff_id': staff.get('id')},
+    )
+    return jsonify({
+        'ok': True,
+        'updated': updated,
+        'created_unit_ids': [unit.get('id')],
+    })
+
+
+@app.route('/api/mobile/catalog', methods=['GET'])
+@mobile_auth_required
+def api_mobile_catalog():
+    """Categories + products for Generate & Print on mobile."""
+    categories = db_find('categories')
+    products = db_find('products')
+    inventory_rows = db_find('inventory')
+    inv_by_product = {}
+    for row in inventory_rows:
+        inv_by_product.setdefault(row.get('product_id'), []).append(row)
+    catalog_products = []
+    for p in products:
+        if (p.get('status') or 'available') == 'disabled':
+            continue
+        related = inv_by_product.get(p.get('id')) or []
+        prices = [float(r.get('price') or 0) for r in related if float(r.get('price') or 0) > 0]
+        catalog_products.append({
+            'id': p.get('id'),
+            'name': p.get('name'),
+            'sku': p.get('sku') or '',
+            'category_id': p.get('category_id') or '',
+            'variants': p.get('variants') or [],
+            'status': p.get('status') or 'available',
+            'price_min': min(prices) if prices else 0,
+            'store_inventory': [{
+                'store_id': r.get('store_id'),
+                'variant_id': r.get('variant_id'),
+                'price': float(r.get('price') or 0),
+                'stock': int(r.get('stock') or 0),
+            } for r in related],
+        })
+    catalog_products.sort(key=lambda r: (r.get('name') or '').lower())
+    categories.sort(key=lambda c: (c.get('name') or '').lower())
+    return jsonify({
+        'categories': [{
+            'id': c.get('id'),
+            'name': c.get('name'),
+            'code': c.get('code') or '',
+        } for c in categories],
+        'products': catalog_products,
+    })
+
+
+@app.route('/api/mobile/qr-units', methods=['GET'])
+@mobile_auth_required
+def api_mobile_qr_units():
+    """Pending + in-stock unique QR units for Print QR (newest first)."""
+    staff = request.mobile_staff
+    store_id = (request.args.get('store_id') or '').strip()
+    if staff.get('role') != ROLE_SUPER:
+        store_id = (staff.get('store_id') or store_id or '').strip()
+    if not store_id:
+        return jsonify({'error': 'Select a store'}), 400
+    products_by_id = {p['id']: p for p in db_find('products')}
+    categories_by_id = {c['id']: c for c in db_find('categories')}
+    units = db_find('qr_units', {
+        'store_id': store_id,
+        'status': {'$in': ['pending', 'in_stock']},
+    }, sort=[('created_at', -1)])
+    items = []
+    for unit in units:
+        product = products_by_id.get(unit.get('product_id')) or {}
+        cat = categories_by_id.get(product.get('category_id')) or {}
+        serial = (unit.get('unit_serial') or (unit.get('code') or '')[-3:]).upper()
+        variant_label = ''
+        for v in product.get('variants') or []:
+            if v.get('id') == unit.get('variant_id'):
+                variant_label = v.get('label') or ''
+                break
+        items.append({
+            'id': unit.get('id'),
+            'unit_id': unit.get('id'),
+            'product_id': product.get('id'),
+            'name': product.get('name') or 'Product',
+            'sku': product.get('sku') or '',
+            'category_name': cat.get('name') or '',
+            'variant_label': variant_label or '—',
+            'qr_code': unit.get('code') or '',
+            'unit_serial': serial,
+            'qr_uid': serial,
+            'status': unit.get('status') or 'pending',
+            'created_at': unit.get('created_at') or '',
+            'price': float(unit.get('price') or 0),
+        })
+    return jsonify({'items': items, 'store_id': store_id})
+
+
+@app.route('/api/mobile/qr-generate', methods=['POST'])
+@mobile_auth_required
+def api_mobile_qr_generate():
+    """Generate N unique pending QR units — inventory stock only increases after punch."""
+    staff = request.mobile_staff
+    data = parse_json()
+    store_id = (data.get('store_id') or '').strip()
+    if staff.get('role') != ROLE_SUPER:
+        locked = (staff.get('store_id') or '').strip()
+        if not locked:
+            return jsonify({'error': 'Your account is not assigned to a store'}), 403
+        store_id = locked
+    store = db_find_one('stores', {'id': store_id})
+    if not store:
+        return jsonify({'error': 'Select a valid store'}), 400
+    category_id = (data.get('category_id') or '').strip()
+    product_id = (data.get('product_id') or '').strip()
+    category = db_find_one('categories', {'id': category_id})
+    product = db_find_one('products', {'id': product_id})
+    if not category or not product:
+        return jsonify({'error': 'Select a valid category and product'}), 400
+    if product.get('category_id') != category_id:
+        return jsonify({'error': 'Product does not belong to that category'}), 400
+    try:
+        qty = int(data.get('qty') or data.get('stock') or 0)
+        price = float(data.get('price') or 0)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Quantity and price must be valid numbers'}), 400
+    if qty < 1 or qty > 100000:
+        return jsonify({'error': 'Quantity must be between 1 and 100,000'}), 400
+
+    ensure_product_template_codes(product, category=category)
+    variants = product.get('variants') or []
+    variant_id = (data.get('variant_id') or '').strip() or (variants[0].get('id') if variants else 'v1')
+    availability = list(product.get('store_availability') or [])
+    if store_id not in availability:
+        availability.append(store_id)
+        db_update('products', {'id': product['id']}, {
+            'store_availability': availability,
+            'updated_at': now_iso(),
+        })
+        product['store_availability'] = availability
+    # Ensure price row exists — do NOT add stock on generate
+    _ensure_product_inventory_rows(product, default_price=price, default_stock=0)
+    inv = db_find_one('inventory', {
+        'store_id': store_id,
+        'product_id': product['id'],
+        'variant_id': variant_id,
+    })
+    if not inv:
+        inv = {
+            'id': new_id('inv_'),
+            'store_id': store_id,
+            'product_id': product['id'],
+            'variant_id': variant_id,
+            'price': price if price > 0 else 0,
+            'stock': 0,
+            'updated_at': now_iso(),
+        }
+        db_insert('inventory', inv)
+    elif price > 0:
+        db_update('inventory', {'id': inv['id']}, {
+            'price': price,
+            'updated_at': now_iso(),
+        })
+        inv = db_find_one('inventory', {'id': inv['id']})
+
+    product = db_find_one('products', {'id': product['id']})
+    new_units = create_qr_units(
+        product, store_id, variant_id, qty,
+        price=float((inv or {}).get('price') or price or 0),
+        status='pending',
+    )
+    created_unit_ids = [u.get('id') for u in new_units if u.get('id')]
+    _invalidate_ref_cache('products_by_id')
+    _badges_cache.clear()
+    log_activity(
+        'inventory',
+        f"Mobile Generate & Print (pending) · +{len(created_unit_ids)} · "
+        f"{product.get('name')} · {store.get('name')} · {staff.get('name')}",
+        {
+            'store_id': store_id,
+            'product_id': product['id'],
+            'units_created': len(created_unit_ids),
+            'status': 'pending',
+            'staff_id': staff.get('id'),
+        },
+    )
+    return jsonify({
+        'ok': True,
+        'units_created': len(created_unit_ids),
+        'created_unit_ids': created_unit_ids,
+        'created_unit_serials': [u.get('unit_serial') for u in new_units],
+        'stock': int((inv or {}).get('stock') or 0),
+        'inventory_unchanged': True,
+        'status': 'pending',
+    })
 
 
 # --- Settings ---

@@ -1,0 +1,17 @@
+{
+  "appId": "com.fishandmeet.punch",
+  "appName": "Fish and Meat",
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https",
+    "cleartext": true
+  },
+  "android": {
+    "allowMixedContent": true
+  },
+  "plugins": {
+    "SplashScreen": {
+      "launchShowDuration": 0
+    }
+  }
+}

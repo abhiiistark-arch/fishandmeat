@@ -70,9 +70,25 @@
         <small class="field-hint">For a new product, the selected image uploads immediately after the product is saved.</small>
         <div id="p-images-preview" class="img-preview"></div>
       </div>
+      <div class="field full" id="p-qr-wrap">
+        <label>QR Code (optional)</label>
+        <div class="form-grid" style="margin:0">
+          <div class="field">
+            <label>Store for stock / price</label>
+            <select id="p-qr-store"></select>
+          </div>
+          <div class="field">
+            <label>Stock to add with QR</label>
+            <input id="p-qr-stock" type="number" min="0" step="1" value="0" />
+          </div>
+        </div>
+        <small class="field-hint">Use <strong>Generate QR</strong> to save this product, issue an FNM QR, update inventory, and sync the QR Section + storefront.</small>
+        <div id="p-qr-current" class="muted" style="margin-top:8px"></div>
+      </div>
     </div>
     <div class="modal-actions">
       <button type="button" class="btn btn-outline" id="product-cancel">Cancel</button>
+      <button type="button" class="btn btn-gold" id="product-generate-qr">Generate QR</button>
       <button type="submit" class="btn btn-dark">Save Product</button>
     </div>
   </form>

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Fish and Meat</string>
+    <string name="title_activity_main">Fish and Meat</string>
+    <string name="package_name">com.fishandmeet.punch</string>
+    <string name="custom_url_scheme">com.fishandmeet.punch</string>
+</resources>

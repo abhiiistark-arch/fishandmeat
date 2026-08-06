@@ -59,6 +59,9 @@
         {% if 'categories' in admin_can.pages %}
         <a href="{{ url_for('admin_categories') }}" class="nav-item {% if page == 'categories' %}active{% endif %}">Categories</a>
         {% endif %}
+        {% if 'qr_codes' in admin_can.pages %}
+        <a href="{{ url_for('admin_qr_codes') }}" class="nav-item {% if page == 'qr_codes' %}active{% endif %}">QR Section</a>
+        {% endif %}
         {% if 'coupons' in admin_can.pages %}
         <a href="{{ url_for('admin_coupons') }}" class="nav-item {% if page == 'coupons' %}active{% endif %}">Coupons</a>
         {% endif %}

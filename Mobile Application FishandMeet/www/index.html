@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="theme-color" content="#1E3A22" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Fish and Meat" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="assets/logo.png" />
+  <title>Fish and Meat · Staff</title>
+  <link rel="icon" href="assets/logo.png" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="css/app.css" />
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <!-- Splash -->
+    <section id="screen-splash" class="screen splash active">
+      <div class="splash-inner">
+        <div class="splash-mark">
+          <img src="assets/fish-and-meat-logo.png" alt="Fish and Meat" class="splash-logo" />
+        </div>
+        <div class="brand-wordmark"><span class="c-green">FISH</span> <span class="c-gold">AND</span> <span class="c-red">MEAT</span></div>
+        <p class="splash-tag">Staff · Stock · QR</p>
+        <div class="splash-bar"><span></span></div>
+      </div>
+    </section>
+
+    <!-- Login -->
+    <section id="screen-login" class="screen">
+      <div class="login-page">
+        <div class="login-card panel">
+          <div class="login-brand">
+            <img src="assets/fish-and-meat-logo.png" alt="" class="login-logo" />
+            <div class="brand-wordmark sm"><span class="c-green">FISH</span> <span class="c-gold">AND</span> <span class="c-red">MEAT</span></div>
+          </div>
+          <h1>Staff Login</h1>
+          <p class="muted">Sign in with your admin account. Same green &amp; gold workspace as the website.</p>
+          <label class="field" id="server-url-field">
+            <span>Website / Server URL</span>
+            <input id="login-server" type="url" inputmode="url" autocomplete="url"
+              placeholder="https://your-domain.com" />
+            <small class="field-hint">Deployed site URL, or LAN like http://192.168.x.x:5000</small>
+          </label>
+          <label class="field">
+            <span>Username</span>
+            <input id="login-user" type="text" autocomplete="username" placeholder="abhi" />
+          </label>
+          <label class="field">
+            <span>Password</span>
+            <input id="login-pass" type="password" autocomplete="current-password" placeholder="••••••••" />
+          </label>
+          <p id="login-error" class="error-text"></p>
+          <button id="login-submit" class="btn btn-gold full" type="button">Sign In</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Home -->
+    <section id="screen-home" class="screen">
+      <header class="app-top">
+        <button id="btn-menu" class="icon-btn" type="button" aria-label="Open menu">☰</button>
+        <div class="app-top-title">
+          <div class="eyebrow">FISH AND MEAT</div>
+          <div id="welcome-name" class="welcome">Welcome</div>
+        </div>
+        <button id="btn-logout" class="icon-btn subtle" type="button" title="Logout">⎋</button>
+      </header>
+      <div class="home-body">
+        <p class="muted role-line" id="home-role"></p>
+        <div class="panel soft">
+          <div class="panel-label">Today</div>
+          <div class="card-grid" id="sales-cards"></div>
+        </div>
+        <div class="home-actions">
+          <button id="btn-go-generate" class="btn btn-gold full action-card" type="button">
+            <span class="action-title">Generate &amp; Print QR</span>
+            <span class="action-sub">Create unique unit codes</span>
+          </button>
+          <button id="btn-go-print" class="btn btn-outline full action-card" type="button">
+            <span class="action-title">Print QR</span>
+            <span class="action-sub">Reprint selected units</span>
+          </button>
+          <button id="btn-go-punch" class="btn btn-dark full action-card" type="button">
+            <span class="action-title">Punch &amp; Stock</span>
+            <span class="action-sub">One pending QR at a time · add to inventory</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Generate & Print -->
+    <section id="screen-generate" class="screen">
+      <header class="app-top">
+        <button class="icon-btn back-btn" data-back="home" type="button" aria-label="Back">←</button>
+        <div class="app-top-title">
+          <div class="eyebrow">QR SECTION</div>
+          <div class="welcome">Generate &amp; Print</div>
+        </div>
+      </header>
+      <div class="home-body form-body">
+        <div class="panel">
+          <p class="muted panel-lead">Creates unique pending QR codes. Stock is added only after Punch — not on generate.</p>
+          <label class="field">
+            <span>Store *</span>
+            <select id="gen-store" required></select>
+          </label>
+          <label class="field">
+            <span>Category *</span>
+            <select id="gen-category" required>
+              <option value="">Select category</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Product *</span>
+            <select id="gen-product" required>
+              <option value="">Select category first</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Quantity (unique QR codes) *</span>
+            <input id="gen-qty" type="number" min="1" max="100000" step="1" value="1" />
+          </label>
+          <p id="gen-error" class="error-text"></p>
+          <button id="btn-gen-submit" class="btn btn-gold full" type="button">Generate &amp; Print</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Print QR -->
+    <section id="screen-print" class="screen">
+      <header class="app-top">
+        <button class="icon-btn back-btn" data-back="home" type="button" aria-label="Back">←</button>
+        <div class="app-top-title">
+          <div class="eyebrow">QR SECTION</div>
+          <div class="welcome">Print QR</div>
+        </div>
+      </header>
+      <div class="home-body form-body">
+        <div class="panel">
+          <label class="field">
+            <span>Store</span>
+            <select id="print-store"></select>
+          </label>
+          <div class="print-toolbar">
+            <input id="print-search" type="search" placeholder="Search product or unique code…" />
+            <button type="button" class="btn btn-sm btn-outline" id="print-select-all">Select all</button>
+            <button type="button" class="btn btn-sm btn-outline" id="print-clear">Clear</button>
+          </div>
+          <div id="print-list" class="print-list"></div>
+          <p id="print-error" class="error-text"></p>
+          <button id="btn-print-download" class="btn btn-gold full" type="button">Download PDF</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Punch setup -->
+    <section id="screen-punch-setup" class="screen">
+      <header class="app-top">
+        <button class="icon-btn back-btn" data-back="home" type="button" aria-label="Back">←</button>
+        <div class="app-top-title">
+          <div class="eyebrow">STOCK PUNCH</div>
+          <div class="welcome">Select store</div>
+        </div>
+      </header>
+      <div class="home-body form-body">
+        <div class="panel">
+          <label class="field">
+            <span>Store</span>
+            <select id="punch-store"></select>
+          </label>
+          <p class="muted panel-lead">Scan one pending unit QR at a time. Already in-stock QRs are rejected. Camera permission required.</p>
+          <button id="btn-start-punch" class="btn btn-gold full" type="button">Open Camera &amp; Start Punching</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Scanner -->
+    <section id="screen-punch" class="screen">
+      <header class="app-top">
+        <button class="icon-btn back-btn" data-back="punch-setup" type="button" aria-label="Back">←</button>
+        <div class="app-top-title">
+          <div class="eyebrow">SCANNING</div>
+          <div class="welcome" id="punch-store-label">Store</div>
+        </div>
+      </header>
+      <div class="scanner-wrap">
+        <div id="qr-reader" class="qr-reader"></div>
+      </div>
+      <div class="punch-panel panel flush">
+        <div class="punch-panel-head">
+          <h2>Ready to punch</h2>
+          <span id="punch-count" class="pill">0</span>
+        </div>
+        <div id="punch-list" class="punch-list"></div>
+        <div class="punch-actions">
+          <button id="btn-punch-cancel" class="btn btn-outline" type="button">Cancel</button>
+          <button id="btn-punch-confirm" class="btn btn-gold" type="button">Confirm Punch</button>
+        </div>
+        <p id="punch-error" class="error-text"></p>
+      </div>
+    </section>
+
+    <!-- Punch success -->
+    <section id="screen-punch-done" class="screen">
+      <header class="app-top">
+        <button class="icon-btn back-btn" data-back="home" type="button" aria-label="Back">←</button>
+        <div class="app-top-title">
+          <div class="eyebrow">DONE</div>
+          <div class="welcome">Stock updated</div>
+        </div>
+      </header>
+      <div class="home-body form-body">
+        <div class="panel">
+          <p class="muted" id="punch-done-copy">Inventory synced to MongoDB, admin panel, and website.</p>
+          <div class="card-grid" id="punch-done-summary"></div>
+          <button id="btn-punch-print" class="btn btn-gold full" type="button">Print / Download QR PDF</button>
+          <button id="btn-punch-home" class="btn btn-dark full" type="button" style="margin-top:10px">Back to Home</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <aside id="drawer" class="drawer" aria-hidden="true">
+    <div class="drawer-backdrop" id="drawer-backdrop"></div>
+    <nav class="drawer-panel">
+      <div class="drawer-brand">
+        <img src="assets/fish-and-meat-logo.png" alt="" width="48" height="48" />
+        <div>
+          <strong>Fish and Meat</strong>
+          <div class="muted" id="drawer-user"></div>
+        </div>
+      </div>
+      <button class="drawer-link" data-nav="home" type="button">Home / Sales</button>
+      <button class="drawer-link" data-nav="generate" type="button">Generate &amp; Print QR</button>
+      <button class="drawer-link" data-nav="print" type="button">Print QR</button>
+      <button class="drawer-link" data-nav="punch-setup" type="button">Punch &amp; Stock Items</button>
+      <button class="drawer-link danger" id="drawer-logout" type="button">Logout</button>
+    </nav>
+  </aside>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="js/config.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
