@@ -22,9 +22,12 @@
       <p class="login-tag">Admin Portal · Inventory · Orders · Stores</p>
     </div>
     <form method="post" class="login-card" autocomplete="off">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
       <div class="eyebrow c-red">SECURE ACCESS</div>
       <h1>Admin Login</h1>
       <p class="muted">Sign in with your staff username. Super Admin is <strong>abhi</strong> (display name <strong>Abhay</strong>).</p>
+      <!-- honeypot -->
+      <input type="text" name="website" value="" tabindex="-1" autocomplete="off" style="position:absolute;left:-9999px;opacity:0;height:0;width:0" aria-hidden="true" />
       <label>Username</label>
       <input type="text" name="username" placeholder="Username" autofocus required autocomplete="username" />
       <label>Password</label>

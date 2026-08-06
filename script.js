@@ -1,6 +1,16 @@
 (function () {
   'use strict';
 
+  function famCsrfHeaders(extra) {
+    var headers = Object.assign({ 'Content-Type': 'application/json' }, extra || {});
+    try {
+      var csrf = document.cookie.split(';').map(function (c) { return c.trim(); })
+        .find(function (c) { return c.indexOf('fam_csrf=') === 0; });
+      if (csrf) headers['X-CSRF-Token'] = decodeURIComponent(csrf.split('=').slice(1).join('='));
+    } catch (e) { /* ignore */ }
+    return headers;
+  }
+
   var PRODUCTS = [
     { id: 'p1', name: 'Bombil (Bombay Duck)', category: 'fish', categoryLabel: 'Fish', price: 320, unit: 'kg', badge: 'Fresh', desc: 'Sourced fresh daily from the local dock. Cleaned and ready to fry.', image: '/uploads/products/seed_p1.png', featured: true },
     { id: 'p2', name: 'Silver Pomfret (Whole)', category: 'fish', categoryLabel: 'Fish', price: 650, unit: 'kg', badge: 'Fresh', desc: 'Prized whole pomfret, scaled and gutted on request.', image: '/uploads/products/seed_p2.png', featured: false },
@@ -180,7 +190,7 @@
     cartSyncTimer = setTimeout(function () {
       fetch('/api/account/cart', {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: famCsrfHeaders(),
         credentials: 'same-origin',
         body: JSON.stringify({
           cart: state.cart,
@@ -856,7 +866,7 @@
     if (!code) { state.coupon = null; msg.textContent = ''; renderCheckout(); return; }
     fetch('/api/coupons/validate', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: famCsrfHeaders(),
       body: JSON.stringify({ code: code, subtotal: cartSubtotal() })
     }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
@@ -945,7 +955,7 @@
 
     fetch('/api/orders', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: famCsrfHeaders(),
       credentials: 'same-origin',
       body: JSON.stringify(payload)
     }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
@@ -981,7 +991,7 @@
     errEl.textContent = 'Signing in…';
     fetch('/api/auth/login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: famCsrfHeaders(),
       credentials: 'same-origin',
       body: JSON.stringify({ phone: phone, password: password })
     }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
@@ -1016,7 +1026,7 @@
     errEl.textContent = 'Creating account…';
     fetch('/api/auth/signup', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: famCsrfHeaders(),
       credentials: 'same-origin',
       body: JSON.stringify({ name: name, phone: phone, email: email, password: password })
     }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
@@ -1123,7 +1133,7 @@
     setAccountMsg('acct-profile-msg', 'Saving…', true);
     fetch('/api/account/profile', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: famCsrfHeaders(),
       credentials: 'same-origin',
       body: JSON.stringify({ name: name, email: email, preferred_store_id: preferred })
     }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
@@ -1147,7 +1157,7 @@
     setAccountMsg('acct-password-msg', 'Updating…', true);
     fetch('/api/account/password', {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: famCsrfHeaders(),
       credentials: 'same-origin',
       body: JSON.stringify({ current_password: current, new_password: next })
     }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
@@ -1182,7 +1192,7 @@
     setAccountMsg('acct-address-msg', 'Saving address…', true);
     fetch(url, {
       method: method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: famCsrfHeaders(),
       credentials: 'same-origin',
       body: JSON.stringify(payload)
     }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })

@@ -14,6 +14,11 @@
   async function api(url, opts) {
     opts = opts || {};
     var headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+    try {
+      var csrf = document.cookie.split(';').map(function (c) { return c.trim(); })
+        .find(function (c) { return c.indexOf('fam_csrf=') === 0; });
+      if (csrf) headers['X-CSRF-Token'] = decodeURIComponent(csrf.split('=').slice(1).join('='));
+    } catch (e) { /* ignore */ }
     var fetchOpts = Object.assign({
       credentials: 'same-origin'
     }, opts, { headers: headers });

@@ -20,7 +20,6 @@ from flask import (
     render_template, send_from_directory, send_file, abort, make_response
 )
 from werkzeug.utils import secure_filename
-from werkzeug.security import generate_password_hash, check_password_hash
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -46,25 +45,67 @@ MONGO_URI = os.getenv('MONGO_URI', '').strip()
 MONGO_DB_NAME = os.getenv('MONGO_DB_NAME', 'fishandmeat')
 SECRET_KEY = os.getenv('SECRET_KEY', 'fam-dev-secret-change-in-production')
 ALLOWED_IMAGE_EXT = {'png', 'jpg', 'jpeg', 'webp', 'gif'}
+FLASK_DEBUG = os.getenv('FLASK_DEBUG', '').lower() in ('1', 'true', 'yes')
+IS_PRODUCTION = IS_VERCEL or os.getenv('FAM_ENV', '').lower() == 'production' or (
+    os.getenv('FLASK_ENV', '').lower() == 'production'
+)
+MOBILE_CORS_ORIGINS = {
+    o.strip().rstrip('/')
+    for o in (os.getenv('FAM_MOBILE_ORIGINS') or '').split(',')
+    if o.strip()
+}
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 app.secret_key = SECRET_KEY
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16 MB uploads
+app.config['JSON_SORT_KEYS'] = False
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='Lax',
     SESSION_COOKIE_SECURE=(
         IS_VERCEL
+        or IS_PRODUCTION
         or os.getenv('SESSION_COOKIE_SECURE', '').lower() == 'true'
     ),
     SESSION_PERMANENT=False,
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
 )
+
+# Security layer (rate limit, CSRF, lockout, hashing helpers, token claims)
+from security import (  # noqa: E402
+    register_security,
+    hash_password,
+    verify_password,
+    strip_mongo_operators,
+    sanitize_text,
+    validate_image_bytes,
+    record_login_failure,
+    clear_login_failures,
+    login_blocked,
+    prepare_login_attempt,
+    security_log,
+    recent_security_events,
+    ensure_csrf_token,
+    build_mobile_claims,
+    sign_mobile_token,
+    verify_mobile_token_claims,
+    browser_fingerprint,
+    public_error,
+)
+
+register_security(app, secret_key=SECRET_KEY, production=IS_PRODUCTION)
+app.config['PROPAGATE_EXCEPTIONS'] = False
+app.config['TRAP_HTTP_EXCEPTIONS'] = True
+app.config['TRAP_BAD_REQUEST_ERRORS'] = True
 
 
 @app.context_processor
 def inject_admin_cache_bust():
     # Changes on every request so browsers never reuse stale admin CSS/JS.
-    return {'cache_bust': uuid.uuid4().hex[:10]}
+    return {
+        'cache_bust': uuid.uuid4().hex[:10],
+        'csrf_token': ensure_csrf_token(),
+    }
 
 
 def _apply_admin_no_cache(response):
@@ -131,15 +172,31 @@ def add_security_headers(response):
         or path.startswith('/static/admin/')
     ):
         _apply_admin_no_cache(response)
-    # Mobile APK / PWA calls /api/mobile/* over Wi‑Fi from a different origin.
+    # Mobile APK / PWA calls /api/mobile/* — allow listed origins only (or same-host).
     if path.startswith('/api/mobile'):
-        origin = request.headers.get('Origin')
-        if origin:
+        origin = (request.headers.get('Origin') or '').rstrip('/')
+        allowed = False
+        if not origin:
+            allowed = True  # native / same-app requests without Origin
+        elif origin in MOBILE_CORS_ORIGINS:
+            allowed = True
+        elif not MOBILE_CORS_ORIGINS:
+            # Dev default: same hostname or private LAN origins
+            try:
+                from urllib.parse import urlparse
+                host = urlparse(origin).hostname or ''
+                req_host = (request.host or '').split(':')[0]
+                if host == req_host or host in ('localhost', '127.0.0.1') or host.startswith('192.168.') or host.startswith('10.'):
+                    allowed = True
+            except Exception:
+                allowed = False
+        if allowed and origin:
             response.headers['Access-Control-Allow-Origin'] = origin
             response.headers['Access-Control-Allow-Credentials'] = 'true'
-        else:
+            response.headers['Vary'] = 'Origin'
+        elif allowed:
             response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type'
+        response.headers['Access-Control-Allow-Headers'] = 'Authorization, Content-Type, X-CSRF-Token, X-Fam-Fp'
         response.headers['Access-Control-Allow-Methods'] = 'GET, POST, OPTIONS'
     return response
 
@@ -879,33 +936,14 @@ def backfill_all_product_qrs():
 
 
 def issue_mobile_token(member):
-    """Signed bearer token for the mobile APK (valid 7 days)."""
-    payload = {
-        'uid': member.get('id'),
-        'username': member.get('username') or '',
-        'role': member.get('role') or '',
-        'store_id': member.get('store_id') or '',
-        'name': member.get('name') or member.get('username') or 'Staff',
-        'exp': int((datetime.utcnow() + timedelta(days=7)).timestamp()),
-    }
-    raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(',', ':')).encode()).decode().rstrip('=')
-    sig = hmac.new(SECRET_KEY.encode(), raw.encode(), hashlib.sha256).hexdigest()
-    return f'{raw}.{sig}'
+    """Signed bearer token for the mobile APK (valid 7 days) with iss/aud/iat/nbf/exp/jti."""
+    claims = build_mobile_claims(member, SECRET_KEY, ttl_days=7)
+    return sign_mobile_token(claims, SECRET_KEY)
 
 
 def verify_mobile_token(token):
-    if not token or '.' not in token:
-        return None
-    raw, sig = token.rsplit('.', 1)
-    expected = hmac.new(SECRET_KEY.encode(), raw.encode(), hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, sig):
-        return None
-    pad = '=' * (-len(raw) % 4)
-    try:
-        payload = json.loads(base64.urlsafe_b64decode(raw + pad).decode())
-    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
-        return None
-    if int(payload.get('exp') or 0) < int(datetime.utcnow().timestamp()):
+    payload = verify_mobile_token_claims(token, SECRET_KEY)
+    if not payload:
         return None
     member = db_find_one('staff', {'id': payload.get('uid')})
     if not member or member.get('active') is False:
@@ -941,22 +979,31 @@ def _authenticate_staff_credentials(username, password):
     password = password or ''
     if not username or not password:
         return None, 'Username and password required'
+    blocked, msg = prepare_login_attempt(username)
+    if blocked:
+        return None, msg
     member = None
     for row in db_find('staff'):
         if (row.get('username') or '').strip().lower() == username:
             member = row
             break
     if member and member.get('active') is False:
+        record_login_failure(username)
         return None, 'This account is disabled'
-    if member and member.get('password_hash') and check_password_hash(member['password_hash'], password):
+    if member and member.get('password_hash') and verify_password(member['password_hash'], password):
         if member.get('role') in (ROLE_STORE, ROLE_BILLING) and not member.get('store_id'):
             return None, 'This account has no store assigned'
+        clear_login_failures(username)
+        security_log('login_success', 'staff', identity=username)
         return member, None
     if username in ('abhi', 'admin') and password == ADMIN_PASSWORD and password:
         ensure_admin_users()
         member = db_find_one('staff', {'username': 'abhi'})
         if member:
+            clear_login_failures(username)
+            security_log('login_success', 'staff-recovery', identity=username)
             return member, None
+    record_login_failure(username)
     return None, 'Incorrect username or password'
 
 
@@ -1146,7 +1193,7 @@ def ensure_admin_users():
         if existing.get('role') != ROLE_SUPER:
             updates['role'] = ROLE_SUPER
         if not existing.get('password_hash'):
-            updates['password_hash'] = generate_password_hash('abhi123')
+            updates['password_hash'] = hash_password('abhi123')
         # Username is "abhi" — keep display name Abhay so the topbar shows the name that username maps to.
         if (existing.get('name') or '').strip().lower() in ('', 'admin', 'abhi'):
             updates['name'] = 'Abhay'
@@ -1164,7 +1211,7 @@ def ensure_admin_users():
         db_update('staff', {'id': legacy_super['id']}, {
             'name': legacy_super.get('name') or 'Abhay',
             'username': 'abhi',
-            'password_hash': generate_password_hash('abhi123'),
+            'password_hash': hash_password('abhi123'),
             'role': ROLE_SUPER,
             'store_id': '',
             'on_duty': True,
@@ -1178,7 +1225,7 @@ def ensure_admin_users():
         'id': new_id('stf_'),
         'name': 'Abhay',
         'username': 'abhi',
-        'password_hash': generate_password_hash('abhi123'),
+        'password_hash': hash_password('abhi123'),
         'role': ROLE_SUPER,
         'store_id': '',
         'phone': '',
@@ -1482,7 +1529,11 @@ def purge_removed_uploads(old_doc, new_doc):
 
 
 def parse_json():
-    return request.get_json(silent=True) or {}
+    """Parse JSON body and strip Mongo operator keys from user input."""
+    data = request.get_json(silent=True) or {}
+    if isinstance(data, dict):
+        return strip_mongo_operators(data) or {}
+    return {}
 
 
 # ---------------------------------------------------------------------------
@@ -2260,18 +2311,22 @@ def _remember_order_address(customer, data):
 @app.route('/api/auth/signup', methods=['POST'])
 def api_auth_signup():
     data = parse_json()
-    name = (data.get('name') or '').strip()
-    phone = str(data.get('phone') or '').strip()
-    email = (data.get('email') or '').strip()
+    name = sanitize_text(data.get('name'), 120)
+    phone = sanitize_text(data.get('phone'), 20)
+    email = sanitize_text(data.get('email'), 120)
     password = data.get('password') or ''
     if not name or not phone or not password:
         return jsonify({'error': 'Name, phone and password are required'}), 400
     if len(password) < 4:
         return jsonify({'error': 'Password must be at least 4 characters'}), 400
+    blocked, msg = prepare_login_attempt(phone)
+    if blocked:
+        return jsonify({'error': msg}), 429
     existing = db_find_one('customers', {'phone': phone})
     if existing and existing.get('password_hash'):
+        record_login_failure(phone)
         return jsonify({'error': 'An account with this phone already exists. Please log in.'}), 409
-    password_hash = generate_password_hash(password)
+    password_hash = hash_password(password)
     if existing:
         db_update('customers', {'id': existing['id']}, {
             'name': name,
@@ -2298,6 +2353,7 @@ def api_auth_signup():
         }
         db_insert('customers', customer)
         log_activity('customer', f'New customer account {name} signed up')
+    clear_login_failures(phone)
     session['customer_id'] = customer['id']
     return jsonify({'ok': True, 'customer': _public_customer(customer)}), 201
 
@@ -2305,17 +2361,22 @@ def api_auth_signup():
 @app.route('/api/auth/login', methods=['POST'])
 def api_auth_login():
     data = parse_json()
-    phone = str(data.get('phone') or '').strip()
+    phone = sanitize_text(data.get('phone'), 20)
     password = data.get('password') or ''
     if not phone or not password:
         return jsonify({'error': 'Enter phone and password'}), 400
+    blocked, msg = prepare_login_attempt(phone)
+    if blocked:
+        return jsonify({'error': msg}), 429
     customer = db_find_one('customers', {'phone': phone})
     if not customer or not customer.get('password_hash'):
-        return jsonify({
-            'error': 'No matching account found. Please sign up again — accounts are now saved securely on the server.'
-        }), 401
-    if not check_password_hash(customer['password_hash'], password):
+        record_login_failure(phone)
         return jsonify({'error': 'Incorrect phone or password'}), 401
+    if not verify_password(customer['password_hash'], password):
+        record_login_failure(phone)
+        return jsonify({'error': 'Incorrect phone or password'}), 401
+    clear_login_failures(phone)
+    security_log('login_success', 'customer', identity=phone)
     session['customer_id'] = customer['id']
     return jsonify({
         'ok': True,
@@ -2351,14 +2412,12 @@ def api_auth_me():
 @app.route('/api/account/orders')
 def api_account_orders():
     customer_id = session.get('customer_id')
-    phone = request.args.get('phone', '').strip()
-    customer = None
-    if customer_id:
-        customer = db_find_one('customers', {'id': customer_id})
-    elif phone:
-        customer = db_find_one('customers', {'phone': phone})
+    if not customer_id:
+        return jsonify({'error': 'Login required'}), 401
+    customer = db_find_one('customers', {'id': customer_id})
     if not customer:
-        return jsonify({'items': []})
+        session.pop('customer_id', None)
+        return jsonify({'error': 'Login required'}), 401
     orders = [
         o for o in db_find('orders')
         if o.get('customer_id') == customer.get('id')
@@ -2460,10 +2519,10 @@ def api_account_password():
     new_password = data.get('new_password') or ''
     if len(new_password) < 4:
         return jsonify({'error': 'New password must be at least 4 characters'}), 400
-    if not customer.get('password_hash') or not check_password_hash(customer['password_hash'], current):
+    if not customer.get('password_hash') or not verify_password(customer['password_hash'], current):
         return jsonify({'error': 'Current password is incorrect'}), 400
     db_update('customers', {'id': customer['id']}, {
-        'password_hash': generate_password_hash(new_password),
+        'password_hash': hash_password(new_password),
         'updated_at': now_iso(),
     })
     return jsonify({'ok': True})
@@ -2857,32 +2916,19 @@ def admin_login():
     if request.method == 'POST':
         username = (request.form.get('username') or '').strip().lower()
         password = request.form.get('password') or ''
-        member = None
-        if username:
-            for row in db_find('staff'):
-                if (row.get('username') or '').strip().lower() == username:
-                    member = row
-                    break
-        if member and member.get('active') is False:
-            error = 'This account is disabled. Contact Super Admin.'
-        elif member and member.get('password_hash') and check_password_hash(member['password_hash'], password):
-            if member.get('role') in (ROLE_STORE, ROLE_BILLING) and not member.get('store_id'):
-                error = 'This account has no store assigned. Ask Super Admin to set a store.'
-            else:
-                set_admin_session(member)
-                log_activity('system', f"{member.get('name')} signed in ({member.get('role')})")
-                return _apply_admin_no_cache(redirect(url_for('admin_dashboard')))
-        else:
-            # Bootstrap fallback: env ADMIN_PASSWORD still works once for Super Admin recovery.
-            if username in ('abhi', 'admin') and password == ADMIN_PASSWORD and password:
-                ensure_admin_users()
-                member = db_find_one('staff', {'username': 'abhi'})
-                if member:
-                    set_admin_session(member)
-                    return _apply_admin_no_cache(redirect(url_for('admin_dashboard')))
-            error = 'Incorrect username or password'
+        member, auth_error = _authenticate_staff_credentials(username, password)
+        if member:
+            set_admin_session(member)
+            log_activity('system', f"{member.get('name')} signed in ({member.get('role')})")
+            return _apply_admin_no_cache(redirect(url_for('admin_dashboard')))
+        error = auth_error or 'Incorrect username or password'
 
-    resp = make_response(render_template('admin/login.html', error=error, db_mode=db_mode()))
+    resp = make_response(render_template(
+        'admin/login.html',
+        error=error,
+        db_mode=db_mode(),
+        csrf_token=ensure_csrf_token(),
+    ))
     return _apply_admin_no_cache(resp)
 
 
@@ -3883,11 +3929,17 @@ def api_admin_product_image(product_id):
     f = request.files['image']
     if not f.filename or not allowed_file(f.filename):
         return jsonify({'error': 'Invalid image type'}), 400
-    ext = f.filename.rsplit('.', 1)[1].lower()
+    safe_name = secure_filename(f.filename) or 'upload.bin'
+    ext = safe_name.rsplit('.', 1)[-1].lower() if '.' in safe_name else ''
+    if ext not in ALLOWED_IMAGE_EXT:
+        return jsonify({'error': 'Invalid image type'}), 400
     filename = f'{product_id}_{uuid.uuid4().hex[:8]}.{ext}'
     data = f.read()
     if not data:
         return jsonify({'error': 'Empty image file'}), 400
+    ok_img, img_err = validate_image_bytes(data, ext)
+    if not ok_img:
+        return jsonify({'error': img_err or 'Invalid image content'}), 400
     url = save_upload_bytes(
         'products',
         filename,
@@ -4133,7 +4185,7 @@ def api_admin_order_update(order_id):
             order, data.get('items', order.get('items') or [])
         )
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return jsonify({'error': public_error(exc, 'Invalid order items')}), 400
     candidate['items'] = normalized_items
 
     active_statuses = {'confirmed', 'ready', 'out_for_delivery', 'delivered'}
@@ -4443,10 +4495,19 @@ def api_admin_content_image():
     f = request.files['image']
     if not f.filename or not allowed_file(f.filename):
         return jsonify({'error': 'Invalid image type'}), 400
+    data = f.read()
+    ok_img, img_err = validate_image_bytes(data)
+    if not ok_img:
+        return jsonify({'error': img_err or 'Invalid image content'}), 400
     try:
+        from io import BytesIO
+        f.stream = BytesIO(data)
+        f.seek = f.stream.seek
+        f.tell = f.stream.tell
+        f.read = f.stream.read
         url = save_upload_file('content', f)
     except ValueError as e:
-        return jsonify({'error': str(e)}), 400
+        return jsonify({'error': 'Upload failed'}), 400
     return jsonify({'ok': True, 'url': url})
 
 
@@ -5127,7 +5188,7 @@ def api_admin_qr_generate():
     try:
         apply_qr_to_product(product, category=category, regenerate=regenerate)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return jsonify({'error': public_error(exc, 'Could not generate QR')}), 400
 
     # Ensure selected store is available
     availability = list(product.get('store_availability') or [])
@@ -5410,7 +5471,7 @@ def api_admin_qr_print():
     try:
         pdf = _build_qr_pdf(rows)
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': f'Could not build PDF: {exc}'}), 500
+        return jsonify({'error': 'Could not build PDF'}), 500
     filename = f'fam_qr_{datetime.utcnow().strftime("%Y%m%d_%H%M")}.pdf'
     return send_file(pdf, as_attachment=True, download_name=filename, mimetype='application/pdf')
 
@@ -5458,7 +5519,7 @@ def api_mobile_qr_print():
     try:
         pdf = _build_qr_pdf(rows)
     except Exception as exc:  # noqa: BLE001
-        return jsonify({'error': f'Could not build PDF: {exc}'}), 500
+        return jsonify({'error': 'Could not build PDF'}), 500
     filename = f'fam_punch_qr_{datetime.utcnow().strftime("%Y%m%d_%H%M")}.pdf'
     return send_file(pdf, as_attachment=True, download_name=filename, mimetype='application/pdf')
 
@@ -6062,7 +6123,7 @@ def api_admin_staff():
         'id': new_id('stf_'),
         'name': name,
         'username': username,
-        'password_hash': generate_password_hash(password),
+        'password_hash': hash_password(password),
         'role': role,
         'store_id': store_id,
         'phone': data.get('phone', ''),
@@ -6136,7 +6197,7 @@ def api_admin_staff_detail(staff_id):
     if data.get('password'):
         if len(data['password']) < 4:
             return jsonify({'error': 'Password must be at least 4 characters'}), 400
-        updates['password_hash'] = generate_password_hash(data['password'])
+        updates['password_hash'] = hash_password(data['password'])
     if 'on_duty' in updates:
         updates['on_duty'] = bool(updates['on_duty'])
     if 'active' in updates:
@@ -6154,6 +6215,14 @@ def api_admin_activity():
     limit = min(50, int(request.args.get('limit', 20)))
     rows = db_find('activity', sort=[('created_at', -1)], limit=limit)
     return jsonify(rows)
+
+
+@app.route('/api/admin/security-events')
+@admin_required
+def api_admin_security_events():
+    if not admin_is_super():
+        return jsonify({'error': 'Only Super Admin can view security events'}), 403
+    return jsonify({'items': recent_security_events(min(200, int(request.args.get('limit', 100))))})
 
 
 @app.route('/api/admin/badges')
@@ -6441,7 +6510,7 @@ def api_report_xlsx():
     try:
         data = _report_dataset(store_ids=store_ids, period=period, anchor=anchor)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return jsonify({'error': public_error(exc, 'Invalid report request')}), 400
     wb = Workbook()
 
     ws = wb.active
@@ -6570,7 +6639,7 @@ def api_report_pdf():
     try:
         data = _report_dataset(store_ids=store_ids, period=period, anchor=anchor)
     except ValueError as exc:
-        return jsonify({'error': str(exc)}), 400
+        return jsonify({'error': public_error(exc, 'Invalid report request')}), 400
 
     buf = BytesIO()
     doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
@@ -6710,4 +6779,10 @@ if __name__ == '__main__':
     print(f'  Storefront: http://127.0.0.1:5000/')
     print(f'  Admin:      http://127.0.0.1:5000/admin/login')
     print(f'  Database:   {db_mode()}')
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    debug = FLASK_DEBUG and not IS_PRODUCTION
+    if IS_PRODUCTION and FLASK_DEBUG:
+        print('  WARNING: FLASK_DEBUG ignored in production')
+    # Prefer localhost bind in production; 0.0.0.0 only when explicitly requested
+    host = os.getenv('FAM_HOST', '127.0.0.1' if IS_PRODUCTION else '0.0.0.0')
+    port = int(os.getenv('FAM_PORT', '5000'))
+    app.run(debug=debug, host=host, port=port)

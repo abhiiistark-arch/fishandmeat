@@ -15,4 +15,12 @@ if __name__ == '__main__':
     port = int(os.getenv('FAM_PORT', '5000'))
     print(f'[waitress] serving Fish and Meat on http://{host}:{port} '
           f'(threads={threads}, db={app.db_mode()})')
-    serve(app.app, host=host, port=port, threads=threads, connection_limit=1000)
+    serve(
+        app.app,
+        host=host,
+        port=port,
+        threads=threads,
+        connection_limit=1000,
+        channel_timeout=30,
+        cleanup_interval=30,
+    )
