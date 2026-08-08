@@ -123,8 +123,12 @@
       if (el) el.classList.remove('hidden');
     },
     hide: function () {
+      // Keep badge visible beside Welcome; just mark offline/checking on logout screens via showScreen
       var el = $('conn-status');
-      if (el) el.classList.add('hidden');
+      if (!el) return;
+      if (!$('screen-home') || !$('screen-home').classList.contains('active')) {
+        el.classList.add('hidden');
+      }
     },
     ping: async function () {
       if (!state.apiBase || !state.token) {
@@ -187,10 +191,15 @@
 
   function toast(msg, isError) {
     var el = $('toast');
+    if (!el) return;
     el.textContent = msg;
     el.classList.toggle('error', !!isError);
     el.classList.remove('hidden');
     setTimeout(function () { el.classList.add('hidden'); }, 2600);
+  }
+
+  function asArray(value) {
+    return Array.isArray(value) ? value : [];
   }
 
   function money(n) {
@@ -268,7 +277,7 @@
       }
       if (!res.ok) throw new Error((data && data.error) || 'Request failed');
       ConnStatus.set('online');
-      return data;
+      return data == null ? {} : data;
     } finally {
       FamLag.end();
     }
@@ -303,8 +312,14 @@
     closeDrawer();
     if (name === 'splash' || name === 'login') {
       ConnStatus.stop();
+      var badge = $('conn-status');
+      if (badge) badge.classList.add('hidden');
     } else if (state.token && state.apiBase) {
       ConnStatus.start();
+      if (name === 'home') {
+        var homeBadge = $('conn-status');
+        if (homeBadge) homeBadge.classList.remove('hidden');
+      }
     }
   }
 
@@ -338,7 +353,9 @@
   }
 
   function fillStoreSelect(sel, preferred) {
-    sel.innerHTML = state.stores.map(function (s) {
+    if (!sel) return;
+    var stores = asArray(state.stores);
+    sel.innerHTML = stores.map(function (s) {
       return '<option value="' + escapeHtml(s.id) + '">' + escapeHtml(s.name) + '</option>';
     }).join('') || '<option value="">No stores available</option>';
     var pick = preferred || (state.admin && state.admin.store_id) || '';
@@ -353,19 +370,28 @@
 
   function renderHome() {
     var admin = state.admin || {};
-    $('welcome-name').textContent = 'Welcome, ' + (admin.name || 'Staff');
-    $('home-role').textContent = (admin.role || '') +
-      (admin.username ? ' · @' + admin.username : '');
-    $('drawer-user').textContent = (admin.name || '') +
-      (admin.role ? ' · ' + admin.role : '');
+    var welcome = $('welcome-name');
+    if (welcome) welcome.textContent = 'Welcome, ' + (admin.name || 'Staff');
+    var role = $('home-role');
+    if (role) {
+      role.textContent = (admin.role || '') +
+        (admin.username ? ' · @' + admin.username : '');
+    }
+    var drawerUser = $('drawer-user');
+    if (drawerUser) {
+      drawerUser.textContent = (admin.name || '') +
+        (admin.role ? ' · ' + admin.role : '');
+    }
     applyRoleUi();
   }
 
   async function loadDashboard() {
     renderHome();
     var data = await api('/api/mobile/dashboard');
-    var cards = data.cards || {};
-    $('sales-cards').innerHTML = [
+    var cards = (data && data.cards) || {};
+    var grid = $('sales-cards');
+    if (!grid) return;
+    grid.innerHTML = [
       { label: "Today's Sales", value: money(cards.today_sales) },
       { label: "Today's Orders", value: String(cards.today_orders || 0) },
       { label: 'Open Orders', value: String(cards.open_orders || 0) },
@@ -380,7 +406,8 @@
   }
 
   async function loadStores() {
-    state.stores = await api('/api/mobile/stores');
+    var data = await api('/api/mobile/stores');
+    state.stores = asArray(data);
     ['punch-store', 'gen-store', 'print-store', 'bill-store', 'inv-store', 'cat-store'].forEach(function (id) {
       if ($(id)) fillStoreSelect($(id));
     });
@@ -391,29 +418,34 @@
     if (
       !force &&
       state.catalog &&
-      state.catalog.products &&
-      state.catalog.products.length &&
+      asArray(state.catalog.products).length &&
       state.catalogLoadedAt &&
       (now - state.catalogLoadedAt) < 60000
     ) {
       if ($('gen-category')) {
         $('gen-category').innerHTML =
           '<option value="">Select category</option>' +
-          (state.catalog.categories || []).map(function (c) {
+          asArray(state.catalog.categories).map(function (c) {
             return '<option value="' + escapeHtml(c.id) + '">' + escapeHtml(c.name) + '</option>';
           }).join('');
       }
       return state.catalog;
     }
-    state.catalog = await api('/api/mobile/catalog');
+    var data = await api('/api/mobile/catalog');
+    state.catalog = {
+      categories: asArray(data && data.categories),
+      products: asArray(data && data.products)
+    };
     state.catalogLoadedAt = Date.now();
     if ($('gen-category')) {
       $('gen-category').innerHTML =
         '<option value="">Select category</option>' +
-        (state.catalog.categories || []).map(function (c) {
+        state.catalog.categories.map(function (c) {
           return '<option value="' + escapeHtml(c.id) + '">' + escapeHtml(c.name) + '</option>';
         }).join('');
-      $('gen-product').innerHTML = '<option value="">Select category first</option>';
+      if ($('gen-product')) {
+        $('gen-product').innerHTML = '<option value="">Select category first</option>';
+      }
     }
     return state.catalog;
   }
@@ -421,11 +453,12 @@
   function fillGenProducts() {
     var catId = $('gen-category').value;
     var sel = $('gen-product');
+    if (!sel) return;
     if (!catId) {
       sel.innerHTML = '<option value="">Select category first</option>';
       return;
     }
-    var list = (state.catalog.products || []).filter(function (p) {
+    var list = asArray(state.catalog && state.catalog.products).filter(function (p) {
       return p.category_id === catId;
     });
     sel.innerHTML = '<option value="">Select product</option>' + list.map(function (p) {
@@ -507,7 +540,7 @@
     $('print-list').innerHTML = '<p class="muted">Loading…</p>';
     try {
       var data = await api('/api/mobile/qr-units?store_id=' + encodeURIComponent(storeId));
-      state.printUnits = data.items || [];
+      state.printUnits = asArray(data && data.items);
       state.printSelected = {};
       renderPrintList();
     } catch (e) {
@@ -517,8 +550,9 @@
 
   function filteredPrintUnits() {
     var q = ($('print-search').value || '').trim().toLowerCase();
-    if (!q) return state.printUnits.slice();
-    return state.printUnits.filter(function (u) {
+    var units = asArray(state.printUnits);
+    if (!q) return units.slice();
+    return units.filter(function (u) {
       return (u.name || '').toLowerCase().indexOf(q) !== -1 ||
         (u.unit_serial || '').toLowerCase().indexOf(q) !== -1 ||
         (u.qr_code || '').toLowerCase().indexOf(q) !== -1 ||
@@ -973,7 +1007,7 @@
       toast('Select a store first', true);
       return;
     }
-    var store = state.stores.find(function (s) { return s.id === storeId; });
+    var store = asArray(state.stores).find(function (s) { return s.id === storeId; });
     $('bill-store-label').textContent = (store && store.name) || 'Store';
     state.billCart = [];
     state.billCategoryId = '';
@@ -983,7 +1017,11 @@
     $('bill-notes').value = '';
     $('bill-payment').value = 'cash';
     $('bill-error').textContent = '';
-    state.billCatalog = await api('/api/mobile/pos/catalog?store_id=' + encodeURIComponent(storeId));
+    var catalog = await api('/api/mobile/pos/catalog?store_id=' + encodeURIComponent(storeId));
+    state.billCatalog = {
+      categories: asArray(catalog && catalog.categories),
+      products: asArray(catalog && catalog.products)
+    };
     renderBillCategories();
     renderBillProducts();
     renderBillCart();
@@ -1152,8 +1190,9 @@
     var storeId = $('bill-store').value;
     var url = '/api/mobile/pos/orders?limit=20';
     if (storeId) url += '&store_id=' + encodeURIComponent(storeId);
-    var orders = await api(url);
+    var orders = asArray(await api(url));
     var el = $('bill-recent-list');
+    if (!el) return;
     if (!orders.length) {
       el.innerHTML = '<p class="muted">No recent in-store bills.</p>';
     } else {
@@ -1187,7 +1226,7 @@
     try {
       var url = '/api/mobile/inventory';
       if (storeId) url += '?store_id=' + encodeURIComponent(storeId);
-      state.inventoryRows = await api(url);
+      state.inventoryRows = asArray(await api(url));
       renderInventoryList();
     } catch (e) {
       $('inv-list').innerHTML = '';
@@ -1197,7 +1236,7 @@
 
   function renderInventoryList() {
     var q = ($('inv-search').value || '').trim().toLowerCase();
-    var rows = state.inventoryRows.filter(function (r) {
+    var rows = asArray(state.inventoryRows).filter(function (r) {
       if (!q) return true;
       return (r.product_name || '').toLowerCase().indexOf(q) !== -1 ||
         (r.sku || '').toLowerCase().indexOf(q) !== -1 ||

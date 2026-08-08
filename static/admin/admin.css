@@ -100,9 +100,9 @@ body.fam-lagging .admin-shell {
   width: 72px;
   height: 72px;
   object-fit: contain;
-  border-radius: 18px;
-  background: #fff;
-  padding: 8px;
+  border-radius: 50%;
+  background: #0b0b0b;
+  padding: 4px;
   box-shadow: 0 12px 30px rgba(30, 58, 34, 0.2), 0 0 0 1px rgba(231, 180, 48, 0.35);
 }
 .fam-lag-text {

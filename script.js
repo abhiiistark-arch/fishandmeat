@@ -1,72 +1,6 @@
 (function () {
   'use strict';
 
-  var FamLag = {
-    el: null,
-    pending: 0,
-    visible: false,
-    showTimer: null,
-    hideTimer: null,
-    shownAt: 0,
-    lagMs: 420,
-    minShowMs: 380,
-    bind: function () {
-      this.el = document.getElementById('fam-lag-loader');
-      if (!this.el) return;
-      this.el.hidden = false;
-      this.el.classList.add('is-idle');
-      this.el.classList.remove('is-visible');
-    },
-    begin: function () {
-      if (!this.el) this.bind();
-      if (!this.el) return;
-      this.pending += 1;
-      if (this.pending === 1 && !this.visible) {
-        var self = this;
-        clearTimeout(this.showTimer);
-        this.showTimer = setTimeout(function () {
-          if (self.pending > 0) self.show();
-        }, this.lagMs);
-      }
-    },
-    end: function () {
-      if (!this.el) return;
-      this.pending = Math.max(0, this.pending - 1);
-      if (this.pending === 0) {
-        clearTimeout(this.showTimer);
-        this.showTimer = null;
-        if (this.visible) {
-          var self = this;
-          clearTimeout(this.hideTimer);
-          var wait = Math.max(0, this.minShowMs - (Date.now() - this.shownAt));
-          this.hideTimer = setTimeout(function () { self.hide(); }, wait);
-        }
-      }
-    },
-    show: function () {
-      if (!this.el || this.visible) return;
-      this.visible = true;
-      this.shownAt = Date.now();
-      this.el.classList.remove('is-idle');
-      this.el.classList.add('is-visible');
-      this.el.setAttribute('aria-busy', 'true');
-      document.body.classList.add('fam-lagging');
-    },
-    hide: function () {
-      if (!this.el) return;
-      this.visible = false;
-      this.el.classList.remove('is-visible');
-      this.el.classList.add('is-idle');
-      this.el.setAttribute('aria-busy', 'false');
-      document.body.classList.remove('fam-lagging');
-    }
-  };
-
-  function famFetch(input, init) {
-    FamLag.begin();
-    return fetch(input, init).finally(function () { FamLag.end(); });
-  }
-
   function famCsrfHeaders(extra) {
     var headers = Object.assign({ 'Content-Type': 'application/json' }, extra || {});
     try {
@@ -152,16 +86,16 @@
       (now - _metaCache.at) < META_TTL_MS;
     var productUrl = '/api/products?store_id=' + encodeURIComponent(selectedStoreId);
     var tasks = [
-      famFetch(productUrl).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+      fetch(productUrl).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
     ];
     if (metaFresh) {
       tasks.push(Promise.resolve(_metaCache.cats));
       tasks.push(Promise.resolve(_metaCache.stores));
       tasks.push(Promise.resolve(_metaCache.content));
     } else {
-      tasks.push(famFetch('/api/categories').then(function (r) { return r.ok ? r.json() : Promise.reject(); }));
-      tasks.push(famFetch('/api/stores').then(function (r) { return r.ok ? r.json() : Promise.reject(); }));
-      tasks.push(famFetch('/api/storefront-content').then(function (r) { return r.ok ? r.json() : Promise.reject(); }));
+      tasks.push(fetch('/api/categories').then(function (r) { return r.ok ? r.json() : Promise.reject(); }));
+      tasks.push(fetch('/api/stores').then(function (r) { return r.ok ? r.json() : Promise.reject(); }));
+      tasks.push(fetch('/api/storefront-content').then(function (r) { return r.ok ? r.json() : Promise.reject(); }));
     }
     Promise.all(tasks).then(function (results) {
       var products = results[0];
@@ -261,7 +195,7 @@
     delivery_fee_below_min: 49,
     free_delivery_above: 499
   };
-  famFetch('/api/settings').then(function (r) { return r.ok ? r.json() : null; }).then(function (s) {
+  fetch('/api/settings').then(function (r) { return r.ok ? r.json() : null; }).then(function (s) {
     if (s) { SETTINGS = Object.assign(SETTINGS, s); renderCurrentPage(); }
   }).catch(function () {});
 
@@ -271,7 +205,7 @@
     if (!state.user) return;
     clearTimeout(cartSyncTimer);
     cartSyncTimer = setTimeout(function () {
-      famFetch('/api/account/cart', {
+      fetch('/api/account/cart', {
         method: 'PUT',
         headers: famCsrfHeaders(),
         credentials: 'same-origin',
@@ -947,7 +881,7 @@
     var msg = document.getElementById('checkout-coupon-msg');
     var code = input.value.trim();
     if (!code) { state.coupon = null; msg.textContent = ''; renderCheckout(); return; }
-    famFetch('/api/coupons/validate', {
+    fetch('/api/coupons/validate', {
       method: 'POST',
       headers: famCsrfHeaders(),
       body: JSON.stringify({ code: code, subtotal: cartSubtotal() })
@@ -1036,7 +970,7 @@
       return;
     }
 
-    famFetch('/api/orders', {
+    fetch('/api/orders', {
       method: 'POST',
       headers: famCsrfHeaders(),
       credentials: 'same-origin',
@@ -1072,7 +1006,7 @@
     var errEl = document.getElementById('login-error');
     if (!phone || !password) { errEl.textContent = 'Enter phone and password.'; return; }
     errEl.textContent = 'Signing in…';
-    famFetch('/api/auth/login', {
+    fetch('/api/auth/login', {
       method: 'POST',
       headers: famCsrfHeaders(),
       credentials: 'same-origin',
@@ -1107,7 +1041,7 @@
     var errEl = document.getElementById('signup-error');
     if (!name || !phone || !password) { errEl.textContent = 'Please fill in name, phone and password.'; return; }
     errEl.textContent = 'Creating account…';
-    famFetch('/api/auth/signup', {
+    fetch('/api/auth/signup', {
       method: 'POST',
       headers: famCsrfHeaders(),
       credentials: 'same-origin',
@@ -1131,7 +1065,7 @@
   }
 
   function logout() {
-    famFetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(function () {});
+    fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }).catch(function () {});
     state.user = null;
     state.orders = [];
     state.cart = [];
@@ -1145,7 +1079,7 @@
       if (done) done();
       return;
     }
-    famFetch('/api/account/orders', { credentials: 'same-origin' })
+    fetch('/api/account/orders', { credentials: 'same-origin' })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
       .then(function (data) {
         state.orders = (data.items || []).map(function (o) {
@@ -1179,7 +1113,7 @@
   }
 
   function restoreCustomerSession() {
-    famFetch('/api/auth/me', { credentials: 'same-origin' })
+    fetch('/api/auth/me', { credentials: 'same-origin' })
       .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
       .then(function (data) {
         if (data.authenticated && data.customer) {
@@ -1214,7 +1148,7 @@
     var email = document.getElementById('acct-email').value.trim();
     var preferred = document.getElementById('acct-preferred-store').value;
     setAccountMsg('acct-profile-msg', 'Saving…', true);
-    famFetch('/api/account/profile', {
+    fetch('/api/account/profile', {
       method: 'PUT',
       headers: famCsrfHeaders(),
       credentials: 'same-origin',
@@ -1238,7 +1172,7 @@
     var current = document.getElementById('acct-current-password').value;
     var next = document.getElementById('acct-new-password').value;
     setAccountMsg('acct-password-msg', 'Updating…', true);
-    famFetch('/api/account/password', {
+    fetch('/api/account/password', {
       method: 'PUT',
       headers: famCsrfHeaders(),
       credentials: 'same-origin',
@@ -1273,7 +1207,7 @@
     var url = editingId ? '/api/account/addresses/' + encodeURIComponent(editingId) : '/api/account/addresses';
     var method = editingId ? 'PUT' : 'POST';
     setAccountMsg('acct-address-msg', 'Saving address…', true);
-    famFetch(url, {
+    fetch(url, {
       method: method,
       headers: famCsrfHeaders(),
       credentials: 'same-origin',
@@ -1319,7 +1253,7 @@
 
   function deleteAddress(id) {
     if (!window.confirm('Remove this saved address?')) return;
-    famFetch('/api/account/addresses/' + encodeURIComponent(id), {
+    fetch('/api/account/addresses/' + encodeURIComponent(id), {
       method: 'DELETE',
       credentials: 'same-origin'
     }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
