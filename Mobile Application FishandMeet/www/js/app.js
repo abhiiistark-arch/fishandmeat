@@ -123,12 +123,8 @@
       if (el) el.classList.remove('hidden');
     },
     hide: function () {
-      // Keep badge visible beside Welcome; just mark offline/checking on logout screens via showScreen
       var el = $('conn-status');
-      if (!el) return;
-      if (!$('screen-home') || !$('screen-home').classList.contains('active')) {
-        el.classList.add('hidden');
-      }
+      if (el) el.classList.add('hidden');
     },
     ping: async function () {
       if (!state.apiBase || !state.token) {
@@ -283,43 +279,61 @@
     }
   }
 
+  var SCREEN_IDS = {
+    splash: 'screen-splash',
+    login: 'screen-login',
+    home: 'screen-home',
+    generate: 'screen-generate',
+    print: 'screen-print',
+    'punch-setup': 'screen-punch-setup',
+    punch: 'screen-punch',
+    'punch-done': 'screen-punch-done',
+    'billing-setup': 'screen-billing-setup',
+    billing: 'screen-billing',
+    'billing-scan': 'screen-billing-scan',
+    'billing-done': 'screen-billing-done',
+    'billing-recent': 'screen-billing-recent',
+    inventory: 'screen-inventory',
+    'inventory-edit': 'screen-inventory-edit',
+    catalog: 'screen-catalog'
+  };
+
+  function mountConnStatus(screenName) {
+    var badge = $('conn-status');
+    if (!badge) return;
+    if (screenName === 'splash' || screenName === 'login') {
+      badge.classList.add('hidden');
+      return;
+    }
+    var screenId = SCREEN_IDS[screenName];
+    var screen = screenId ? $(screenId) : null;
+    if (!screen) return;
+
+    if (screenName === 'home') {
+      var row = screen.querySelector('.welcome-row');
+      if (row && badge.parentElement !== row) row.appendChild(badge);
+    } else {
+      var top = screen.querySelector('.app-top');
+      if (top && badge.parentElement !== top) top.appendChild(badge);
+    }
+    badge.classList.remove('hidden');
+  }
+
   function showScreen(name) {
     document.querySelectorAll('.screen').forEach(function (el) {
       el.classList.remove('active');
     });
-    var map = {
-      splash: 'screen-splash',
-      login: 'screen-login',
-      home: 'screen-home',
-      generate: 'screen-generate',
-      print: 'screen-print',
-      'punch-setup': 'screen-punch-setup',
-      punch: 'screen-punch',
-      'punch-done': 'screen-punch-done',
-      'billing-setup': 'screen-billing-setup',
-      billing: 'screen-billing',
-      'billing-scan': 'screen-billing-scan',
-      'billing-done': 'screen-billing-done',
-      'billing-recent': 'screen-billing-recent',
-      inventory: 'screen-inventory',
-      'inventory-edit': 'screen-inventory-edit',
-      catalog: 'screen-catalog'
-    };
-    var id = map[name];
+    var id = SCREEN_IDS[name];
     if (id) $(id).classList.add('active');
     if (name !== 'punch') stopScanner();
     if (name !== 'billing-scan') stopBillScanner();
     closeDrawer();
     if (name === 'splash' || name === 'login') {
       ConnStatus.stop();
-      var badge = $('conn-status');
-      if (badge) badge.classList.add('hidden');
+      mountConnStatus(name);
     } else if (state.token && state.apiBase) {
+      mountConnStatus(name);
       ConnStatus.start();
-      if (name === 'home') {
-        var homeBadge = $('conn-status');
-        if (homeBadge) homeBadge.classList.remove('hidden');
-      }
     }
   }
 
