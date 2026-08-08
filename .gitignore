@@ -7,6 +7,9 @@ reports_out/*
 .env
 .env.*
 !.env.example
+mongo.env
+.mongo.env
+!mongo.env.example
 __pycache__/
 *.pyc
 .venv/

@@ -22,7 +22,14 @@ from flask import (
 from werkzeug.utils import secure_filename
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv()  # primary .env (never commit real secrets)
+# Optional separate Mongo credentials file (server deploy) — also gitignored
+_mongo_env = Path(__file__).resolve().parent / 'mongo.env'
+if _mongo_env.is_file():
+    load_dotenv(_mongo_env, override=True)
+_mongo_env_hidden = Path(__file__).resolve().parent / '.mongo.env'
+if _mongo_env_hidden.is_file():
+    load_dotenv(_mongo_env_hidden, override=True)
 
 BASE_DIR = Path(__file__).resolve().parent
 IS_VERCEL = bool(os.getenv('VERCEL') or os.getenv('VERCEL_ENV'))
