@@ -45,57 +45,29 @@ Stock + QR app for **Android APK** and **PWA** (Android / iPhone). Talks to the 
 
 ---
 
-## Option B — Android APK (share `.apk` file)
+## Option B — Download APK
 
-Requires: Node.js 18+, Android Studio (SDK + JDK), USB debugging or emulator.
+Built APK path (after build):
 
-### 1. Set production API URL (recommended before build)
+- Local file: `static/downloads/FishandMeet-punch.apk`
+- Or open on the server: `/download/apk`
 
-Edit `www/js/config.js`:
+**Login flow (no code change needed):**
 
-```js
-window.FAM_API_URL = 'https://YOUR-DEPLOYED-DOMAIN.com';
-```
+1. Install APK  
+2. Enter **Website / Server URL** on the login screen (e.g. `https://your-domain.com` or `http://192.168.x.x:5000`)  
+3. Enter admin username + password  
+4. Generate / Print / Punch
 
-If you leave it blank, the APK login screen still lets the user type the website URL.
-
-### 2. Install deps + create Android project
+Rebuild after `www/` changes:
 
 ```bash
 cd "Mobile Application FishandMeet"
-npm install
-npx cap add android
 npx cap sync android
-npx cap open android
-```
-
-### 3. Permissions (Android Studio)
-
-After `cap add android`, open `android/app/src/main/AndroidManifest.xml` and ensure:
-
-```xml
-<uses-permission android:name="android.permission.INTERNET" />
-<uses-permission android:name="android.permission.CAMERA" />
-<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-```
-
-For **HTTP LAN** testing (`http://192.168.x.x`), `capacitor.config.json` already has `"cleartext": true`.  
-For production HTTPS you don’t need cleartext.
-
-### 4. Build APK
-
-In Android Studio:
-
-1. Wait for Gradle sync  
-2. **Build → Build Bundle(s) / APK(s) → Build APK(s)**  
-3. Find the APK under `android/app/build/outputs/apk/debug/` (or release if you signed it)  
-4. Share that `.apk` with Android users (sideload / internal distribute)
-
-Rebuild after web changes:
-
-```bash
-npx cap sync android
-# then Build APK again in Android Studio
+cd android
+# set JAVA_HOME to a JDK 17+
+.\gradlew.bat assembleDebug
+copy app\build\outputs\apk\debug\app-debug.apk ..\..\static\downloads\FishandMeet-punch.apk
 ```
 
 ### 5. First run on phone

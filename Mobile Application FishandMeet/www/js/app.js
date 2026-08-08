@@ -586,13 +586,17 @@
   function prepareLoginForm() {
     var field = $('server-url-field');
     var input = $('login-server');
-    var defaultUrl = normalizeBase(window.FAM_DEFAULT_API || window.FAM_API_URL || location.origin);
+    // APK / Capacitor: always show Website URL (never bake domain into the binary)
     if (isSameOriginPwa()) {
       field.classList.add('hidden');
       input.value = location.origin;
     } else {
       field.classList.remove('hidden');
-      input.value = defaultUrl || '';
+      var saved = null;
+      try { saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null'); } catch (e) { saved = null; }
+      input.value = normalizeBase((saved && saved.apiBase) || window.FAM_DEFAULT_API || '') || '';
+      input.placeholder = 'https://your-site.com or http://192.168.x.x:5000';
+      input.required = true;
     }
   }
 

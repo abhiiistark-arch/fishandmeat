@@ -886,7 +886,7 @@
       var results = await Promise.all([
         api('/api/admin/stores'),
         api('/api/admin/categories'),
-        api('/api/admin/products')
+        api('/api/admin/products?lite=1')
       ]);
       this.stores = results[0];
       this.categories = results[1];
@@ -1360,7 +1360,7 @@
       var initial = await Promise.all([
         api('/api/admin/stores'),
         api('/api/admin/categories'),
-        api('/api/admin/products')
+        api('/api/admin/products?lite=1')
       ]);
       this.stores = initial[0];
       this.categories = initial[1];
@@ -2675,7 +2675,7 @@
       var results = await Promise.all([
         api('/api/admin/storefront-content'),
         api('/api/admin/categories'),
-        api('/api/admin/products')
+        api('/api/admin/products?lite=1')
       ]);
       this.content = results[0];
       this.categories = results[1];
@@ -3314,7 +3314,10 @@
       document.getElementById('btn-print-qr').onclick = function () { self.openPrint(); };
       document.getElementById('qr-preview-close').onclick = function () { closeModal('qr-preview-modal'); };
       document.getElementById('qr-preview-print').onclick = function () { window.print(); };
-      document.getElementById('qr-search').oninput = function () { self.render(); };
+      document.getElementById('qr-search').oninput = function () {
+        clearTimeout(self._searchTimer);
+        self._searchTimer = setTimeout(function () { self.render(); }, 120);
+      };
       document.getElementById('qr-filter-category').onchange = function () { self.render(); };
       document.getElementById('qr-filter-product').onchange = function () { self.render(); };
       document.getElementById('qr-print-cancel').onclick = function () { closeModal('qr-print-modal'); };
@@ -3347,7 +3350,7 @@
         var catalog = await Promise.all([
           api('/api/admin/categories'),
           api('/api/admin/stores'),
-          api('/api/admin/products')
+          api('/api/admin/products?lite=1')
         ]);
         this.categories = catalog[0] || [];
         this.stores = (catalog[1] || []).filter(function (s) { return s.status === 'active'; });
@@ -3363,18 +3366,16 @@
       }
 
       try {
-        // All stores — no store slicer filter on the main QR table
-        var qrPayload = await api('/api/admin/qr-codes');
+        // Slim + paginated units — avoid shipping full product catalog with every QR row
+        var qrPayload = await api('/api/admin/qr-codes?limit=250&offset=0');
         this.lineItems = Array.isArray(qrPayload)
           ? qrPayload
           : (qrPayload.units || qrPayload.items || []);
         this.lineItems.sort(function (a, b) {
           return String(b.qr_generated_at || '').localeCompare(String(a.qr_generated_at || ''));
         });
-        if (qrPayload && qrPayload.products && qrPayload.products.length && !this.products.length) {
-          this.products = qrPayload.products;
-          this.rows = this.products;
-        }
+        this.qrTotal = (qrPayload && qrPayload.unit_count) || this.lineItems.length;
+        this.qrHasMore = !!(qrPayload && qrPayload.has_more);
         if (qrPayload && qrPayload.backfilled) {
           toast('Synced ' + qrPayload.backfilled + ' unique unit QR(s) from stock');
         }
@@ -3412,7 +3413,7 @@
       var results = await Promise.all([
         api('/api/admin/categories'),
         api('/api/admin/stores'),
-        api('/api/admin/products')
+        api('/api/admin/products?lite=1')
       ]);
       this.categories = results[0] || [];
       this.stores = (results[1] || []).filter(function (s) { return s.status === 'active'; });
@@ -3717,6 +3718,7 @@
         var productCount = Object.keys(productIds).length;
         var storeCount = Object.keys(storeIds).length;
         countEl.textContent = 'Showing ' + rows.length + ' unique unit' + (rows.length === 1 ? '' : 's') +
+          (self.qrTotal && self.qrTotal > rows.length ? ' of ' + self.qrTotal : '') +
           ' (newest first) · ' + storeCount + ' store' + (storeCount === 1 ? '' : 's') +
           ' · ' + productCount + ' product' + (productCount === 1 ? '' : 's');
       }

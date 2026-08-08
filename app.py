@@ -131,6 +131,29 @@ def add_security_headers(response):
     )
     response.headers.setdefault('Cross-Origin-Opener-Policy', 'same-origin')
     path = request.path or ''
+    # Gzip compress large JSON API payloads when the client accepts it (faster admin/QR)
+    try:
+        accept = (request.headers.get('Accept-Encoding') or '').lower()
+        ctype = (response.content_type or '').lower()
+        if (
+            'gzip' in accept
+            and response.status_code == 200
+            and path.startswith('/api/')
+            and ('json' in ctype or 'javascript' in ctype or 'text/' in ctype)
+            and not response.direct_passthrough
+            and 'Content-Encoding' not in response.headers
+        ):
+            data = response.get_data()
+            if data and len(data) > 1500:
+                import gzip
+                compressed = gzip.compress(data, compresslevel=5)
+                if len(compressed) < len(data):
+                    response.set_data(compressed)
+                    response.headers['Content-Encoding'] = 'gzip'
+                    response.headers['Content-Length'] = str(len(compressed))
+                    response.headers['Vary'] = 'Accept-Encoding'
+    except Exception:  # noqa: BLE001
+        pass
     # Mobile punch UI needs camera + CDN scanner + installable PWA.
     if path.startswith('/mobile'):
         response.headers['Permissions-Policy'] = (
@@ -1296,29 +1319,39 @@ def _media_kind_for_url(url):
 
 
 def _save_media_blob(url, data, content_type=None, filename=None):
-    """Persist image bytes in Mongo (or local media.json) keyed by public URL."""
+    """Persist image bytes in Mongo/local media store — gzip when it shrinks the blob."""
     if not url or not data:
         return False
+    import gzip
     filename = filename or url.rsplit('/', 1)[-1]
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
     content_type = content_type or _content_type_for_ext(ext)
+    raw_size = len(data)
+    encoding = ''
+    stored = data
+    if raw_size >= 2048:
+        compressed = gzip.compress(data, compresslevel=6)
+        if len(compressed) < raw_size * 0.98:
+            stored = compressed
+            encoding = 'gzip'
     doc = {
         'url': url,
         'filename': filename,
         'kind': _media_kind_for_url(url),
         'content_type': content_type,
-        'size': len(data),
+        'size': raw_size,
+        'stored_size': len(stored),
+        'encoding': encoding,
         'updated_at': now_iso(),
     }
     if _use_mongo:
         from bson.binary import Binary
-        doc['data'] = Binary(data)
+        doc['data'] = Binary(stored)
         _mongo_db.media.update_one({'url': url}, {'$set': doc, '$setOnInsert': {'created_at': now_iso()}}, upsert=True)
         return True
-    # Local JSON fallback — store base64 so images survive without the uploads folder.
     import base64
     rows = _load_local('media')
-    doc['data_b64'] = base64.b64encode(data).decode('ascii')
+    doc['data_b64'] = base64.b64encode(stored).decode('ascii')
     replaced = False
     for i, row in enumerate(rows):
         if row.get('url') == url:
@@ -1336,17 +1369,29 @@ def _load_media_blob(url):
     """Return (bytes, content_type) for a public upload URL, or (None, None)."""
     if not url:
         return None, None
+    import gzip
+
+    def _maybe_decompress(payload, encoding):
+        raw = bytes(payload)
+        if encoding == 'gzip' or (len(raw) >= 2 and raw[:2] == b'\x1f\x8b'):
+            try:
+                return gzip.decompress(raw)
+            except Exception:  # noqa: BLE001
+                return raw
+        return raw
+
     if _use_mongo:
         row = _mongo_db.media.find_one({'url': url}, {'_id': 0})
         if not row or row.get('data') is None:
             return None, None
-        return bytes(row['data']), row.get('content_type') or 'application/octet-stream'
+        return _maybe_decompress(row['data'], row.get('encoding') or ''), row.get('content_type') or 'application/octet-stream'
     import base64
     row = db_find_one('media', {'url': url})
     if not row or not row.get('data_b64'):
         return None, None
     try:
-        return base64.b64decode(row['data_b64']), row.get('content_type') or 'application/octet-stream'
+        stored = base64.b64decode(row['data_b64'])
+        return _maybe_decompress(stored, row.get('encoding') or ''), row.get('content_type') or 'application/octet-stream'
     except Exception:  # noqa: BLE001
         return None, None
 
@@ -1362,18 +1407,19 @@ def _delete_media_blob(url):
 
 
 def optimize_image_bytes(data, kind='products'):
-    """Resize and convert uploads to WebP for faster storefront loads."""
+    """High-quality compress uploads (WebP) — smaller DB/disk without visible quality loss."""
     try:
-        from PIL import Image
+        from PIL import Image, ImageOps
         img = Image.open(BytesIO(data))
         img.load()
+        img = ImageOps.exif_transpose(img)
         if img.mode in ('RGBA', 'LA'):
             pass
         elif img.mode == 'P':
             img = img.convert('RGBA')
         elif img.mode != 'RGB':
             img = img.convert('RGB')
-        max_w = 1600 if kind == 'content' else 1000
+        max_w = 2400 if kind == 'content' else 1800
         if img.width > max_w:
             ratio = max_w / float(img.width)
             img = img.resize(
@@ -1381,12 +1427,17 @@ def optimize_image_bytes(data, kind='products'):
                 Image.Resampling.LANCZOS,
             )
         out = BytesIO()
-        quality = 78 if kind == 'content' else 72
-        img.save(out, format='WEBP', quality=quality, method=4)
+        quality = 90 if kind == 'content' else 88
+        img.save(out, format='WEBP', quality=quality, method=6)
         optimized = out.getvalue()
-        # Prefer WebP when it is smaller, or when the original was a huge PNG.
-        if len(optimized) <= len(data) or len(data) > 350_000:
+        if len(optimized) < len(data) or len(data) > 200_000:
             return optimized, 'webp', 'image/webp'
+        if img.mode == 'RGB':
+            out_j = BytesIO()
+            img.save(out_j, format='JPEG', quality=90, optimize=True, progressive=True)
+            jpeg = out_j.getvalue()
+            if len(jpeg) < len(data):
+                return jpeg, 'jpg', 'image/jpeg'
     except Exception:  # noqa: BLE001
         pass
     return data, None, None
@@ -2167,6 +2218,27 @@ def mobile_app_assets(filename):
     if not target.is_file():
         abort(404)
     return send_from_directory(MOBILE_WWW, filename)
+
+
+@app.route('/download/apk')
+def download_mobile_apk():
+    """Downloadable Android APK — login asks for Website URL then auth (no hardcoded domain)."""
+    candidates = [
+        BASE_DIR / 'static' / 'downloads' / 'FishandMeet-punch.apk',
+        BASE_DIR / 'Mobile Application FishandMeet' / 'FishandMeet-punch.apk',
+        BASE_DIR / 'Mobile Application FishandMeet' / 'android' / 'app' / 'build' / 'outputs' / 'apk' / 'debug' / 'app-debug.apk',
+    ]
+    for path in candidates:
+        if path.is_file():
+            return send_file(
+                path,
+                as_attachment=True,
+                download_name='FishandMeet-punch.apk',
+                mimetype='application/vnd.android.package-archive',
+            )
+    return jsonify({
+        'error': 'APK not built yet. Run: cd "Mobile Application FishandMeet" && npx cap sync android && cd android && gradlew assembleDebug',
+    }), 404
 
 
 @app.route('/uploads/products/<path:filename>')
@@ -3809,9 +3881,27 @@ def api_admin_products():
         products = db_find('products')
         categories = _cached_collection('categories', lambda: db_find('categories'))
         cat_names = {c['id']: c.get('name', '') for c in categories}
+        lite = (request.args.get('lite') or '').strip().lower() in ('1', 'true', 'yes')
+        out = []
         for p in products:
-            p['category_name'] = cat_names.get(p.get('category_id'), '')
-        return jsonify(products)
+            row = dict(p)
+            row['category_name'] = cat_names.get(p.get('category_id'), '')
+            if lite:
+                # Fast dropdown / QR filters — skip heavy fields
+                out.append({
+                    'id': row.get('id'),
+                    'name': row.get('name'),
+                    'sku': row.get('sku', ''),
+                    'category_id': row.get('category_id', ''),
+                    'category_name': row.get('category_name', ''),
+                    'status': row.get('status', 'available'),
+                    'variants': row.get('variants') or [],
+                    'featured': bool(row.get('featured')),
+                    'bestseller': bool(row.get('bestseller')),
+                })
+            else:
+                out.append(row)
+        return jsonify(out)
 
     if not admin_is_super():
         return jsonify({'error': 'Only Super Admin can manage products'}), 403
@@ -4798,40 +4888,42 @@ def _enrich_qr_product_row(product, categories_by_id, stores_by_id, inventory_ro
 @app.route('/api/admin/qr-codes', methods=['GET'])
 @admin_required
 def api_admin_qr_codes():
-    """Return one row per in-stock QR unit (unique last-3 identity), optionally filtered by store."""
+    """Return unique QR units (slim payload). Optional pagination + filters for speed."""
     if not admin_is_super():
         return jsonify({'error': 'Only Super Admin can manage QR codes'}), 403
-    # Optional full stock→QR sync (avoid on every page load — races / slowness)
     sync_flag = (request.args.get('sync') or '').strip().lower() in ('1', 'true', 'yes')
     backfilled = backfill_all_product_qrs() if sync_flag else 0
     store_id = (request.args.get('store_id') or '').strip()
     category_id = (request.args.get('category_id') or '').strip()
     product_id = (request.args.get('product_id') or '').strip()
     status = (request.args.get('status') or 'active').strip() or 'active'
+    include_catalog = (request.args.get('catalog') or '').strip().lower() in ('1', 'true', 'yes')
+    try:
+        limit = min(500, max(1, int(request.args.get('limit') or 250)))
+        offset = max(0, int(request.args.get('offset') or 0))
+    except (TypeError, ValueError):
+        limit, offset = 250, 0
 
-    products = db_find('products')
     categories_by_id = {c['id']: c for c in db_find('categories')}
     stores_by_id = {s['id']: s for s in db_find('stores')}
-    products_by_id = {p['id']: p for p in products}
-    inventory_rows = db_find('inventory')
-    for cat in categories_by_id.values():
-        if not (cat.get('code') or '').strip():
-            ensure_category_code(cat)
+    # Only load products we need for unit enrichment (not full catalog by default)
+    products_by_id = {p['id']: p for p in db_find('products')}
 
     query = {}
     if status == 'active':
         query['status'] = {'$in': ['pending', 'in_stock']}
     elif status != 'all':
         query['status'] = status
+    if store_id:
+        query['store_id'] = store_id
+    if product_id:
+        query['product_id'] = product_id
+
     units = db_find('qr_units', query, sort=[('created_at', -1)])
     items = []
     for unit in units:
-        if store_id and unit.get('store_id') != store_id:
-            continue
         product = products_by_id.get(unit.get('product_id'))
         if not product:
-            continue
-        if product_id and product.get('id') != product_id:
             continue
         if category_id and product.get('category_id') != category_id:
             continue
@@ -4851,8 +4943,6 @@ def api_admin_qr_codes():
             'sku': product.get('sku', ''),
             'category_id': product.get('category_id', ''),
             'category_name': cat.get('name', ''),
-            'category_code': product.get('qr_category_code') or cat.get('code') or '',
-            'product_code': product.get('qr_product_code') or '',
             'variant_id': unit.get('variant_id'),
             'variant_label': variant_label or unit.get('variant_id') or '—',
             'store_id': unit.get('store_id'),
@@ -4869,18 +4959,26 @@ def api_admin_qr_codes():
             'unit_status': unit.get('status') or 'pending',
         })
 
-    catalog = [
-        _enrich_qr_product_row(p, categories_by_id, stores_by_id, inventory_rows)
-        for p in products
-    ]
-    catalog.sort(key=lambda r: (r.get('name') or '').lower())
-    return jsonify({
-        'items': items,
-        'units': items,
-        'products': catalog,
+    total = len(items)
+    page = items[offset:offset + limit]
+    payload = {
+        'items': page,
+        'units': page,
         'backfilled': backfilled,
-        'unit_count': len(items),
-    })
+        'unit_count': total,
+        'limit': limit,
+        'offset': offset,
+        'has_more': (offset + limit) < total,
+    }
+    if include_catalog:
+        inventory_rows = db_find('inventory')
+        catalog = [
+            _enrich_qr_product_row(p, categories_by_id, stores_by_id, inventory_rows)
+            for p in products_by_id.values()
+        ]
+        catalog.sort(key=lambda r: (r.get('name') or '').lower())
+        payload['products'] = catalog
+    return jsonify(payload)
 
 
 @app.route('/api/admin/qr-codes/unit/<unit_id>/image')

@@ -12,6 +12,9 @@ __pycache__/
 .venv/
 venv/
 node_modules/
+.tools/
+*.apk
+!static/downloads/*.apk
 *.zip
 .DS_Store
 Thumbs.db
