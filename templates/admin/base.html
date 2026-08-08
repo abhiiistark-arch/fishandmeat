@@ -15,7 +15,19 @@
   <link rel="stylesheet" href="{{ url_for('static', filename='admin/admin.css') }}?v={{ cache_bust }}" />
   {% block head_extra %}{% endblock %}
 </head>
-<body data-admin-role="{{ admin_user.role if admin_user else '' }}" data-admin-store="{{ admin_user.store_id if admin_user else '' }}" data-admin-name="{{ admin_user.name if admin_user else 'Admin' }}" data-admin-username="{{ admin_user.username if admin_user else '' }}" data-admin-super="{{ '1' if admin_can.super else '0' }}">
+<body data-admin-role="{{ admin_user.role if admin_user else '' }}" data-admin-store="{{ admin_user.store_id if admin_user else '' }}" data-admin-name="{{ admin_user.name if admin_user else 'Admin' }}" data-admin-username="{{ admin_user.username if admin_user else '' }}" data-admin-super="{{ '1' if admin_can.super else '0' }}" class="admin-booting">
+  <div id="admin-boot-loader" class="admin-boot-loader" role="status" aria-live="polite" aria-busy="true">
+    <div class="admin-boot-card">
+      <div class="admin-boot-orbit" aria-hidden="true">
+        <span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span>
+        <span></span><span></span><span></span><span></span>
+      </div>
+      <img src="/assets/fish-and-meat-logo.png" alt="Fish and Meat" class="admin-boot-logo" width="72" height="72" />
+      <p class="admin-boot-text">Loading admin panel…</p>
+      <p class="admin-boot-sub">Please wait until data is ready</p>
+    </div>
+  </div>
   <div class="admin-shell">
     <aside class="sidebar">
       <div class="sidebar-brand">

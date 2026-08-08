@@ -2,6 +2,83 @@
 (function (global) {
   'use strict';
 
+  // Full-page boot gate: keep overlay until shell + initial API data settle
+  var AdminBoot = {
+    el: null,
+    pending: 0,
+    seenRequest: false,
+    shellDone: false,
+    active: true,
+    hideTimer: null,
+    startedAt: Date.now(),
+    minShowMs: 500,
+    maxWaitMs: 15000,
+    bind: function () {
+      this.el = document.getElementById('admin-boot-loader');
+      if (!this.el) {
+        this.active = false;
+        return;
+      }
+      var self = this;
+      setTimeout(function () { self.forceHide('timeout'); }, this.maxWaitMs);
+      if (document.readyState === 'complete') this.scheduleMaybeHide();
+      else window.addEventListener('load', function () { self.scheduleMaybeHide(); });
+    },
+    begin: function () {
+      if (!this.active) return;
+      this.pending += 1;
+      this.seenRequest = true;
+    },
+    end: function () {
+      if (!this.active) return;
+      this.pending = Math.max(0, this.pending - 1);
+      this.scheduleMaybeHide();
+    },
+    markShellDone: function () {
+      this.shellDone = true;
+      this.scheduleMaybeHide();
+    },
+    scheduleMaybeHide: function () {
+      var self = this;
+      clearTimeout(this.hideTimer);
+      this.hideTimer = setTimeout(function () { self.maybeHide(); }, 90);
+    },
+    maybeHide: function () {
+      if (!this.active) return;
+      if (!this.shellDone) return;
+      if (this.pending > 0) return;
+      var elapsed = Date.now() - this.startedAt;
+      // Give page modules a moment to fire their first API calls
+      if (!this.seenRequest && elapsed < 900) {
+        var self = this;
+        this.hideTimer = setTimeout(function () { self.maybeHide(); }, 120);
+        return;
+      }
+      var wait = Math.max(0, this.minShowMs - elapsed);
+      var self = this;
+      clearTimeout(this.hideTimer);
+      this.hideTimer = setTimeout(function () { self.hide(); }, wait);
+    },
+    hide: function () {
+      if (!this.active) return;
+      this.active = false;
+      document.body.classList.remove('admin-booting');
+      document.body.classList.add('admin-ready');
+      if (!this.el) return;
+      this.el.classList.add('is-done');
+      this.el.setAttribute('aria-busy', 'false');
+      var el = this.el;
+      setTimeout(function () {
+        if (el && el.parentNode) el.parentNode.removeChild(el);
+      }, 380);
+    },
+    forceHide: function () {
+      this.pending = 0;
+      this.shellDone = true;
+      this.hide();
+    }
+  };
+
   function toast(msg, isError) {
     var el = document.getElementById('toast');
     if (!el) return;
@@ -22,16 +99,21 @@
     var fetchOpts = Object.assign({
       credentials: 'same-origin'
     }, opts, { headers: headers });
-    var res = await fetch(url, fetchOpts);
-    if (res.status === 401) {
-      window.location.href = '/admin/login';
-      throw new Error('Unauthorized');
+    AdminBoot.begin();
+    try {
+      var res = await fetch(url, fetchOpts);
+      if (res.status === 401) {
+        window.location.href = '/admin/login';
+        throw new Error('Unauthorized');
+      }
+      var data = null;
+      var ct = res.headers.get('content-type') || '';
+      if (ct.includes('application/json')) data = await res.json();
+      if (!res.ok) throw new Error((data && data.error) || 'Request failed');
+      return data;
+    } finally {
+      AdminBoot.end();
     }
-    var data = null;
-    var ct = res.headers.get('content-type') || '';
-    if (ct.includes('application/json')) data = await res.json();
-    if (!res.ok) throw new Error((data && data.error) || 'Request failed');
-    return data;
   }
 
   // Shared catalog cache — Products / Inventory / QR / POS reuse one fetch
@@ -193,6 +275,7 @@
     },
     init: async function () {
       var self = this;
+      try {
       this.initSidebarScroll();
       if (!this.admin.isSuper && this.admin.storeId) {
         this.storeId = this.admin.storeId;
@@ -256,6 +339,9 @@
 
       this.initSearch();
       this.refreshBadges();
+      } finally {
+        AdminBoot.markShellDone();
+      }
     },
     refreshBadges: async function () {
       try {
@@ -333,7 +419,12 @@
     }
   };
 
-  document.addEventListener('DOMContentLoaded', function () { AdminShell.init(); });
+  document.addEventListener('DOMContentLoaded', function () {
+    AdminBoot.bind();
+    AdminShell.init();
+  });
+  // If scripts run after DOM is already interactive/complete, bind immediately too
+  if (document.readyState !== 'loading') AdminBoot.bind();
 
   // -------- Dashboard --------
   var salesChart, storeChart;
@@ -3770,6 +3861,7 @@
     }
   };
 
+  global.AdminBoot = AdminBoot;
   global.AdminShell = AdminShell;
   global.AdminDashboard = AdminDashboard;
   global.AdminStores = AdminStores;
