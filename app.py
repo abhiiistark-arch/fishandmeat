@@ -1,5 +1,5 @@
 # Fish and Meat — Flask backend + Admin Portal
-# MongoDB Atlas optional: set MONGO_URI in .env to use Atlas; otherwise local JSON in /data
+# MongoDB optional: set Atlas or local URI in env; if none set, use local JSON in /data
 
 import os
 import re
@@ -31,6 +31,16 @@ _mongo_env_hidden = Path(__file__).resolve().parent / '.mongo.env'
 if _mongo_env_hidden.is_file():
     load_dotenv(_mongo_env_hidden, override=True)
 
+
+def _first_env(*names, default=''):
+    """Return the first non-empty environment variable value (trimmed)."""
+    for name in names:
+        value = (os.getenv(name) or '').strip()
+        if value:
+            return value
+    return default
+
+
 BASE_DIR = Path(__file__).resolve().parent
 IS_VERCEL = bool(os.getenv('VERCEL') or os.getenv('VERCEL_ENV'))
 # Vercel functions are read-only except /tmp; keep writable paths there.
@@ -48,8 +58,21 @@ for d in (DATA_DIR, UPLOAD_DIR, CONTENT_UPLOAD_DIR, REPORT_DIR):
         pass
 
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'FISHANDMEATTEST')
-MONGO_URI = os.getenv('MONGO_URI', '').strip()
-MONGO_DB_NAME = os.getenv('MONGO_DB_NAME', 'fishandmeat')
+# Atlas (mongodb+srv://…) or normal (mongodb://…) — use whichever env is set first.
+# If none are set, app keeps using local JSON dataset in /data.
+MONGO_URI = _first_env(
+    'MONGO_URI',
+    'MONGODB_URI',
+    'MONGO_ATLAS_URI',
+    'MONGODB_ATLAS_URI',
+    'MONGO_LOCAL_URI',
+)
+MONGO_DB_NAME = _first_env(
+    'MONGO_DB_NAME',
+    'MONGODB_DB_NAME',
+    'MONGO_DATABASE',
+    default='fishandmeat',
+)
 SECRET_KEY = os.getenv('SECRET_KEY', 'fam-dev-secret-change-in-production')
 ALLOWED_IMAGE_EXT = {'png', 'jpg', 'jpeg', 'webp', 'gif'}
 FLASK_DEBUG = os.getenv('FLASK_DEBUG', '').lower() in ('1', 'true', 'yes')
@@ -2146,13 +2169,13 @@ def _vercel_mongo_guard():
         return None
     if MONGO_URI:
         message = (
-            'MongoDB connection failed. Check MONGO_URI in Vercel Environment Variables '
-            'and that Atlas Network Access allows Vercel (0.0.0.0/0).'
+            'MongoDB connection failed. Check MONGO_URI / MONGO_ATLAS_URI / MONGO_LOCAL_URI '
+            'in Vercel Environment Variables and that Atlas Network Access allows Vercel (0.0.0.0/0).'
         )
     else:
         message = (
-            'MONGO_URI is missing. Add MONGO_URI, MONGO_DB_NAME, SECRET_KEY and ADMIN_PASSWORD '
-            'in Vercel Project Settings → Environment Variables, then redeploy.'
+            'Mongo URI missing. Set one of MONGO_URI, MONGO_ATLAS_URI, or MONGO_LOCAL_URI '
+            '(plus MONGO_DB_NAME, SECRET_KEY, ADMIN_PASSWORD) in Vercel Environment Variables, then redeploy.'
         )
     body = (
         '<!doctype html><html><head><meta charset="utf-8"><title>Setup required</title>'
@@ -4081,41 +4104,11 @@ def api_admin_inventory():
         return jsonify(updated)
 
     store_id = resolve_store_scope(request.args.get('store_id'))
-    low_stock_threshold = int(get_settings().get('low_stock_threshold', 10))
-    query = {}
     if store_id:
-        query['store_id'] = store_id
+        pass
     elif not admin_is_super():
         return jsonify({'error': 'Your account is not assigned to a store'}), 403
-    rows = db_find('inventory', query)
-    products_by_id = _cached_collection(
-        'products_by_id',
-        lambda: {p['id']: p for p in db_find('products')}
-    )
-    stores_by_id = {
-        s['id']: s for s in _cached_collection('stores', lambda: db_find('stores'))
-    }
-    enriched = []
-    for r in rows:
-        p = products_by_id.get(r.get('product_id'))
-        s = stores_by_id.get(r.get('store_id'))
-        variant_label = ''
-        if p:
-            for v in p.get('variants') or []:
-                if v.get('id') == r.get('variant_id'):
-                    variant_label = v.get('label', '')
-                    break
-        enriched.append({
-            **r,
-            'product_name': p['name'] if p else '',
-            'sku': p.get('sku', '') if p else '',
-            'variant_label': variant_label,
-            'store_name': s['name'] if s else '',
-            'inventory_model': p.get('inventory_model') if p else 'variant',
-            'low_stock': int(r.get('stock', 0) or 0) <= low_stock_threshold,
-            'low_stock_threshold': low_stock_threshold,
-        })
-    return jsonify(enriched)
+    return jsonify(_enrich_inventory_rows(store_id))
 
 
 @app.route('/api/admin/inventory/<inv_id>', methods=['PUT'])
@@ -4649,35 +4642,31 @@ def _pos_adjust_stock(inventory_id, quantity_delta):
     return ok
 
 
-@app.route('/api/admin/pos/orders', methods=['GET', 'POST'])
-@admin_required
-def api_admin_pos_orders():
-    if request.method == 'GET':
-        store_id = resolve_store_scope(request.args.get('store_id'))
-        limit = min(100, max(1, int(request.args.get('limit', 20))))
-        query = {'channel': 'in_store'}
-        if store_id:
-            query['store_id'] = store_id
-        orders = db_find('orders', query, sort=[('created_at', -1)], limit=limit)
-        stores = {s['id']: s['name'] for s in _cached_collection('stores', lambda: db_find('stores'))}
-        for order in orders:
-            order['store_name'] = stores.get(order.get('store_id'), '')
-        return jsonify(orders)
+def _create_pos_order(data, staff):
+    """Shared in-store billing for admin session + mobile Bearer auth.
 
-    data = parse_json()
-    store_id = resolve_store_scope(data.get('store_id'))
-    denied = assert_store_access(store_id)
-    if denied:
-        return denied
+    Returns (payload_dict, http_status). Success payload: {'ok': True, 'order': ...}.
+    """
+    staff = staff or {}
+    is_super = staff.get('role') == ROLE_SUPER
+    store_id = (data.get('store_id') or '').strip()
+    if not is_super:
+        locked = (staff.get('store_id') or '').strip()
+        if not locked:
+            return {'error': 'Your account is not assigned to a store'}, 403
+        store_id = locked
+    if not store_id:
+        return {'error': 'Select a store'}, 400
+
     raw_items = data.get('items') or []
     payment_method = data.get('payment_method', 'cash')
     if payment_method not in ('cash', 'card', 'upi'):
-        return jsonify({'error': 'Invalid payment method'}), 400
+        return {'error': 'Invalid payment method'}, 400
     store = db_find_one('stores', {'id': store_id})
     if not store or store.get('status') != 'active':
-        return jsonify({'error': 'Select an active store'}), 400
+        return {'error': 'Select an active store'}, 400
     if not raw_items:
-        return jsonify({'error': 'Add at least one item'}), 400
+        return {'error': 'Add at least one item'}, 400
 
     lines = []
     subtotal = 0.0
@@ -4687,9 +4676,9 @@ def api_admin_pos_orders():
         try:
             qty = int(raw.get('qty', 0))
         except (TypeError, ValueError):
-            return jsonify({'error': 'Invalid quantity'}), 400
+            return {'error': 'Invalid quantity'}, 400
         if qty < 1 or qty > 500:
-            return jsonify({'error': 'Invalid quantity'}), 400
+            return {'error': 'Invalid quantity'}, 400
         product_id = raw.get('product_id')
         variant_id = raw.get('variant_id')
         product = db_find_one('products', {'id': product_id})
@@ -4699,11 +4688,11 @@ def api_admin_pos_orders():
             'variant_id': variant_id,
         })
         if not product or not inv:
-            return jsonify({'error': 'Product or variant is unavailable at this store'}), 400
+            return {'error': 'Product or variant is unavailable at this store'}, 400
         if inv.get('stock', 0) < qty:
-            return jsonify({
+            return {
                 'error': f'Only {inv.get("stock", 0)} units available for {product["name"]}'
-            }), 409
+            }, 409
         preferred_unit_ids = []
         if raw.get('unit_id'):
             preferred_unit_ids.append(raw.get('unit_id'))
@@ -4713,16 +4702,15 @@ def api_admin_pos_orders():
             store_id, product_id, variant_id, qty, preferred_unit_ids=preferred_unit_ids
         )
         if len(claimed) < qty:
-            # Last attempt: sync then claim again
             sync_qr_units_for_inventory_row(inv, product=product)
             claimed = claim_qr_units_for_sale(
                 store_id, product_id, variant_id, qty, preferred_unit_ids=preferred_unit_ids
             )
         if len(claimed) < qty:
-            return jsonify({
+            return {
                 'error': f'Not enough unique QR units for {product["name"]} '
                          f'(need {qty}, found {len(claimed)}). Generate/sync QR first.'
-            }), 409
+            }, 409
         variant = next(
             (v for v in product.get('variants') or [] if v.get('id') == variant_id),
             {},
@@ -4754,7 +4742,7 @@ def api_admin_pos_orders():
     try:
         discount = float(data.get('discount', 0) or 0)
     except (TypeError, ValueError):
-        return jsonify({'error': 'Invalid discount'}), 400
+        return {'error': 'Invalid discount'}, 400
     discount = round(max(0, min(discount, subtotal)), 2)
 
     deducted = []
@@ -4762,7 +4750,7 @@ def api_admin_pos_orders():
         if not _pos_adjust_stock(inventory_id, -qty):
             for completed_id, completed_qty in deducted:
                 _pos_adjust_stock(completed_id, completed_qty)
-            return jsonify({'error': 'Stock changed while billing. Please refresh and try again.'}), 409
+            return {'error': 'Stock changed while billing. Please refresh and try again.'}, 409
         deducted.append((inventory_id, qty))
 
     phone = str(data.get('customer_phone') or '').strip()
@@ -4817,8 +4805,12 @@ def api_admin_pos_orders():
         'channel': 'in_store',
         'address': store.get('address', ''),
         'notes': data.get('notes', ''),
-        'staff_id': session.get('admin_user_id') or '',
-        'staff_name': session.get('admin_name') or (data.get('staff_name') or '').strip() or 'Staff',
+        'staff_id': staff.get('id') or '',
+        'staff_name': (
+            staff.get('name')
+            or (data.get('staff_name') or '').strip()
+            or 'Staff'
+        ),
         'created_at': now_iso(),
         'updated_at': now_iso(),
     }
@@ -4833,9 +4825,156 @@ def api_admin_pos_orders():
     log_activity(
         'order',
         f'In-store bill {order_id} created — ₹{total:,.0f} · {store["name"]}',
-        {'order_id': order_id, 'store_id': store_id, 'channel': 'in_store', 'qr_units': len(sold_ids)},
+        {
+            'order_id': order_id,
+            'store_id': store_id,
+            'channel': 'in_store',
+            'qr_units': len(sold_ids),
+            'staff_id': staff.get('id'),
+        },
     )
-    return jsonify({'ok': True, 'order': order}), 201
+    return {'ok': True, 'order': order}, 201
+
+
+def _list_pos_orders(store_id, limit=20):
+    limit = min(100, max(1, int(limit or 20)))
+    query = {'channel': 'in_store'}
+    if store_id:
+        query['store_id'] = store_id
+    orders = db_find('orders', query, sort=[('created_at', -1)], limit=limit)
+    stores = {s['id']: s['name'] for s in _cached_collection('stores', lambda: db_find('stores'))}
+    for order in orders:
+        order['store_name'] = stores.get(order.get('store_id'), '')
+    return orders
+
+
+def _enrich_inventory_rows(store_id):
+    low_stock_threshold = int(get_settings().get('low_stock_threshold', 10))
+    query = {'store_id': store_id} if store_id else {}
+    rows = db_find('inventory', query)
+    products_by_id = _cached_collection(
+        'products_by_id',
+        lambda: {p['id']: p for p in db_find('products')}
+    )
+    stores_by_id = {
+        s['id']: s for s in _cached_collection('stores', lambda: db_find('stores'))
+    }
+    categories_by_id = {c['id']: c for c in db_find('categories')}
+    enriched = []
+    for r in rows:
+        p = products_by_id.get(r.get('product_id'))
+        s = stores_by_id.get(r.get('store_id'))
+        variant_label = ''
+        if p:
+            for v in p.get('variants') or []:
+                if v.get('id') == r.get('variant_id'):
+                    variant_label = v.get('label', '')
+                    break
+        cat = categories_by_id.get((p or {}).get('category_id')) or {}
+        enriched.append({
+            **r,
+            'product_name': p['name'] if p else '',
+            'sku': p.get('sku', '') if p else '',
+            'category_id': (p or {}).get('category_id') or '',
+            'category_name': cat.get('name') or '',
+            'variant_label': variant_label,
+            'store_name': s['name'] if s else '',
+            'inventory_model': p.get('inventory_model') if p else 'variant',
+            'low_stock': int(r.get('stock', 0) or 0) <= low_stock_threshold,
+            'low_stock_threshold': low_stock_threshold,
+        })
+    enriched.sort(key=lambda row: ((row.get('product_name') or '').lower(), row.get('variant_label') or ''))
+    return enriched
+
+
+def _build_invoice_pdf(order):
+    """Return BytesIO PDF for an order invoice."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import inch
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+
+    settings = get_settings()
+    store = db_find_one('stores', {'id': order.get('store_id')}) or {}
+
+    buf = BytesIO()
+    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
+    styles = getSampleStyleSheet()
+    title_style = ParagraphStyle('T', parent=styles['Heading1'], textColor=colors.HexColor('#1E3A22'), fontSize=17)
+    sub_style = ParagraphStyle('S', parent=styles['Normal'], textColor=colors.HexColor('#55594F'), fontSize=9)
+    head_style = ParagraphStyle('H', parent=styles['Heading2'], textColor=colors.HexColor('#A5342A'), fontSize=12)
+
+    story = [Paragraph('FISH AND MEAT — Tax Invoice', title_style)]
+    meta_lines = [f"Invoice for Order {order['order_id']} · {(order.get('created_at') or '')[:10]}"]
+    if settings.get('gst_number'):
+        meta_lines.append(f"GSTIN: {settings['gst_number']}")
+    if settings.get('fssai_number'):
+        meta_lines.append(f"FSSAI: {settings['fssai_number']}")
+    if settings.get('halal_certified'):
+        meta_lines.append('Halal Certified')
+    story.append(Paragraph(' · '.join(meta_lines), sub_style))
+    story.append(Spacer(1, 10))
+    story.append(Paragraph(
+        f"Billed to: {order.get('customer_name')} · {order.get('customer_phone')}<br/>"
+        f"{order.get('address') or 'Store pickup'}<br/>"
+        f"Store: {store.get('name', '')} · {store.get('address', '')}", sub_style))
+    story.append(Spacer(1, 14))
+
+    rows = [['Item', 'Qty', 'Rate (₹)', 'GST %', 'Amount (₹)']]
+    for it in order.get('items') or []:
+        rows.append([
+            it.get('name', ''), str(it.get('qty', 0)),
+            f"{it.get('price', 0):,.2f}",
+            f"{it.get('gst_percent', 0):g}",
+            f"{it.get('price', 0) * it.get('qty', 0):,.2f}",
+        ])
+    rows.append(['', '', '', 'Subtotal', f"{order.get('subtotal', 0):,.2f}"])
+    if order.get('discount'):
+        rows.append(['', '', '', f"Discount ({order.get('coupon_code', '')})", f"-{order['discount']:,.2f}"])
+    rows.append(['', '', '', 'Delivery', f"{order.get('delivery_fee', 0):,.2f}"])
+    if order.get('gst_amount'):
+        rows.append(['', '', '', 'GST included', f"{order['gst_amount']:,.2f}"])
+    rows.append(['', '', '', 'Total', f"{order.get('total', 0):,.2f}"])
+
+    t = Table(rows, colWidths=[2.6 * inch, 0.7 * inch, 1.1 * inch, 1.3 * inch, 1.3 * inch])
+    t.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A22')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#E7E2D6')),
+        ('PADDING', (0, 0), (-1, -1), 6),
+        ('FONTNAME', (3, -1), (-1, -1), 'Helvetica-Bold'),
+        ('TEXTCOLOR', (3, -1), (-1, -1), colors.HexColor('#A5342A')),
+    ]))
+    story.append(t)
+    story.append(Spacer(1, 16))
+    story.append(Paragraph(
+        f"Payment: {(order.get('payment_method') or 'cod').upper()} · Mode: {(order.get('delivery_mode') or 'delivery').title()}",
+        head_style))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf
+
+
+@app.route('/api/admin/pos/orders', methods=['GET', 'POST'])
+@admin_required
+def api_admin_pos_orders():
+    if request.method == 'GET':
+        store_id = resolve_store_scope(request.args.get('store_id'))
+        return jsonify(_list_pos_orders(store_id, request.args.get('limit', 20)))
+
+    data = parse_json()
+    store_id = resolve_store_scope(data.get('store_id'))
+    denied = assert_store_access(store_id)
+    if denied:
+        return denied
+    data = dict(data or {})
+    data['store_id'] = store_id
+    payload, status = _create_pos_order(data, current_admin())
+    return jsonify(payload), status
 
 
 # --- QR Codes (Super Admin) ---
@@ -5752,6 +5891,15 @@ def api_mobile_qr_lookup():
             return jsonify({'error': 'This QR is void'}), 409
         if unit_status not in ('pending', ''):
             return jsonify({'error': f'QR status is {unit_status} — not punchable'}), 409
+    elif purpose == 'sale':
+        if unit_status == 'pending' or unit_status == '':
+            return jsonify({'error': 'Punch this QR into stock before billing'}), 409
+        if unit_status == 'sold':
+            return jsonify({'error': 'This QR was already sold'}), 409
+        if unit_status == 'void':
+            return jsonify({'error': 'This QR is void'}), 409
+        if unit_status != 'in_stock':
+            return jsonify({'error': f'QR status is {unit_status} — not sellable'}), 409
 
     categories_by_id = {c['id']: c for c in db_find('categories')}
     stores_by_id = {s['id']: s for s in db_find('stores')}
@@ -5777,6 +5925,9 @@ def api_mobile_qr_lookup():
     enriched['unit_status'] = unit_status or 'pending'
     enriched['store_id'] = unit.get('store_id')
     enriched['punchable'] = unit_status in ('pending', '')
+    enriched['sellable'] = unit_status == 'in_stock'
+    enriched['product_id'] = product.get('id')
+    enriched['variant_id'] = unit.get('variant_id') or enriched.get('preferred_variant_id')
     return jsonify(enriched)
 
 
@@ -6085,6 +6236,210 @@ def api_mobile_qr_generate():
         'inventory_unchanged': True,
         'status': 'pending',
     })
+
+
+def _mobile_resolve_store(staff, requested=None):
+    requested = (requested or '').strip()
+    if staff.get('role') == ROLE_SUPER:
+        return requested
+    return (staff.get('store_id') or '').strip()
+
+
+def _mobile_assert_store(staff, store_id):
+    if staff.get('role') == ROLE_SUPER:
+        return None
+    locked = (staff.get('store_id') or '').strip()
+    if not locked:
+        return jsonify({'error': 'Your account is not assigned to a store'}), 403
+    if store_id and store_id != locked:
+        return jsonify({'error': 'You can only access your assigned store'}), 403
+    return None
+
+
+def _mobile_can_manage_inventory(staff):
+    return staff.get('role') in (ROLE_SUPER, ROLE_STORE)
+
+
+@app.route('/api/mobile/pos/catalog', methods=['GET'])
+@mobile_auth_required
+def api_mobile_pos_catalog():
+    """Products with in-stock variants for the selected store (billing)."""
+    staff = request.mobile_staff
+    store_id = _mobile_resolve_store(staff, request.args.get('store_id'))
+    if not store_id:
+        return jsonify({'error': 'Select a store'}), 400
+    denied = _mobile_assert_store(staff, store_id)
+    if denied:
+        return denied
+    categories = db_find('categories')
+    products = db_find('products')
+    inventory_rows = db_find('inventory', {'store_id': store_id})
+    inv_by_product = {}
+    for row in inventory_rows:
+        inv_by_product.setdefault(row.get('product_id'), []).append(row)
+    catalog_products = []
+    for p in products:
+        if (p.get('status') or 'available') == 'disabled':
+            continue
+        related = inv_by_product.get(p.get('id')) or []
+        variants = []
+        for r in related:
+            stock = int(r.get('stock') or 0)
+            if stock < 1:
+                continue
+            variant_label = ''
+            for v in p.get('variants') or []:
+                if v.get('id') == r.get('variant_id'):
+                    variant_label = v.get('label') or ''
+                    break
+            variants.append({
+                'inventory_id': r.get('id'),
+                'variant_id': r.get('variant_id'),
+                'variant_label': variant_label or '—',
+                'price': float(r.get('price') or 0),
+                'stock': stock,
+            })
+        if not variants:
+            continue
+        catalog_products.append({
+            'id': p.get('id'),
+            'name': p.get('name'),
+            'sku': p.get('sku') or '',
+            'category_id': p.get('category_id') or '',
+            'variants': variants,
+        })
+    catalog_products.sort(key=lambda r: (r.get('name') or '').lower())
+    categories.sort(key=lambda c: (c.get('name') or '').lower())
+    return jsonify({
+        'store_id': store_id,
+        'categories': [{
+            'id': c.get('id'),
+            'name': c.get('name'),
+            'code': c.get('code') or '',
+        } for c in categories],
+        'products': catalog_products,
+    })
+
+
+@app.route('/api/mobile/pos/orders', methods=['GET', 'POST'])
+@mobile_auth_required
+def api_mobile_pos_orders():
+    staff = request.mobile_staff
+    if request.method == 'GET':
+        store_id = _mobile_resolve_store(staff, request.args.get('store_id'))
+        denied = _mobile_assert_store(staff, store_id) if store_id else None
+        if denied:
+            return denied
+        if staff.get('role') != ROLE_SUPER and not store_id:
+            return jsonify({'error': 'Your account is not assigned to a store'}), 403
+        return jsonify(_list_pos_orders(store_id, request.args.get('limit', 20)))
+
+    data = parse_json()
+    payload, status = _create_pos_order(data, staff)
+    return jsonify(payload), status
+
+
+@app.route('/api/mobile/pos/invoice/<order_id>', methods=['GET'])
+@mobile_auth_required
+def api_mobile_pos_invoice(order_id):
+    staff = request.mobile_staff
+    order = db_find_one('orders', {'order_id': order_id}) or db_find_one('orders', {'id': order_id})
+    if not order or order.get('channel') != 'in_store':
+        return jsonify({'error': 'Bill not found'}), 404
+    denied = _mobile_assert_store(staff, order.get('store_id'))
+    if denied:
+        return denied
+    buf = _build_invoice_pdf(order)
+    return send_file(
+        buf,
+        as_attachment=True,
+        download_name=f'invoice_{order["order_id"]}.pdf',
+        mimetype='application/pdf',
+    )
+
+
+@app.route('/api/mobile/inventory', methods=['GET', 'POST'])
+@mobile_auth_required
+def api_mobile_inventory():
+    staff = request.mobile_staff
+    if request.method == 'POST':
+        if not _mobile_can_manage_inventory(staff):
+            return jsonify({'error': 'Only Super Admin / Store Admin can edit inventory'}), 403
+        data = parse_json()
+        row = db_find_one('inventory', {'id': data.get('inventory_id')})
+        if not row:
+            return jsonify({'error': 'Inventory row not found'}), 404
+        denied = _mobile_assert_store(staff, row.get('store_id'))
+        if denied:
+            return denied
+        try:
+            quantity = int(data.get('quantity', 0))
+        except (TypeError, ValueError):
+            return jsonify({'error': 'Quantity must be a whole number'}), 400
+        if quantity < 1 or quantity > 1000000:
+            return jsonify({'error': 'Quantity must be between 1 and 1,000,000'}), 400
+        updated = db_increment('inventory', {'id': row['id']}, 'stock', quantity)
+        if updated:
+            sync_qr_units_for_inventory_row(updated)
+        _badges_cache.clear()
+        log_activity(
+            'inventory',
+            f"Mobile added {quantity} units of stock · {staff.get('name')}",
+            {
+                'inventory_id': row['id'],
+                'store_id': row.get('store_id'),
+                'product_id': row.get('product_id'),
+                'quantity': quantity,
+                'staff_id': staff.get('id'),
+            },
+        )
+        return jsonify(updated)
+
+    store_id = _mobile_resolve_store(staff, request.args.get('store_id'))
+    if not store_id and staff.get('role') != ROLE_SUPER:
+        return jsonify({'error': 'Your account is not assigned to a store'}), 403
+    if store_id:
+        denied = _mobile_assert_store(staff, store_id)
+        if denied:
+            return denied
+    return jsonify(_enrich_inventory_rows(store_id))
+
+
+@app.route('/api/mobile/inventory/<inv_id>', methods=['PUT'])
+@mobile_auth_required
+def api_mobile_inventory_update(inv_id):
+    staff = request.mobile_staff
+    if not _mobile_can_manage_inventory(staff):
+        return jsonify({'error': 'Only Super Admin / Store Admin can edit inventory'}), 403
+    row = db_find_one('inventory', {'id': inv_id})
+    if not row:
+        return jsonify({'error': 'Inventory row not found'}), 404
+    denied = _mobile_assert_store(staff, row.get('store_id'))
+    if denied:
+        return denied
+    data = parse_json()
+    updates = {}
+    try:
+        if 'price' in data:
+            updates['price'] = float(data['price'])
+        if 'stock' in data:
+            updates['stock'] = int(data['stock'])
+    except (TypeError, ValueError):
+        return jsonify({'error': 'Price and stock must be valid numbers'}), 400
+    if updates.get('price', 0) < 0 or updates.get('stock', 0) < 0:
+        return jsonify({'error': 'Price and stock cannot be negative'}), 400
+    updates['updated_at'] = now_iso()
+    db_update('inventory', {'id': inv_id}, updates)
+    updated = db_find_one('inventory', {'id': inv_id})
+    if 'stock' in updates and updated:
+        sync_qr_units_for_inventory_row(updated)
+    _badges_cache.clear()
+    log_activity(
+        'inventory',
+        f"Mobile inventory update · {staff.get('name')}",
+        {'inventory_id': inv_id, 'updates': updates, 'staff_id': staff.get('id')},
+    )
+    return jsonify(updated)
 
 
 # --- Settings ---
@@ -6416,76 +6771,13 @@ def api_admin_search():
 @app.route('/api/admin/orders/<order_id>/invoice')
 @admin_required
 def api_admin_order_invoice(order_id):
-    from reportlab.lib import colors
-    from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import inch
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-
     order = db_find_one('orders', {'order_id': order_id}) or db_find_one('orders', {'id': order_id})
     if not order:
         return jsonify({'error': 'Order not found'}), 404
-    settings = get_settings()
-    store = db_find_one('stores', {'id': order.get('store_id')}) or {}
-
-    buf = BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=40, leftMargin=40, topMargin=40, bottomMargin=40)
-    styles = getSampleStyleSheet()
-    title_style = ParagraphStyle('T', parent=styles['Heading1'], textColor=colors.HexColor('#1E3A22'), fontSize=17)
-    sub_style = ParagraphStyle('S', parent=styles['Normal'], textColor=colors.HexColor('#55594F'), fontSize=9)
-    head_style = ParagraphStyle('H', parent=styles['Heading2'], textColor=colors.HexColor('#A5342A'), fontSize=12)
-
-    story = [Paragraph('FISH AND MEAT — Tax Invoice', title_style)]
-    meta_lines = [f"Invoice for Order {order['order_id']} · {(order.get('created_at') or '')[:10]}"]
-    if settings.get('gst_number'):
-        meta_lines.append(f"GSTIN: {settings['gst_number']}")
-    if settings.get('fssai_number'):
-        meta_lines.append(f"FSSAI: {settings['fssai_number']}")
-    if settings.get('halal_certified'):
-        meta_lines.append('Halal Certified')
-    story.append(Paragraph(' · '.join(meta_lines), sub_style))
-    story.append(Spacer(1, 10))
-    story.append(Paragraph(
-        f"Billed to: {order.get('customer_name')} · {order.get('customer_phone')}<br/>"
-        f"{order.get('address') or 'Store pickup'}<br/>"
-        f"Store: {store.get('name', '')} · {store.get('address', '')}", sub_style))
-    story.append(Spacer(1, 14))
-
-    rows = [['Item', 'Qty', 'Rate (₹)', 'GST %', 'Amount (₹)']]
-    for it in order.get('items') or []:
-        rows.append([
-            it.get('name', ''), str(it.get('qty', 0)),
-            f"{it.get('price', 0):,.2f}",
-            f"{it.get('gst_percent', 0):g}",
-            f"{it.get('price', 0) * it.get('qty', 0):,.2f}",
-        ])
-    rows.append(['', '', '', 'Subtotal', f"{order.get('subtotal', 0):,.2f}"])
-    if order.get('discount'):
-        rows.append(['', '', '', f"Discount ({order.get('coupon_code', '')})", f"-{order['discount']:,.2f}"])
-    rows.append(['', '', '', 'Delivery', f"{order.get('delivery_fee', 0):,.2f}"])
-    if order.get('gst_amount'):
-        rows.append(['', '', '', 'GST included', f"{order['gst_amount']:,.2f}"])
-    rows.append(['', '', '', 'Total', f"{order.get('total', 0):,.2f}"])
-
-    t = Table(rows, colWidths=[2.6 * inch, 0.7 * inch, 1.1 * inch, 1.3 * inch, 1.3 * inch])
-    t.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1E3A22')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('GRID', (0, 0), (-1, -1), 0.4, colors.HexColor('#E7E2D6')),
-        ('PADDING', (0, 0), (-1, -1), 6),
-        ('FONTNAME', (3, -1), (-1, -1), 'Helvetica-Bold'),
-        ('TEXTCOLOR', (3, -1), (-1, -1), colors.HexColor('#A5342A')),
-    ]))
-    story.append(t)
-    story.append(Spacer(1, 16))
-    story.append(Paragraph(
-        f"Payment: {(order.get('payment_method') or 'cod').upper()} · Mode: {(order.get('delivery_mode') or 'delivery').title()}",
-        head_style))
-
-    doc.build(story)
-    buf.seek(0)
+    denied = assert_store_access(order.get('store_id'))
+    if denied:
+        return denied
+    buf = _build_invoice_pdf(order)
     return send_file(buf, as_attachment=True, download_name=f'invoice_{order["order_id"]}.pdf',
                      mimetype='application/pdf')
 

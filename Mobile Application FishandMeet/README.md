@@ -1,14 +1,17 @@
 # Mobile Application — Fish and Meat
 
-Stock + QR app for **Android APK** and **PWA** (Android / iPhone). Talks to the same Fish and Meat web API / MongoDB as admin.
+Stock + QR + billing app for **Android APK** and **PWA**. Talks to the same Fish and Meat web API / MongoDB as admin.
 
-## Features (same idea as admin QR Section)
+## Features
 
-1. Staff login (admin username/password → API token)
+1. Staff login (same admin username/password → API token; role-aware)
 2. Home sales cards
-3. **Generate & Print QR** — store → category → product → quantity → unique **pending** QRs + PDF (inventory stock **not** increased)
-4. **Print QR** — checkbox select pending/in-stock units → PDF reprint
-5. **Punch & Stock** — scan **one** pending unit QR → confirm → that unit becomes `in_stock` and inventory **+1**. Already in-stock / sold QRs are rejected.
+3. **In-Store Billing** — create customer bill, deduct stock (same as Admin → In-Store)
+4. **Inventory & Stock** — view / edit price & stock (Super Admin + Store Admin)
+5. **Categories & Products** — browse catalog with live stock by store
+6. **Generate & Print QR** — unique **pending** QRs + PDF (stock not increased yet)
+7. **Print QR** — reprint selected units
+8. **Punch & Stock In** — pending QR → `in_stock` and inventory **+1**
 
 ## Will Wi‑Fi + APK login work?
 
@@ -20,18 +23,16 @@ Stock + QR app for **Android APK** and **PWA** (Android / iPhone). Talks to the 
    - Production: `https://your-domain.com`  
    - Local shop server: `http://192.168.x.x:5000` (same Wi‑Fi as the PC/server)
 4. App calls `POST /api/mobile/login` on that host
-5. After auth, Generate / Print / Punch all hit the same server over the network
+5. After auth, Billing / Inventory / Catalog / QR features hit the same server
 
 ### Better options (recommended)
 
 | Approach | When to use |
 |----------|-------------|
-| **APK + HTTPS production URL** (best) | Live shop — works on Wi‑Fi **or** mobile data; set `FAM_API_URL` in `www/js/config.js` |
-| **PWA** at `/mobile/` | Fastest install, no Play Store; Add to Home Screen |
-| **APK + LAN IP** | Offline / local-only server; phone must be on **same Wi‑Fi** as the server |
-| **APK + editable Server URL** (already in UI) | One APK for staging + production; staff paste the URL once |
-
-**Tip:** Prefer a public HTTPS domain over raw LAN IP so you don’t depend on Wi‑Fi alone.
+| **APK + HTTPS production URL** (best) | Live shop — Wi‑Fi or mobile data |
+| **PWA** at `/mobile/` | Fastest install; Add to Home Screen |
+| **APK + LAN IP** | Local-only server; same Wi‑Fi |
+| **APK + editable Server URL** (already in UI) | One APK for staging + production |
 
 ---
 
@@ -41,7 +42,7 @@ Stock + QR app for **Android APK** and **PWA** (Android / iPhone). Talks to the 
 2. Phone browser → `https://YOUR-DOMAIN/mobile/`
 3. **Android:** Install app / Add to Home screen  
 4. **iPhone Safari:** Share → Add to Home Screen  
-5. Login with admin credentials (server URL is auto when opened on same domain)
+5. Login with admin credentials
 
 ---
 
@@ -52,13 +53,6 @@ Built APK path (after build):
 - Local file: `static/downloads/FishandMeet-punch.apk`
 - Or open on the server: `/download/apk`
 
-**Login flow (no code change needed):**
-
-1. Install APK  
-2. Enter **Website / Server URL** on the login screen (e.g. `https://your-domain.com` or `http://192.168.x.x:5000`)  
-3. Enter admin username + password  
-4. Generate / Print / Punch
-
 Rebuild after `www/` changes:
 
 ```bash
@@ -68,14 +62,8 @@ cd android
 # set JAVA_HOME to a JDK 17+
 .\gradlew.bat assembleDebug
 copy app\build\outputs\apk\debug\app-debug.apk ..\..\static\downloads\FishandMeet-punch.apk
+copy app\build\outputs\apk\debug\app-debug.apk ..\FishandMeet-punch.apk
 ```
-
-### 5. First run on phone
-
-1. Install APK → allow Install unknown apps if asked  
-2. Open app → allow **Camera**  
-3. Enter Website URL (if not baked into config) + admin username/password  
-4. App authenticates against your server → home / Generate / Print / Punch
 
 ---
 
@@ -88,10 +76,15 @@ copy app\build\outputs\apk\debug\app-debug.apk ..\..\static\downloads\FishandMee
 | GET | `/api/mobile/dashboard` | Sales cards |
 | GET | `/api/mobile/stores` | Stores |
 | GET | `/api/mobile/catalog` | Categories + products |
-| GET | `/api/mobile/qr-units` | In-stock unique QRs for print |
-| POST | `/api/mobile/qr-generate` | Generate N unique QRs + stock |
-| GET | `/api/mobile/qr-lookup` | Resolve scan |
-| POST | `/api/mobile/punch` | Confirm stock add |
-| POST | `/api/mobile/qr-print` | Download QR PDF |
+| GET | `/api/mobile/pos/catalog` | In-stock products for billing |
+| GET/POST | `/api/mobile/pos/orders` | Recent bills / create bill (stock out) |
+| GET | `/api/mobile/pos/invoice/<order_id>` | Invoice PDF |
+| GET/POST | `/api/mobile/inventory` | List / add stock qty |
+| PUT | `/api/mobile/inventory/<id>` | Set price & stock |
+| GET | `/api/mobile/qr-units` | Units for print |
+| POST | `/api/mobile/qr-generate` | Generate pending QRs |
+| GET | `/api/mobile/qr-lookup` | Resolve scan (`purpose=punch` or `sale`) |
+| POST | `/api/mobile/punch` | Stock in (+1) |
+| POST | `/api/mobile/qr-print` | QR PDF |
 
 CORS is enabled for `/api/mobile/*` so the APK origin can call your deployed site.

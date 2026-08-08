@@ -548,6 +548,118 @@ button, input, select { font: inherit; color: inherit; }
 }
 .toast.error { background: var(--red); }
 
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+.chip {
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--green);
+  cursor: pointer;
+}
+.chip.active {
+  background: var(--green);
+  color: #fff;
+  border-color: var(--green);
+}
+.search-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: #fff;
+  margin-bottom: 12px;
+}
+.list-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 62vh;
+  overflow: auto;
+}
+.list-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px;
+  text-align: left;
+  width: 100%;
+}
+.list-card.clickable { cursor: pointer; }
+.list-card .value {
+  font-family: Sora, sans-serif;
+  font-weight: 700;
+  color: var(--green);
+  white-space: nowrap;
+  text-align: right;
+}
+.list-card .code,
+.bill-line .code {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+  line-height: 1.35;
+}
+.bill-products {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: 34vh;
+  overflow: auto;
+  margin-top: 8px;
+}
+.bill-add-btn {
+  margin-top: 8px;
+  margin-right: 6px;
+}
+.bill-cart {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.bill-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.bill-line-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.bill-totals {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 8px 0 12px;
+  font-weight: 600;
+}
+.bill-totals strong {
+  color: var(--green);
+  font-family: Sora, sans-serif;
+}
+.billing-body .panel { margin-bottom: 14px; }
+.home-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 10px;
+}
+
 @keyframes fadeUp {
   from { opacity: 0; transform: translateY(12px); }
   to { opacity: 1; transform: none; }
@@ -574,9 +686,9 @@ button, input, select { font: inherit; color: inherit; }
   .home-body { padding: 18px 28px 40px; }
   .home-actions {
     grid-template-columns: 1fr 1fr;
-    max-width: 680px;
+    max-width: 720px;
   }
-  .home-actions .btn-dark { grid-column: 1 / -1; }
+  .home-actions .btn-gold:first-child { grid-column: 1 / -1; }
   .qr-reader { min-height: 320px; }
   .drawer-panel { width: 320px; }
 }

@@ -78,7 +78,19 @@
           <div class="card-grid" id="sales-cards"></div>
         </div>
         <div class="home-actions">
-          <button id="btn-go-generate" class="btn btn-gold full action-card" type="button">
+          <button id="btn-go-billing" class="btn btn-gold full action-card" type="button">
+            <span class="action-title">In-Store Billing</span>
+            <span class="action-sub">Create bill · stock out like admin POS</span>
+          </button>
+          <button id="btn-go-inventory" class="btn btn-dark full action-card" type="button">
+            <span class="action-title">Inventory &amp; Stock</span>
+            <span class="action-sub">View / edit price &amp; stock</span>
+          </button>
+          <button id="btn-go-catalog" class="btn btn-outline full action-card" type="button">
+            <span class="action-title">Categories &amp; Products</span>
+            <span class="action-sub">Browse catalog with live stock</span>
+          </button>
+          <button id="btn-go-generate" class="btn btn-outline full action-card" type="button">
             <span class="action-title">Generate &amp; Print QR</span>
             <span class="action-sub">Create unique unit codes</span>
           </button>
@@ -87,8 +99,8 @@
             <span class="action-sub">Reprint selected units</span>
           </button>
           <button id="btn-go-punch" class="btn btn-dark full action-card" type="button">
-            <span class="action-title">Punch &amp; Stock</span>
-            <span class="action-sub">One pending QR at a time · add to inventory</span>
+            <span class="action-title">Punch &amp; Stock In</span>
+            <span class="action-sub">Pending QR → inventory (+1)</span>
           </button>
         </div>
       </div>
@@ -224,6 +236,212 @@
         </div>
       </div>
     </section>
+
+    <!-- Billing setup -->
+    <section id="screen-billing-setup" class="screen">
+      <header class="app-top">
+        <button class="icon-btn back-btn" data-back="home" type="button" aria-label="Back">←</button>
+        <div class="app-top-title">
+          <div class="eyebrow">IN-STORE</div>
+          <div class="welcome">Billing</div>
+        </div>
+      </header>
+      <div class="home-body form-body">
+        <div class="panel">
+          <p class="muted panel-lead">Same as Admin → In-Store Billing. Completing a bill deducts stock (stock out).</p>
+          <label class="field">
+            <span>Store</span>
+            <select id="bill-store"></select>
+          </label>
+          <button id="btn-start-billing" class="btn btn-gold full" type="button">Start New Bill</button>
+          <button id="btn-bill-recent" class="btn btn-outline full" type="button" style="margin-top:10px">Recent Bills</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Billing cart -->
+    <section id="screen-billing" class="screen">
+      <header class="app-top">
+        <button class="icon-btn back-btn" data-back="billing-setup" type="button" aria-label="Back">←</button>
+        <div class="app-top-title">
+          <div class="eyebrow">NEW BILL</div>
+          <div class="welcome" id="bill-store-label">Store</div>
+        </div>
+      </header>
+      <div class="home-body form-body billing-body">
+        <div class="panel">
+          <div class="print-toolbar">
+            <input id="bill-search" type="search" placeholder="Search product…" />
+            <button type="button" class="btn btn-sm btn-outline" id="btn-bill-scan">Scan QR</button>
+          </div>
+          <div id="bill-cats" class="chip-row"></div>
+          <div id="bill-products" class="bill-products"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-label">Cart</div>
+          <div id="bill-cart" class="bill-cart"></div>
+          <label class="field">
+            <span>Customer name</span>
+            <input id="bill-customer-name" type="text" placeholder="Walk-in Customer" />
+          </label>
+          <label class="field">
+            <span>Phone</span>
+            <input id="bill-customer-phone" type="tel" inputmode="tel" placeholder="Optional" />
+          </label>
+          <label class="field">
+            <span>Payment</span>
+            <select id="bill-payment">
+              <option value="cash">Cash</option>
+              <option value="upi">UPI</option>
+              <option value="card">Card</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>Discount (₹)</span>
+            <input id="bill-discount" type="number" min="0" step="1" value="0" />
+          </label>
+          <label class="field">
+            <span>Notes</span>
+            <input id="bill-notes" type="text" placeholder="Optional" />
+          </label>
+          <div class="bill-totals">
+            <div>Subtotal <strong id="bill-subtotal">₹0</strong></div>
+            <div>Total <strong id="bill-total">₹0</strong></div>
+          </div>
+          <p id="bill-error" class="error-text"></p>
+          <button id="btn-bill-checkout" class="btn btn-gold full" type="button">Complete Sale</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Billing scanner -->
+    <section id="screen-billing-scan" class="screen">
+      <header class="app-top">
+        <button class="icon-btn back-btn" data-back="billing" type="button" aria-label="Back">←</button>
+        <div class="app-top-title">
+          <div class="eyebrow">SCAN TO BILL</div>
+          <div class="welcome">In-stock unit QR</div>
+        </div>
+      </header>
+      <div class="scanner-wrap">
+        <div id="bill-qr-reader" class="qr-reader"></div>
+      </div>
+      <div class="punch-panel panel flush">
+        <p class="muted" style="margin:0 0 10px">Scan an in-stock unit QR to add it to the bill (qty 1).</p>
+        <p id="bill-scan-error" class="error-text"></p>
+        <button id="btn-bill-scan-back" class="btn btn-outline full" type="button">Back to Bill</button>
+      </div>
+    </section>
+
+    <!-- Billing done -->
+    <section id="screen-billing-done" class="screen">
+      <header class="app-top">
+        <button class="icon-btn back-btn" data-back="home" type="button" aria-label="Back">←</button>
+        <div class="app-top-title">
+          <div class="eyebrow">SOLD</div>
+          <div class="welcome">Bill created</div>
+        </div>
+      </header>
+      <div class="home-body form-body">
+        <div class="panel">
+          <p class="muted" id="bill-done-copy">Stock deducted and synced.</p>
+          <div class="card-grid" id="bill-done-summary"></div>
+          <button id="btn-bill-invoice" class="btn btn-gold full" type="button">Download Invoice PDF</button>
+          <button id="btn-bill-another" class="btn btn-dark full" type="button" style="margin-top:10px">New Bill</button>
+          <button id="btn-bill-home" class="btn btn-outline full" type="button" style="margin-top:10px">Home</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Recent bills -->
+    <section id="screen-billing-recent" class="screen">
+      <header class="app-top">
+        <button class="icon-btn back-btn" data-back="billing-setup" type="button" aria-label="Back">←</button>
+        <div class="app-top-title">
+          <div class="eyebrow">IN-STORE</div>
+          <div class="welcome">Recent Bills</div>
+        </div>
+      </header>
+      <div class="home-body form-body">
+        <div class="panel">
+          <div id="bill-recent-list" class="list-cards"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Inventory -->
+    <section id="screen-inventory" class="screen">
+      <header class="app-top">
+        <button class="icon-btn back-btn" data-back="home" type="button" aria-label="Back">←</button>
+        <div class="app-top-title">
+          <div class="eyebrow">STOCK</div>
+          <div class="welcome">Inventory</div>
+        </div>
+      </header>
+      <div class="home-body form-body">
+        <div class="panel">
+          <label class="field">
+            <span>Store</span>
+            <select id="inv-store"></select>
+          </label>
+          <input id="inv-search" type="search" class="search-input" placeholder="Search product / SKU…" />
+          <div id="inv-list" class="list-cards"></div>
+          <p id="inv-error" class="error-text"></p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Inventory edit -->
+    <section id="screen-inventory-edit" class="screen">
+      <header class="app-top">
+        <button class="icon-btn back-btn" data-back="inventory" type="button" aria-label="Back">←</button>
+        <div class="app-top-title">
+          <div class="eyebrow">EDIT STOCK</div>
+          <div class="welcome" id="inv-edit-title">Item</div>
+        </div>
+      </header>
+      <div class="home-body form-body">
+        <div class="panel">
+          <p class="muted" id="inv-edit-meta"></p>
+          <label class="field">
+            <span>Price (₹)</span>
+            <input id="inv-edit-price" type="number" min="0" step="0.01" />
+          </label>
+          <label class="field">
+            <span>Stock (absolute)</span>
+            <input id="inv-edit-stock" type="number" min="0" step="1" />
+          </label>
+          <label class="field">
+            <span>Add quantity (optional)</span>
+            <input id="inv-edit-add" type="number" min="0" step="1" value="0" />
+          </label>
+          <p id="inv-edit-error" class="error-text"></p>
+          <button id="btn-inv-save" class="btn btn-gold full" type="button">Save</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Catalog browse -->
+    <section id="screen-catalog" class="screen">
+      <header class="app-top">
+        <button class="icon-btn back-btn" data-back="home" type="button" aria-label="Back">←</button>
+        <div class="app-top-title">
+          <div class="eyebrow">CATALOG</div>
+          <div class="welcome">Categories &amp; Products</div>
+        </div>
+      </header>
+      <div class="home-body form-body">
+        <div class="panel">
+          <label class="field">
+            <span>Store (stock view)</span>
+            <select id="cat-store"></select>
+          </label>
+          <input id="cat-search" type="search" class="search-input" placeholder="Search products…" />
+          <div id="cat-chips" class="chip-row"></div>
+          <div id="cat-list" class="list-cards"></div>
+        </div>
+      </div>
+    </section>
   </div>
 
   <aside id="drawer" class="drawer" aria-hidden="true">
@@ -237,9 +455,12 @@
         </div>
       </div>
       <button class="drawer-link" data-nav="home" type="button">Home / Sales</button>
+      <button class="drawer-link" data-nav="billing-setup" type="button">In-Store Billing</button>
+      <button class="drawer-link" data-nav="inventory" type="button" id="nav-inventory">Inventory &amp; Stock</button>
+      <button class="drawer-link" data-nav="catalog" type="button">Categories &amp; Products</button>
       <button class="drawer-link" data-nav="generate" type="button">Generate &amp; Print QR</button>
       <button class="drawer-link" data-nav="print" type="button">Print QR</button>
-      <button class="drawer-link" data-nav="punch-setup" type="button">Punch &amp; Stock Items</button>
+      <button class="drawer-link" data-nav="punch-setup" type="button">Punch &amp; Stock In</button>
       <button class="drawer-link danger" id="drawer-logout" type="button">Logout</button>
     </nav>
   </aside>
