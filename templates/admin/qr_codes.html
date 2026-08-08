@@ -16,6 +16,7 @@
 
   <div class="qr-toolbar qr-toolbar-3">
     <input id="qr-search" type="search" placeholder="Search product, SKU, store, or unique code…" autocomplete="off" />
+    <select id="qr-filter-store"><option value="">All stores</option></select>
     <select id="qr-filter-product"><option value="">All products</option></select>
     <select id="qr-filter-category"><option value="">All categories</option></select>
   </div>
@@ -89,20 +90,6 @@
     <div class="modal-actions">
       <button type="button" class="btn btn-outline" id="qr-print-cancel">Cancel</button>
       <button type="button" class="btn btn-gold" id="qr-print-download">Download PDF</button>
-    </div>
-  </div>
-</dialog>
-
-<dialog id="qr-preview-modal" class="modal">
-  <div class="modal-card qr-preview-card">
-    <h2>Unit QR</h2>
-    <img id="qr-preview-img" class="qr-preview-img" alt="QR code" width="240" height="240" />
-    <div class="qr-preview-name" id="qr-preview-name"></div>
-    <div class="qr-preview-code" id="qr-preview-code"></div>
-    <p class="muted" id="qr-preview-meta"></p>
-    <div class="modal-actions">
-      <button type="button" class="btn btn-outline" id="qr-preview-close">Close</button>
-      <button type="button" class="btn btn-dark" id="qr-preview-print">Print / Save</button>
     </div>
   </div>
 </dialog>

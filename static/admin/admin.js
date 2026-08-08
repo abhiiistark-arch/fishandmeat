@@ -266,6 +266,7 @@
     init: async function () {
       var self = this;
       this.initSidebarScroll();
+      this.bindQrPreviewModal();
       if (!this.admin.isSuper && this.admin.storeId) {
         this.storeId = this.admin.storeId;
         localStorage.setItem('fam_admin_store', this.storeId);
@@ -290,21 +291,7 @@
             }).join('');
             sel.disabled = false;
             sel.onchange = function () {
-              self.storeId = sel.value;
-              localStorage.setItem('fam_admin_store', sel.value);
-              if (window.AdminDashboard && document.getElementById('kpi-grid')) AdminDashboard.scheduleLoad();
-              if (window.AdminReports && document.getElementById('report-kpis')) {
-                // Keep reports multi-select in sync when topbar store changes
-                if (sel.value) AdminReports.selectedStoreIds = [sel.value];
-                else AdminReports.selectedStoreIds = [];
-                if (AdminReports.renderStoreFilter) AdminReports.renderStoreFilter();
-                AdminReports.scheduleLoad();
-              }
-              var invFilter = document.getElementById('inv-store-filter');
-              if (invFilter && window.AdminInventory) {
-                invFilter.value = sel.value;
-                AdminInventory.load();
-              }
+              self.applyStoreFilter(sel.value, { source: 'global' });
             };
           } else {
             var locked = stores.find(function (s) { return s.id === self.admin.storeId; })
@@ -328,6 +315,110 @@
 
       this.initSearch();
       this.refreshBadges();
+    },
+    bindQrPreviewModal: function () {
+      var closeBtn = document.getElementById('qr-preview-close');
+      var printBtn = document.getElementById('qr-preview-print');
+      if (closeBtn && !closeBtn._famBound) {
+        closeBtn._famBound = true;
+        closeBtn.onclick = function () { closeModal('qr-preview-modal'); };
+      }
+      if (printBtn && !printBtn._famBound) {
+        printBtn._famBound = true;
+        printBtn.onclick = function () { window.print(); };
+      }
+    },
+    applyStoreFilter: function (storeId, opts) {
+      opts = opts || {};
+      var value = storeId == null ? '' : String(storeId);
+      if (!this.admin.isSuper && this.admin.storeId) {
+        value = this.admin.storeId;
+      }
+      this.storeId = value;
+      localStorage.setItem('fam_admin_store', value);
+
+      var globalSel = document.getElementById('global-store-filter');
+      if (globalSel && opts.source !== 'global' && !globalSel.disabled) {
+        globalSel.value = value;
+      }
+
+      var invFilter = document.getElementById('inv-store-filter');
+      if (invFilter) invFilter.value = value;
+
+      var orderFilter = document.getElementById('order-store-filter');
+      if (orderFilter) orderFilter.value = value;
+
+      var productQrStore = document.getElementById('product-qr-units-store');
+      if (productQrStore) productQrStore.value = value;
+
+      var qrFilterStore = document.getElementById('qr-filter-store');
+      if (qrFilterStore) qrFilterStore.value = value;
+
+      if (window.AdminQR) {
+        AdminQR.selectedStoreId = value;
+      }
+      if (window.AdminReports) {
+        if (value) AdminReports.selectedStoreIds = [value];
+        else AdminReports.selectedStoreIds = [];
+        if (AdminReports.renderStoreFilter) AdminReports.renderStoreFilter();
+      }
+
+      if (opts.skipReload) return;
+
+      if (window.AdminDashboard && document.getElementById('kpi-grid')) AdminDashboard.scheduleLoad();
+      if (window.AdminReports && document.getElementById('report-kpis')) AdminReports.scheduleLoad();
+      if (window.AdminInventory && invFilter && opts.source !== 'inventory') AdminInventory.load();
+      if (window.AdminOrders && orderFilter && opts.source !== 'orders') {
+        AdminOrders.page = 1;
+        AdminOrders.load();
+      }
+      if (window.AdminProducts && AdminProducts.qrUnitsProduct && productQrStore && opts.source !== 'product-qr') {
+        AdminProducts.loadProductQrUnits();
+      }
+      if (window.AdminQR && document.getElementById('qr-table') && opts.source !== 'qr') {
+        AdminQR.render();
+      }
+    },
+    showQrPreview: function (row) {
+      row = row || {};
+      this.bindQrPreviewModal();
+      var img = document.getElementById('qr-preview-img');
+      var nameEl = document.getElementById('qr-preview-name');
+      var codeEl = document.getElementById('qr-preview-code');
+      var metaEl = document.getElementById('qr-preview-meta');
+      if (!img || !codeEl) {
+        toast('QR preview is unavailable on this page', true);
+        return;
+      }
+      var serial = (row.unit_serial || row.qr_serial || row.qr_uid || row.qr_code || '').toString().toUpperCase();
+      var unique = serial.length >= 3 ? serial.slice(-3) : '—';
+      if (nameEl) nameEl.textContent = row.name || row.product_name || 'Unit QR';
+      codeEl.textContent = row.qr_code || '';
+      if (metaEl) {
+        metaEl.textContent =
+          'Unique ' + unique +
+          (row.category_name ? ' · ' + row.category_name : '') +
+          (row.sku ? ' · ' + row.sku : '') +
+          (row.store_name ? ' · ' + row.store_name : '') +
+          (row.variant_label ? ' · ' + row.variant_label : '');
+      }
+      var imageId = row.unit_id || row.id;
+      if (imageId && (row.qr_generated || row.qr_code)) {
+        img.src = '/api/admin/qr-codes/' + encodeURIComponent(imageId) + '/image?t=' + Date.now();
+        img.alt = 'QR for ' + (row.name || row.qr_code || 'unit');
+        img.onerror = function () { toast('Could not load QR image', true); };
+      } else {
+        img.removeAttribute('src');
+        img.alt = 'No QR';
+      }
+      openModal('qr-preview-modal');
+    },
+    qrIconBtn: function (unitKey, title) {
+      return '<button type="button" class="btn btn-sm btn-outline qr-icon-btn" data-qr-preview="' +
+        esc(unitKey) + '" title="' + esc(title || 'Enlarge QR') + '" aria-label="Enlarge QR code">' +
+        '<svg class="qr-icon-svg" viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">' +
+        '<path fill="currentColor" d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm12-2h2v2h-2v-2zm-2 2h2v2h-2v-2zm4 0h2v2h-2v-2zm-4 4h2v2h-2v-2zm2 2h2v2h-2v-2zm2-2h2v2h-2v-2zm2 2h2v2h-2v-2z"/>' +
+        '</svg></button>';
     },
     refreshBadges: async function () {
       try {
@@ -1016,6 +1107,7 @@
       var qrStore = document.getElementById('product-qr-units-store');
       if (qrStore) {
         qrStore.onchange = function () {
+          AdminShell.applyStoreFilter(qrStore.value, { source: 'product-qr', skipReload: true });
           if (self.qrUnitsProduct) self.loadProductQrUnits();
         };
       }
@@ -1060,7 +1152,10 @@
           '<td>' + (tags.join(' ') || '—') + '</td>' +
           '<td>' + ((p.variants || []).length) + '</td>' +
           '<td class="actions-cell">' +
-          '<button class="btn btn-sm btn-outline" data-view-qr="' + p.id + '">View QRs</button> ' +
+          '<button class="btn btn-sm btn-outline" data-view-qr="' + p.id + '" title="View unit QRs">' +
+          '<svg class="qr-icon-svg" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">' +
+          '<path fill="currentColor" d="M3 3h8v8H3V3zm2 2v4h4V5H5zm8-2h8v8h-8V3zm2 2v4h4V5h-4zM3 13h8v8H3v-8zm2 2v4h4v-4H5zm12-2h2v2h-2v-2zm-2 2h2v2h-2v-2zm4 0h2v2h-2v-2zm-4 4h2v2h-2v-2zm2 2h2v2h-2v-2zm2-2h2v2h-2v-2zm2 2h2v2h-2v-2z"/>' +
+          '</svg> View QRs</button> ' +
           '<button class="btn btn-sm btn-outline" data-edit="' + p.id + '">Edit</button> ' +
           '<button class="btn btn-sm btn-outline" data-del="' + p.id + '">Delete</button></td></tr>';
       }).join('') || '<tr><td colspan="7">' + (focus ? 'No matching product found.' : 'No products') + '</td></tr>';
@@ -1085,6 +1180,20 @@
         };
       });
     },
+    fillProductQrStoreSelect: function () {
+      var storeSel = document.getElementById('product-qr-units-store');
+      if (!storeSel) return;
+      storeSel.style.display = AdminShell.admin.isSuper ? '' : 'none';
+      storeSel.innerHTML = '<option value="">All stores</option>' +
+        (this.stores || []).map(function (s) {
+          return '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>';
+        }).join('');
+      if (!AdminShell.admin.isSuper && AdminShell.admin.storeId) {
+        storeSel.value = AdminShell.admin.storeId;
+      } else {
+        storeSel.value = AdminShell.storeId || '';
+      }
+    },
     openAllProductQrPicker: function () {
       var self = this;
       this.qrUnitsProduct = null;
@@ -1093,14 +1202,7 @@
       document.getElementById('product-qr-units-title').textContent = 'All products — pick one';
       document.getElementById('product-qr-units-copy').textContent =
         'Select a product to see its unique unit QR entries (one per physical stock / pending code).';
-      var storeSel = document.getElementById('product-qr-units-store');
-      if (storeSel) {
-        storeSel.style.display = AdminShell.admin.isSuper ? '' : 'none';
-        storeSel.innerHTML = '<option value="">All stores</option>' +
-          (this.stores || []).map(function (s) {
-            return '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>';
-          }).join('');
-      }
+      this.fillProductQrStoreSelect();
       var tbody = document.querySelector('#product-qr-units-table tbody');
       var q = (document.getElementById('product-qr-units-search').value || '').trim().toLowerCase();
       var rows = (this.products || []).filter(function (p) {
@@ -1137,19 +1239,7 @@
         (product.name || 'Product') + ' — QR units';
       document.getElementById('product-qr-units-copy').textContent =
         'Each row is one unique physical unit. Delete removes the QR and syncs inventory if it was in stock.';
-      var storeSel = document.getElementById('product-qr-units-store');
-      if (storeSel) {
-        storeSel.style.display = AdminShell.admin.isSuper ? '' : 'none';
-        if (!storeSel.options.length || storeSel.options.length === 1) {
-          storeSel.innerHTML = '<option value="">All stores</option>' +
-            (this.stores || []).map(function (s) {
-              return '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>';
-            }).join('');
-        }
-        if (!AdminShell.admin.isSuper && AdminShell.admin.storeId) {
-          storeSel.value = AdminShell.admin.storeId;
-        }
-      }
+      this.fillProductQrStoreSelect();
       openModal('product-qr-units-modal');
       await this.loadProductQrUnits();
     },
@@ -1185,9 +1275,13 @@
         var st = (u.unit_status || u.status || '').toLowerCase();
         var badgeCls = st === 'in_stock' ? 'green' : (st === 'pending' ? 'gold' : 'red');
         var badgeLabel = st === 'in_stock' ? 'In inventory' : (st === 'pending' ? 'Pending punch' : st || '—');
+        var unitKey = u.unit_id || u.id;
+        var previewBtn = (u.qr_code || u.qr_generated)
+          ? AdminShell.qrIconBtn(unitKey, 'Enlarge QR')
+          : '';
         var delBtn = self.qrUnitsCanDelete
           ? '<button type="button" class="btn btn-sm btn-outline" data-del-unit="' +
-            esc(u.unit_id || u.id) + '">Delete</button>'
+            esc(unitKey) + '">Delete</button>'
           : '';
         return '<tr>' +
           '<td><span class="qr-unique-code">' + esc((u.unit_serial || u.qr_uid || '—').toString().slice(-3).toUpperCase()) +
@@ -1196,8 +1290,17 @@
           '<td>' + esc(u.variant_label || '—') + '</td>' +
           '<td><span class="badge ' + badgeCls + '">' + esc(badgeLabel) + '</span></td>' +
           '<td>' + money(u.price) + '</td>' +
-          '<td>' + delBtn + '</td></tr>';
+          '<td class="actions-cell">' + previewBtn + (previewBtn && delBtn ? ' ' : '') + delBtn + '</td></tr>';
       }).join('') || '<tr><td colspan="6">No unique QR units for this product yet. Generate or punch first.</td></tr>';
+      tbody.querySelectorAll('[data-qr-preview]').forEach(function (btn) {
+        btn.onclick = function () {
+          var id = btn.getAttribute('data-qr-preview');
+          var row = (self.qrUnits || []).find(function (x) {
+            return (x.unit_id || x.id) === id;
+          });
+          if (row) AdminShell.showQrPreview(row);
+        };
+      });
       tbody.querySelectorAll('[data-del-unit]').forEach(function (btn) {
         btn.onclick = async function () {
           if (!AdminShell.admin.canManageQrUnits) {
@@ -1473,10 +1576,7 @@
         sel.value = AdminShell.storeId;
       }
       sel.onchange = function () {
-        AdminShell.storeId = sel.value;
-        localStorage.setItem('fam_admin_store', sel.value);
-        var globalSel = document.getElementById('global-store-filter');
-        if (globalSel && !globalSel.disabled) globalSel.value = sel.value;
+        AdminShell.applyStoreFilter(sel.value, { source: 'inventory', skipReload: true });
         self.load();
       };
       document.getElementById('btn-add-stock').onclick = function () { self.openStockForm(); };
@@ -1730,8 +1830,17 @@
       sel.innerHTML = '<option value="">All stores</option>' + stores.map(function (s) {
         return '<option value="' + s.id + '">' + esc(s.name) + '</option>';
       }).join('');
+      if (AdminShell.storeId && stores.some(function (s) { return s.id === AdminShell.storeId; })) {
+        sel.value = AdminShell.storeId;
+      } else if (!AdminShell.admin.isSuper && AdminShell.admin.storeId) {
+        sel.value = AdminShell.admin.storeId;
+      }
       document.getElementById('order-status-filter').onchange = function () { self.page = 1; self.load(); };
-      sel.onchange = function () { self.page = 1; self.load(); };
+      sel.onchange = function () {
+        AdminShell.applyStoreFilter(sel.value, { source: 'orders' });
+        self.page = 1;
+        self.load();
+      };
       document.getElementById('order-cancel').onclick = function () { closeModal('order-modal'); };
       document.getElementById('order-save').onclick = function () { self.save(); };
       document.getElementById('order-delete').onclick = function () { self.remove(); };
@@ -3412,14 +3521,20 @@
       document.body.setAttribute('data-page-qr', '1');
       document.getElementById('btn-generate-qr').onclick = function () { self.openGeneratePrint(); };
       document.getElementById('btn-print-qr').onclick = function () { self.openPrint(); };
-      document.getElementById('qr-preview-close').onclick = function () { closeModal('qr-preview-modal'); };
-      document.getElementById('qr-preview-print').onclick = function () { window.print(); };
+      AdminShell.bindQrPreviewModal();
       document.getElementById('qr-search').oninput = function () {
         clearTimeout(self._searchTimer);
         self._searchTimer = setTimeout(function () { self.render(); }, 120);
       };
       document.getElementById('qr-filter-category').onchange = function () { self.render(); };
       document.getElementById('qr-filter-product').onchange = function () { self.render(); };
+      var qrStoreFilter = document.getElementById('qr-filter-store');
+      if (qrStoreFilter) {
+        qrStoreFilter.onchange = function () {
+          AdminShell.applyStoreFilter(qrStoreFilter.value, { source: 'qr' });
+          self.render();
+        };
+      }
       document.getElementById('qr-print-cancel').onclick = function () { closeModal('qr-print-modal'); };
       document.getElementById('qr-print-search').oninput = function () { self.renderPrintList(); };
       document.getElementById('qr-print-select-all').onclick = function () { self.selectVisiblePrint(true); };
@@ -3456,10 +3571,13 @@
         this.stores = (catalog[1] || []).filter(function (s) { return s.status === 'active'; });
         this.products = catalog[2] || [];
         this.rows = this.products;
-        if (!this.selectedStoreId || !this.stores.some(function (s) { return s.id === self.selectedStoreId; })) {
-          this.selectedStoreId = (AdminShell.storeId && this.stores.some(function (s) {
-            return s.id === AdminShell.storeId;
-          }) ? AdminShell.storeId : '') || (this.stores[0] && this.stores[0].id) || '';
+        // Honor topbar All Stores (empty). Do not force the first store.
+        if (AdminShell.admin.isSuper) {
+          this.selectedStoreId = AdminShell.storeId || '';
+        } else if (AdminShell.admin.storeId) {
+          this.selectedStoreId = AdminShell.admin.storeId;
+        } else if (!this.selectedStoreId || !this.stores.some(function (s) { return s.id === self.selectedStoreId; })) {
+          this.selectedStoreId = (this.stores[0] && this.stores[0].id) || '';
         }
       } catch (e) {
         toast(e.message || 'Could not load stores / categories / products', true);
@@ -3495,6 +3613,14 @@
       (this.products || []).forEach(function (p) {
         productsInStore[p.id] = p.name;
       });
+      var storeFilter = document.getElementById('qr-filter-store');
+      if (storeFilter) {
+        storeFilter.innerHTML = '<option value="">All stores</option>' +
+          this.stores.map(function (s) {
+            return '<option value="' + esc(s.id) + '">' + esc(s.name) + '</option>';
+          }).join('');
+        storeFilter.value = this.selectedStoreId || AdminShell.storeId || '';
+      }
       document.getElementById('qr-filter-product').innerHTML =
         '<option value="">All products</option>' +
         Object.keys(productsInStore).sort(function (a, b) {
@@ -3545,10 +3671,12 @@
         return;
       }
       var storeSel = document.getElementById('qg-store');
-      storeSel.innerHTML = '<option value="">Select store</option>' + this.stores.map(function (s) {
-        return '<option value="' + esc(s.id) + '"' +
-          (s.id === this.selectedStoreId ? ' selected' : '') + '>' + esc(s.name) + '</option>';
-      }, this).join('');
+      var preferred = this.selectedStoreId || AdminShell.storeId || '';
+      storeSel.innerHTML = '<option value="">' + (preferred ? 'Select store' : 'Select store (required)') + '</option>' +
+        this.stores.map(function (s) {
+          return '<option value="' + esc(s.id) + '"' +
+            (s.id === preferred ? ' selected' : '') + '>' + esc(s.name) + '</option>';
+        }).join('');
       document.getElementById('qg-category').innerHTML =
         '<option value="">Select category</option>' +
         this.categories.map(function (c) {
@@ -3753,7 +3881,10 @@
       var q = (document.getElementById('qr-search').value || '').trim().toLowerCase();
       var cat = document.getElementById('qr-filter-category').value;
       var productId = document.getElementById('qr-filter-product').value;
+      var storeFilter = document.getElementById('qr-filter-store');
+      var storeId = storeFilter ? storeFilter.value : (this.selectedStoreId || AdminShell.storeId || '');
       var rows = this.lineItems.filter(function (line) {
+        if (storeId && line.store_id !== storeId) return false;
         if (cat && line.category_id !== cat) return false;
         if (productId && line.product_id !== productId) return false;
         if (!q) return true;
@@ -3794,13 +3925,13 @@
           '<td>1</td>' +
           '<td>' + money(r.price) + '</td>' +
           '<td>' + status + '</td>' +
-          '<td>' + ((r.qr_generated || r.qr_code)
-            ? '<button type="button" class="btn btn-sm btn-outline" data-qr="' + esc(unitKey) + '">View QR</button>'
+          '<td class="actions-cell">' + ((r.qr_generated || r.qr_code)
+            ? AdminShell.qrIconBtn(unitKey, 'Enlarge QR')
             : '') + '</td></tr>';
       }).join('') || '<tr><td colspan="9">No unit QRs yet. Use Generate &amp; Print QR first.</td></tr>';
-      tbody.querySelectorAll('[data-qr]').forEach(function (btn) {
+      tbody.querySelectorAll('[data-qr], [data-qr-preview]').forEach(function (btn) {
         btn.onclick = function () {
-          var id = btn.getAttribute('data-qr');
+          var id = btn.getAttribute('data-qr') || btn.getAttribute('data-qr-preview');
           var row = self.lineItems.find(function (x) {
             return (x.unit_id || x.id) === id;
           });
@@ -3825,25 +3956,7 @@
     },
     showPreview: function (row) {
       this.previewRow = row;
-      var img = document.getElementById('qr-preview-img');
-      var nameEl = document.getElementById('qr-preview-name');
-      if (nameEl) nameEl.textContent = row.name || '';
-      document.getElementById('qr-preview-code').textContent = row.qr_code || '';
-      document.getElementById('qr-preview-meta').textContent =
-        'Unique ' + this.uniqueLast3(row) +
-        (row.category_name ? ' · ' + row.category_name : '') +
-        (row.sku ? ' · ' + row.sku : '') +
-        (row.store_name ? ' · ' + row.store_name : '');
-      var imageId = row.unit_id || row.id;
-      if (img && imageId && (row.qr_generated || row.qr_code)) {
-        img.src = '/api/admin/qr-codes/' + encodeURIComponent(imageId) + '/image?t=' + Date.now();
-        img.alt = 'QR for ' + (row.name || row.qr_code || 'unit');
-        img.onerror = function () { toast('Could not load QR image', true); };
-      } else if (img) {
-        img.removeAttribute('src');
-        img.alt = 'No QR';
-      }
-      openModal('qr-preview-modal');
+      AdminShell.showQrPreview(row);
     }
   };
 

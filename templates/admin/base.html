@@ -138,6 +138,21 @@
     </main>
   </div>
   <div id="toast" class="toast hidden"></div>
+
+  <dialog id="qr-preview-modal" class="modal">
+    <div class="modal-card qr-preview-card">
+      <h2>Unit QR</h2>
+      <img id="qr-preview-img" class="qr-preview-img" alt="QR code" width="280" height="280" />
+      <div class="qr-preview-name" id="qr-preview-name"></div>
+      <div class="qr-preview-code" id="qr-preview-code"></div>
+      <p class="muted" id="qr-preview-meta"></p>
+      <div class="modal-actions">
+        <button type="button" class="btn btn-outline" id="qr-preview-close">Close</button>
+        <button type="button" class="btn btn-dark" id="qr-preview-print">Print / Save</button>
+      </div>
+    </div>
+  </dialog>
+
   <script src="{{ url_for('static', filename='admin/admin.js') }}?v={{ cache_bust }}"></script>
   {% block scripts %}{% endblock %}
   <script>

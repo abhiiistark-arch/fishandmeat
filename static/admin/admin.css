@@ -1277,7 +1277,7 @@ dialog.modal:has(.wide) { max-width: 720px; }
 /* Generate QR */
 .qr-toolbar {
   display: grid;
-  grid-template-columns: minmax(180px, 1.4fr) minmax(140px, 1fr) minmax(140px, 1fr);
+  grid-template-columns: minmax(160px, 1.3fr) repeat(3, minmax(120px, 1fr));
   gap: 10px;
   margin-bottom: 14px;
 }
@@ -1316,9 +1316,29 @@ dialog.modal:has(.wide) { max-width: 720px; }
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 12px;
-  width: 240px;
-  height: 240px;
+  width: min(72vw, 320px);
+  height: min(72vw, 320px);
   object-fit: contain;
+  cursor: zoom-in;
+  transition: transform 0.2s ease;
+}
+.qr-preview-card .qr-preview-img:active {
+  transform: scale(1.04);
+}
+.qr-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 36px;
+  padding: 6px 10px;
+}
+.qr-icon-svg {
+  display: block;
+  flex-shrink: 0;
+}
+.actions-cell .qr-icon-btn + .btn {
+  margin-left: 4px;
 }
 .qr-preview-name {
   font-family: Sora, sans-serif;
@@ -1384,7 +1404,7 @@ dialog.modal:has(.wide) { max-width: 720px; }
   border-color: var(--green);
 }
 .qr-toolbar-3 {
-  grid-template-columns: minmax(160px, 1.3fr) minmax(140px, 1fr) minmax(140px, 1fr);
+  grid-template-columns: minmax(160px, 1.2fr) repeat(3, minmax(110px, 1fr));
 }
 .qr-count-bar {
   margin-top: 12px;
