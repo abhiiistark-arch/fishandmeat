@@ -87,6 +87,8 @@ MOBILE_CORS_ORIGINS = {
 }
 
 # Refuse insecure defaults in production (override with ALLOW_INSECURE_DEFAULTS=1 only for emergency).
+# On Vercel we capture the message instead of raising at import — raising crashes the
+# serverless function with an opaque FUNCTION_INVOCATION_FAILED page.
 _ALLOW_INSECURE = os.getenv('ALLOW_INSECURE_DEFAULTS', '').lower() in ('1', 'true', 'yes')
 _INSECURE_SECRETS = {
     'fam-dev-secret-change-in-production',
@@ -102,17 +104,22 @@ _INSECURE_ADMIN_PW = {
     'admin',
     'password',
 }
+_BOOT_ERROR = None
 if IS_PRODUCTION and not _ALLOW_INSECURE:
+    _boot_problems = []
     if not SECRET_KEY or SECRET_KEY in _INSECURE_SECRETS or len(SECRET_KEY) < 24:
-        raise RuntimeError(
-            'Production start blocked: set a strong SECRET_KEY (24+ chars) in env. '
-            'Emergency only: ALLOW_INSECURE_DEFAULTS=1'
+        _boot_problems.append(
+            'Set a strong SECRET_KEY (24+ chars) in environment variables.'
         )
     if not ADMIN_PASSWORD or ADMIN_PASSWORD in _INSECURE_ADMIN_PW:
-        raise RuntimeError(
-            'Production start blocked: set ADMIN_PASSWORD in env (not the example default). '
-            'Emergency only: ALLOW_INSECURE_DEFAULTS=1'
+        _boot_problems.append(
+            'Set ADMIN_PASSWORD in environment variables (not the example default).'
         )
+    if _boot_problems:
+        _BOOT_ERROR = ' '.join(_boot_problems) + ' Emergency only: ALLOW_INSECURE_DEFAULTS=1'
+        if not IS_VERCEL:
+            raise RuntimeError(f'Production start blocked: {_BOOT_ERROR}')
+        print(f'[boot] Production config incomplete (Vercel will show setup page): {_BOOT_ERROR}')
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 app.secret_key = SECRET_KEY
@@ -439,10 +446,18 @@ def reset_mongo_after_fork():
 
 _connect_mongo()
 if not _use_mongo:
-    raise RuntimeError(
+    _mongo_boot_msg = (
         'MongoDB is required. Set one of MONGO_URI / MONGO_ATLAS_URI / MONGO_LOCAL_URI '
-        'in .env or mongo.env (local JSON storage has been removed).'
+        'in .env, mongo.env, or (on Vercel) Project Environment Variables. '
+        'Also allow Vercel IPs in Atlas Network Access (0.0.0.0/0).'
     )
+    # Hard-fail on server/dev so misconfig is obvious. On Vercel, never raise at
+    # import — that yields FUNCTION_INVOCATION_FAILED; show a setup page instead.
+    if IS_VERCEL:
+        _BOOT_ERROR = _BOOT_ERROR or _mongo_boot_msg
+        print(f'[db] {_mongo_boot_msg}')
+    else:
+        raise RuntimeError(_mongo_boot_msg)
 
 
 def db_find(collection, query=None, sort=None, skip=0, limit=0, projection=None):
@@ -510,7 +525,7 @@ def db_count(collection, query=None):
 
 
 def db_mode():
-    return 'mongodb'
+    return 'mongodb' if _use_mongo else 'disconnected'
 
 
 # ---------------------------------------------------------------------------
@@ -2191,42 +2206,70 @@ def ensure_media_assets():
         print('[db] Attached available website images to products, categories and storefront')
 
 
-seed_if_empty()
-ensure_default_parameters()
-ensure_media_assets()
-sync_local_uploads_to_media()
-ensure_admin_users()
+if _use_mongo:
+    seed_if_empty()
+    ensure_default_parameters()
+    ensure_media_assets()
+    sync_local_uploads_to_media()
+    ensure_admin_users()
+else:
+    print('[db] Skipping seed/bootstrap — MongoDB not connected')
 
 
-@app.before_request
-def _vercel_mongo_guard():
-    """On Vercel, require a live MongoDB connection (Mongo-only app)."""
-    if not IS_VERCEL or _use_mongo:
-        return None
-    if (request.path or '').startswith('/api/health'):
-        return None
-    if MONGO_URI:
-        message = (
-            'MongoDB connection failed. Check MONGO_URI / MONGO_ATLAS_URI / MONGO_LOCAL_URI '
-            'in Vercel Environment Variables and that Atlas Network Access allows Vercel (0.0.0.0/0).'
-        )
-    else:
-        message = (
-            'Mongo URI missing. Set one of MONGO_URI, MONGO_ATLAS_URI, or MONGO_LOCAL_URI '
-            '(plus MONGO_DB_NAME, SECRET_KEY, ADMIN_PASSWORD) in Vercel Environment Variables, then redeploy.'
-        )
+def _vercel_setup_response(message):
     body = (
         '<!doctype html><html><head><meta charset="utf-8"><title>Setup required</title>'
         '<style>body{font-family:system-ui,sans-serif;background:#FBF6EC;color:#20241F;'
         'max-width:640px;margin:80px auto;padding:0 20px;line-height:1.5}'
         'h1{font-size:28px;margin-bottom:12px}code{background:#F1EADC;padding:2px 6px;'
         'border-radius:4px}</style></head><body>'
-        '<h1>Fish and Meat needs MongoDB on Vercel</h1>'
+        '<h1>Fish and Meat — setup required</h1>'
         f'<p>{message}</p>'
-        '<p>Local development can still use JSON files; production on Vercel must use Atlas.</p>'
+        '<p>This app is <strong>MongoDB-only</strong>. On Vercel set '
+        '<code>MONGO_URI</code> (or <code>MONGO_ATLAS_URI</code>), '
+        '<code>MONGO_DB_NAME</code>, <code>SECRET_KEY</code>, and '
+        '<code>ADMIN_PASSWORD</code>, then redeploy. In Atlas → Network Access allow '
+        '<code>0.0.0.0/0</code>.</p>'
         '</body></html>'
     )
     return make_response(body, 503)
+
+
+@app.before_request
+def _vercel_mongo_guard():
+    """On Vercel, keep the function alive and show setup errors instead of crashing."""
+    global _BOOT_ERROR
+    if not IS_VERCEL:
+        return None
+    if (request.path or '').startswith('/api/health'):
+        return None
+    # Cold-start / transient Atlas DNS failures: retry once per request if needed.
+    if not _use_mongo and MONGO_URI:
+        if _connect_mongo():
+            try:
+                seed_if_empty()
+                ensure_default_parameters()
+                ensure_media_assets()
+                sync_local_uploads_to_media()
+                ensure_admin_users()
+                _BOOT_ERROR = None
+            except Exception as e:  # noqa: BLE001
+                print(f'[db] Bootstrap after reconnect failed: {e}')
+    if _BOOT_ERROR:
+        return _vercel_setup_response(_BOOT_ERROR)
+    if not _use_mongo:
+        if MONGO_URI:
+            message = (
+                'MongoDB connection failed. Check MONGO_URI / MONGO_ATLAS_URI / MONGO_LOCAL_URI '
+                'in Vercel Environment Variables and that Atlas Network Access allows Vercel (0.0.0.0/0).'
+            )
+        else:
+            message = (
+                'Mongo URI missing. Set one of MONGO_URI, MONGO_ATLAS_URI, or MONGO_LOCAL_URI '
+                '(plus MONGO_DB_NAME, SECRET_KEY, ADMIN_PASSWORD) in Vercel Environment Variables, then redeploy.'
+            )
+        return _vercel_setup_response(message)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -2325,10 +2368,15 @@ def uploaded_content(filename):
 
 @app.route('/api/health')
 def api_health():
-    # Minimal public probe — do not leak config details in production.
-    payload = {'ok': True, 'db': db_mode()}
-    if not IS_PRODUCTION:
+    # Minimal public probe — do not leak secrets; include enough to debug Vercel boots.
+    payload = {
+        'ok': bool(_use_mongo) and not _BOOT_ERROR,
+        'db': db_mode(),
+    }
+    if IS_VERCEL or not IS_PRODUCTION:
         payload['mongo_configured'] = bool(MONGO_URI)
+        if _BOOT_ERROR:
+            payload['boot_error'] = True
     return jsonify(payload)
 
 
