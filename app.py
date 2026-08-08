@@ -1,5 +1,5 @@
 # Fish and Meat — Flask backend + Admin Portal
-# MongoDB optional: set Atlas or local URI in env; if none set, use local JSON in /data
+# MongoDB REQUIRED — all app data and media blobs live in Mongo (no local JSON fallback).
 
 import os
 import re
@@ -10,6 +10,7 @@ import base64
 import hashlib
 import calendar
 import threading
+import time
 from datetime import datetime, timedelta
 from functools import wraps
 from io import BytesIO
@@ -59,7 +60,7 @@ for d in (DATA_DIR, UPLOAD_DIR, CONTENT_UPLOAD_DIR, REPORT_DIR):
 
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'FISHANDMEATTEST')
 # Atlas (mongodb+srv://…) or normal (mongodb://…) — use whichever env is set first.
-# If none are set, app keeps using local JSON dataset in /data.
+# MongoDB is REQUIRED (no local JSON dataset fallback).
 MONGO_URI = _first_env(
     'MONGO_URI',
     'MONGODB_URI',
@@ -84,6 +85,34 @@ MOBILE_CORS_ORIGINS = {
     for o in (os.getenv('FAM_MOBILE_ORIGINS') or '').split(',')
     if o.strip()
 }
+
+# Refuse insecure defaults in production (override with ALLOW_INSECURE_DEFAULTS=1 only for emergency).
+_ALLOW_INSECURE = os.getenv('ALLOW_INSECURE_DEFAULTS', '').lower() in ('1', 'true', 'yes')
+_INSECURE_SECRETS = {
+    'fam-dev-secret-change-in-production',
+    'change-me',
+    'change-me-to-a-long-random-string',
+    'secret',
+    'dev',
+}
+_INSECURE_ADMIN_PW = {
+    'FISHANDMEATTEST',
+    'change-me',
+    'abhi123',
+    'admin',
+    'password',
+}
+if IS_PRODUCTION and not _ALLOW_INSECURE:
+    if not SECRET_KEY or SECRET_KEY in _INSECURE_SECRETS or len(SECRET_KEY) < 24:
+        raise RuntimeError(
+            'Production start blocked: set a strong SECRET_KEY (24+ chars) in env. '
+            'Emergency only: ALLOW_INSECURE_DEFAULTS=1'
+        )
+    if not ADMIN_PASSWORD or ADMIN_PASSWORD in _INSECURE_ADMIN_PW:
+        raise RuntimeError(
+            'Production start blocked: set ADMIN_PASSWORD in env (not the example default). '
+            'Emergency only: ALLOW_INSECURE_DEFAULTS=1'
+        )
 
 app = Flask(__name__, static_folder='static', template_folder='templates')
 app.secret_key = SECRET_KEY
@@ -186,7 +215,7 @@ def add_security_headers(response):
     )
     response.headers.setdefault('Cross-Origin-Opener-Policy', 'same-origin')
     path = request.path or ''
-    # Gzip compress large JSON API payloads when the client accepts it (faster admin/QR)
+    # Gzip only large payloads with light compression — nginx should prefer doing this in prod.
     try:
         accept = (request.headers.get('Accept-Encoding') or '').lower()
         ctype = (response.content_type or '').lower()
@@ -197,12 +226,14 @@ def add_security_headers(response):
             and ('json' in ctype or 'javascript' in ctype or 'text/' in ctype)
             and not response.direct_passthrough
             and 'Content-Encoding' not in response.headers
+            and os.getenv('FAM_APP_GZIP', '1') != '0'
         ):
             data = response.get_data()
-            if data and len(data) > 1500:
+            # Skip tiny bodies; use fastest gzip level to keep workers free under load
+            if data and len(data) > 8192:
                 import gzip
-                compressed = gzip.compress(data, compresslevel=5)
-                if len(compressed) < len(data):
+                compressed = gzip.compress(data, compresslevel=1)
+                if len(compressed) < len(data) * 0.92:
                     response.set_data(compressed)
                     response.headers['Content-Encoding'] = 'gzip'
                     response.headers['Content-Length'] = str(len(compressed))
@@ -279,13 +310,17 @@ def add_security_headers(response):
     return response
 
 # ---------------------------------------------------------------------------
-# Storage layer — Mongo when configured, else local JSON files
+# Storage layer — MongoDB only (data + media blobs)
 # ---------------------------------------------------------------------------
 
 _mongo_client = None
 _mongo_db = None
 _use_mongo = False
-_local_db_lock = threading.RLock()
+
+
+def _require_mongo():
+    if not _use_mongo or _mongo_db is None:
+        raise RuntimeError('MongoDB is required but not connected')
 
 
 def _connect_mongo():
@@ -297,6 +332,8 @@ def _connect_mongo():
     global _mongo_client, _mongo_db, _use_mongo
     if not MONGO_URI:
         _use_mongo = False
+        _mongo_client = None
+        _mongo_db = None
         return False
     try:
         from pymongo import MongoClient, ASCENDING
@@ -337,11 +374,15 @@ def _connect_mongo():
         _mongo_db.orders.create_index([('customer_phone', ASCENDING)])
         _mongo_db.orders.create_index([('customer_id', ASCENDING)])
         _mongo_db.orders.create_index([('status', ASCENDING)])
+        _mongo_db.orders.create_index([('status', ASCENDING), ('store_id', ASCENDING)])
+        _mongo_db.staff.create_index([('username', ASCENDING)])
+        _mongo_db.staff.create_index([('id', ASCENDING)])
         _mongo_db.orders.create_index([('channel', ASCENDING), ('store_id', ASCENDING), ('created_at', ASCENDING)])
         _mongo_db.products.create_index([('sku', ASCENDING)], unique=True)
         _mongo_db.products.create_index([('id', ASCENDING)])
         _mongo_db.products.create_index([('qr_code', ASCENDING)], sparse=True)
         _mongo_db.products.create_index([('qr_product_code', ASCENDING)], sparse=True)
+        _mongo_db.products.create_index([('status', ASCENDING)])
         _mongo_db.qr_units.create_index([('id', ASCENDING)])
         _mongo_db.qr_units.create_index([('code', ASCENDING)], unique=True)
         _mongo_db.qr_units.create_index([('unit_serial', ASCENDING)], unique=True)
@@ -363,10 +404,10 @@ def _connect_mongo():
         _mongo_db.media.create_index([('url', ASCENDING)], unique=True)
         _use_mongo = True
         kind = 'Atlas' if 'mongodb+srv://' in MONGO_URI else 'MongoDB'
-        print(f'[db] Connected to {kind} ({MONGO_DB_NAME})')
+        print(f'[db] Connected to {kind} ({MONGO_DB_NAME}) — Mongo-only mode')
         return True
     except Exception as e:
-        print(f'[db] Mongo unavailable ({e}) — using local JSON storage')
+        print(f'[db] Mongo connection failed: {e}')
         _use_mongo = False
         _mongo_client = None
         _mongo_db = None
@@ -390,98 +431,34 @@ def close_mongo():
 def reset_mongo_after_fork():
     """Call from gunicorn post_fork when using --preload."""
     close_mongo()
-    return _connect_mongo()
+    ok = _connect_mongo()
+    if not ok:
+        raise RuntimeError('MongoDB required after worker fork — check MONGO_URI')
+    return ok
 
 
 _connect_mongo()
-if not _use_mongo and MONGO_URI == '':
-    # Multi-worker + local JSON files can race; warn once per process.
-    print('[db] WARNING: local JSON mode — for gunicorn multi-worker prefer MongoDB URI')
-
-
-def _json_path(collection):
-    return DATA_DIR / f'{collection}.json'
-
-
-def _load_local(collection):
-    path = _json_path(collection)
-    if not path.exists():
-        return []
-    try:
-        with open(path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except Exception:
-        return []
-
-
-def _save_local(collection, rows):
-    path = _json_path(collection)
-    with open(path, 'w', encoding='utf-8') as f:
-        json.dump(rows, f, indent=2, default=str)
+if not _use_mongo:
+    raise RuntimeError(
+        'MongoDB is required. Set one of MONGO_URI / MONGO_ATLAS_URI / MONGO_LOCAL_URI '
+        'in .env or mongo.env (local JSON storage has been removed).'
+    )
 
 
 def db_find(collection, query=None, sort=None, skip=0, limit=0, projection=None):
+    _require_mongo()
     query = query or {}
     proj = {'_id': 0}
     if projection:
         proj.update(projection)
-    if _use_mongo:
-        cursor = _mongo_db[collection].find(query, proj)
-        if sort:
-            cursor = cursor.sort(sort)
-        if skip:
-            cursor = cursor.skip(skip)
-        if limit:
-            cursor = cursor.limit(limit)
-        return list(cursor)
-
-    rows = _load_local(collection)
-
-    def match(doc, q):
-        for k, v in q.items():
-            if k == '$or':
-                if not any(match(doc, clause) for clause in v):
-                    return False
-                continue
-            if k == '$and':
-                if not all(match(doc, clause) for clause in v):
-                    return False
-                continue
-            if isinstance(v, dict):
-                val = doc.get(k)
-                if '$gte' in v and not (val is not None and val >= v['$gte']):
-                    return False
-                if '$gt' in v and not (val is not None and val > v['$gt']):
-                    return False
-                if '$lte' in v and not (val is not None and val <= v['$lte']):
-                    return False
-                if '$lt' in v and not (val is not None and val < v['$lt']):
-                    return False
-                if '$in' in v and doc.get(k) not in v['$in']:
-                    return False
-                if '$ne' in v and doc.get(k) == v['$ne']:
-                    return False
-                if '$regex' in v:
-                    flags = re.I if v.get('$options') == 'i' else 0
-                    if not re.search(v['$regex'], str(doc.get(k, '')), flags):
-                        return False
-            elif doc.get(k) != v:
-                return False
-        return True
-
-    filtered = [r for r in rows if match(r, query)]
+    cursor = _mongo_db[collection].find(query, proj)
     if sort:
-        for key, direction in reversed(sort):
-            filtered.sort(key=lambda x: x.get(key) or '', reverse=(direction == -1))
+        cursor = cursor.sort(sort)
     if skip:
-        filtered = filtered[skip:]
+        cursor = cursor.skip(skip)
     if limit:
-        filtered = filtered[:limit]
-    if projection:
-        keep = {k for k, v in projection.items() if v}
-        if keep:
-            filtered = [{k: r.get(k) for k in keep if k in r} for r in filtered]
-    return filtered
+        cursor = cursor.limit(limit)
+    return list(cursor)
 
 
 def db_find_one(collection, query):
@@ -490,58 +467,28 @@ def db_find_one(collection, query):
 
 
 def db_insert(collection, doc):
-    if _use_mongo:
-        clean = {k: v for k, v in doc.items() if k != '_id'}
-        _mongo_db[collection].insert_one(clean)
-        return clean
-    with _local_db_lock:
-        rows = _load_local(collection)
-        rows.append(doc)
-        _save_local(collection, rows)
-    return doc
+    _require_mongo()
+    clean = {k: v for k, v in doc.items() if k != '_id'}
+    _mongo_db[collection].insert_one(clean)
+    return clean
 
 
 def db_update(collection, query, updates):
-    if _use_mongo:
-        result = _mongo_db[collection].update_one(query, {'$set': updates})
-        return result.modified_count
-    with _local_db_lock:
-        rows = _load_local(collection)
-        count = 0
-        for i, row in enumerate(rows):
-            if all(row.get(k) == v for k, v in query.items()):
-                rows[i] = {**row, **updates}
-                count += 1
-        if count:
-            _save_local(collection, rows)
-    return count
+    _require_mongo()
+    result = _mongo_db[collection].update_one(query, {'$set': updates})
+    return result.modified_count
 
 
 def db_increment(collection, query, field, amount):
     """Atomically increment one numeric field and return the updated document."""
-    if _use_mongo:
-        from pymongo import ReturnDocument
-        return _mongo_db[collection].find_one_and_update(
-            query,
-            {'$inc': {field: amount}, '$set': {'updated_at': now_iso()}},
-            projection={'_id': 0},
-            return_document=ReturnDocument.AFTER,
-        )
-    with _local_db_lock:
-        rows = _load_local(collection)
-        updated = None
-        for i, row in enumerate(rows):
-            if all(row.get(k) == v for k, v in query.items()):
-                rows[i] = {
-                    **row,
-                    field: (row.get(field, 0) or 0) + amount,
-                    'updated_at': now_iso(),
-                }
-                updated = dict(rows[i])
-                break
-        if updated:
-            _save_local(collection, rows)
-        return updated
+    _require_mongo()
+    from pymongo import ReturnDocument
+    return _mongo_db[collection].find_one_and_update(
+        query,
+        {'$inc': {field: amount}, '$set': {'updated_at': now_iso()}},
+        projection={'_id': 0},
+        return_document=ReturnDocument.AFTER,
+    )
 
 
 def db_upsert(collection, query, doc):
@@ -553,24 +500,17 @@ def db_upsert(collection, query, doc):
 
 
 def db_delete(collection, query):
-    if _use_mongo:
-        return _mongo_db[collection].delete_many(query).deleted_count
-    rows = _load_local(collection)
-    kept = [r for r in rows if not all(r.get(k) == v for k, v in query.items())]
-    deleted = len(rows) - len(kept)
-    _save_local(collection, kept)
-    return deleted
+    _require_mongo()
+    return _mongo_db[collection].delete_many(query).deleted_count
 
 
 def db_count(collection, query=None):
-    query = query or {}
-    if _use_mongo:
-        return int(_mongo_db[collection].count_documents(query))
-    return len(db_find(collection, query))
+    _require_mongo()
+    return int(_mongo_db[collection].count_documents(query or {}))
 
 
 def db_mode():
-    return 'mongodb' if _use_mongo else 'local'
+    return 'mongodb'
 
 
 # ---------------------------------------------------------------------------
@@ -715,7 +655,17 @@ def product_qr_uid(product):
     return code
 
 
+_unit_serial_cache = {'at': 0, 'serials': None, 'codes': None}
+_UNIT_SERIAL_CACHE_TTL = 5
+
+
 def _used_unit_serials():
+    now = time.time()
+    if (
+        _unit_serial_cache['serials'] is not None
+        and (now - _unit_serial_cache['at']) < _UNIT_SERIAL_CACHE_TTL
+    ):
+        return set(_unit_serial_cache['serials'])
     used = set()
     for unit in db_find('qr_units', projection={'unit_serial': 1, 'code': 1}):
         serial = (unit.get('unit_serial') or '').strip().upper()
@@ -724,16 +674,32 @@ def _used_unit_serials():
         code = (unit.get('code') or '').strip().upper()
         if len(code) >= 3:
             used.add(code[-3:])
-    return used
+    _unit_serial_cache['serials'] = used
+    _unit_serial_cache['at'] = now
+    return set(used)
 
 
 def _used_unit_codes():
+    now = time.time()
+    if (
+        _unit_serial_cache['codes'] is not None
+        and (now - _unit_serial_cache['at']) < _UNIT_SERIAL_CACHE_TTL
+    ):
+        return set(_unit_serial_cache['codes'])
     used = set()
     for unit in db_find('qr_units', projection={'code': 1}):
         code = (unit.get('code') or '').strip().upper()
         if code:
             used.add(code)
-    return used
+    _unit_serial_cache['codes'] = used
+    _unit_serial_cache['at'] = now
+    return set(used)
+
+
+def _invalidate_unit_code_cache():
+    _unit_serial_cache['serials'] = None
+    _unit_serial_cache['codes'] = None
+    _unit_serial_cache['at'] = 0
 
 
 def allocate_unit_serial(seed='U', used=None):
@@ -803,6 +769,7 @@ def create_qr_units(product, store_id, variant_id, count, price=0, status='pendi
     """Create `count` unique QR units. status: pending (awaiting punch) | in_stock."""
     if count < 1:
         return []
+    _invalidate_unit_code_cache()
     status = (status or 'pending').strip() or 'pending'
     product = ensure_product_template_codes(product)
     cat = (product.get('qr_category_code') or 'XXX').upper()
@@ -926,29 +893,23 @@ def sync_all_qr_units_from_inventory():
 
 
 def find_qr_unit_by_code(code):
-    """Resolve a scanned code to a qr_units row."""
+    """Resolve a scanned code to a qr_units row (indexed lookups only — no full scans)."""
     raw = re.sub(r'[^A-Za-z0-9]', '', (code or '')).upper()
     if not raw:
         return None
     unit = db_find_one('qr_units', {'code': raw})
     if unit:
         return unit
-    # Match by unique last-3 serial
     if len(raw) >= 3:
         serial = raw[-3:]
         unit = db_find_one('qr_units', {'unit_serial': serial})
         if unit:
             return unit
-        for row in db_find('qr_units'):
-            if (row.get('code') or '').upper().endswith(serial):
-                return row
-            if (row.get('unit_serial') or '').upper() == serial:
-                return row
     return None
 
 
 def find_product_by_qr(code):
-    """Resolve QR → product (unit-aware, with legacy product-level fallback)."""
+    """Resolve QR → product (unit-aware, indexed fields only)."""
     unit = find_qr_unit_by_code(code)
     if unit:
         return db_find_one('products', {'id': unit.get('product_id')})
@@ -959,32 +920,49 @@ def find_product_by_qr(code):
     if product:
         return product
     if len(raw) >= 6:
-        uid = raw[-6:]
-        for row in db_find('products'):
-            if product_qr_uid(row) == uid:
-                return row
-            if (row.get('qr_code') or '').upper().endswith(uid):
-                return row
+        product = db_find_one('products', {'qr_product_code': raw[-6:]})
+        if product:
+            return product
     return None
 
 
 def mark_qr_units_sold(unit_ids, order_id=''):
+    """Mark units sold atomically (from in_stock or claimed)."""
+    _require_mongo()
     for uid in unit_ids or []:
-        unit = db_find_one('qr_units', {'id': uid})
-        if not unit or unit.get('status') != 'in_stock':
-            continue
-        db_update('qr_units', {'id': uid}, {
-            'status': 'sold',
-            'sold_at': now_iso(),
-            'order_id': order_id or '',
+        _mongo_db.qr_units.find_one_and_update(
+            {'id': uid, 'status': {'$in': ['in_stock', 'claimed']}},
+            {'$set': {
+                'status': 'sold',
+                'sold_at': now_iso(),
+                'order_id': order_id or '',
+                'updated_at': now_iso(),
+            }},
+        )
+
+
+def _claim_one_qr_unit(unit_id):
+    """Atomically claim one in_stock unit. Returns unit doc or None."""
+    if not unit_id:
+        return None
+    _require_mongo()
+    from pymongo import ReturnDocument
+    return _mongo_db.qr_units.find_one_and_update(
+        {'id': unit_id, 'status': 'in_stock'},
+        {'$set': {
+            'status': 'claimed',
+            'claimed_at': now_iso(),
             'updated_at': now_iso(),
-        })
+        }},
+        return_document=ReturnDocument.AFTER,
+    )
 
 
 def claim_qr_units_for_sale(store_id, product_id, variant_id, qty, preferred_unit_ids=None):
     """
     Pick `qty` in-stock units for a sale. Preferred unit ids (from scanned QRs)
     are claimed first; remaining slots come from oldest stock.
+    Claims are atomic so two concurrent bills cannot take the same unit.
     """
     qty = int(qty or 0)
     if qty < 1:
@@ -1005,10 +983,11 @@ def claim_qr_units_for_sale(store_id, product_id, variant_id, qty, preferred_uni
             continue
         if any(c.get('id') == unit.get('id') for c in claimed):
             continue
-        claimed.append(unit)
+        locked = _claim_one_qr_unit(uid)
+        if locked:
+            claimed.append(locked)
     need = qty - len(claimed)
     if need > 0:
-        # Ensure unit rows exist for current stock before claiming
         inv = db_find_one('inventory', {
             'store_id': store_id,
             'product_id': product_id,
@@ -1026,9 +1005,20 @@ def claim_qr_units_for_sale(store_id, product_id, variant_id, qty, preferred_uni
         for unit in pool:
             if unit.get('id') in claimed_ids:
                 continue
-            claimed.append(unit)
+            locked = _claim_one_qr_unit(unit.get('id'))
+            if not locked:
+                continue
+            claimed.append(locked)
             if len(claimed) >= qty:
                 break
+    if len(claimed) < qty:
+        # Release partial claims back to in_stock
+        for unit in claimed:
+            db_update('qr_units', {'id': unit.get('id'), 'status': 'claimed'}, {
+                'status': 'in_stock',
+                'updated_at': now_iso(),
+            })
+        return []
     return claimed[:qty]
 
 
@@ -1092,11 +1082,13 @@ def _authenticate_staff_credentials(username, password):
     blocked, msg = prepare_login_attempt(username)
     if blocked:
         return None, msg
-    member = None
-    for row in db_find('staff'):
-        if (row.get('username') or '').strip().lower() == username:
-            member = row
-            break
+    member = db_find_one('staff', {'username': username})
+    if not member:
+        # Case-insensitive fallback for legacy mixed-case usernames
+        for row in db_find('staff', projection={'username': 1, 'id': 1}):
+            if (row.get('username') or '').strip().lower() == username:
+                member = db_find_one('staff', {'id': row['id']})
+                break
     if member and member.get('active') is False:
         record_login_failure(username)
         return None, 'This account is disabled'
@@ -1155,6 +1147,8 @@ _ref_cache = {}
 _REF_CACHE_TTL = 60  # seconds for rarely-changing lookups (products/categories/stores)
 _badges_cache = {}
 _BADGES_CACHE_TTL = 15
+_settings_cache = {'at': 0, 'data': None}
+_SETTINGS_TTL_SEC = 30
 
 _ORDER_STATS_PROJECTION = {
     'id': 1, 'order_id': 1, 'store_id': 1, 'created_at': 1, 'total': 1,
@@ -1406,10 +1400,12 @@ def _media_kind_for_url(url):
 
 
 def _save_media_blob(url, data, content_type=None, filename=None):
-    """Persist image bytes in Mongo/local media store — gzip when it shrinks the blob."""
+    """Persist image bytes in MongoDB media collection (gzip when it shrinks)."""
+    _require_mongo()
     if not url or not data:
         return False
     import gzip
+    from bson.binary import Binary
     filename = filename or url.rsplit('/', 1)[-1]
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
     content_type = content_type or _content_type_for_ext(ext)
@@ -1430,67 +1426,40 @@ def _save_media_blob(url, data, content_type=None, filename=None):
         'stored_size': len(stored),
         'encoding': encoding,
         'updated_at': now_iso(),
+        'data': Binary(stored),
     }
-    if _use_mongo:
-        from bson.binary import Binary
-        doc['data'] = Binary(stored)
-        _mongo_db.media.update_one({'url': url}, {'$set': doc, '$setOnInsert': {'created_at': now_iso()}}, upsert=True)
-        return True
-    import base64
-    rows = _load_local('media')
-    doc['data_b64'] = base64.b64encode(stored).decode('ascii')
-    replaced = False
-    for i, row in enumerate(rows):
-        if row.get('url') == url:
-            rows[i] = {**row, **doc}
-            replaced = True
-            break
-    if not replaced:
-        doc['created_at'] = now_iso()
-        rows.append(doc)
-    _save_local('media', rows)
+    _mongo_db.media.update_one(
+        {'url': url},
+        {'$set': doc, '$setOnInsert': {'created_at': now_iso()}},
+        upsert=True,
+    )
     return True
 
 
 def _load_media_blob(url):
-    """Return (bytes, content_type) for a public upload URL, or (None, None)."""
+    """Return (bytes, content_type) from MongoDB media, or (None, None)."""
+    _require_mongo()
     if not url:
         return None, None
     import gzip
-
-    def _maybe_decompress(payload, encoding):
-        raw = bytes(payload)
-        if encoding == 'gzip' or (len(raw) >= 2 and raw[:2] == b'\x1f\x8b'):
-            try:
-                return gzip.decompress(raw)
-            except Exception:  # noqa: BLE001
-                return raw
-        return raw
-
-    if _use_mongo:
-        row = _mongo_db.media.find_one({'url': url}, {'_id': 0})
-        if not row or row.get('data') is None:
-            return None, None
-        return _maybe_decompress(row['data'], row.get('encoding') or ''), row.get('content_type') or 'application/octet-stream'
-    import base64
-    row = db_find_one('media', {'url': url})
-    if not row or not row.get('data_b64'):
+    row = _mongo_db.media.find_one({'url': url}, {'_id': 0})
+    if not row or row.get('data') is None:
         return None, None
-    try:
-        stored = base64.b64decode(row['data_b64'])
-        return _maybe_decompress(stored, row.get('encoding') or ''), row.get('content_type') or 'application/octet-stream'
-    except Exception:  # noqa: BLE001
-        return None, None
+    raw = bytes(row['data'])
+    encoding = row.get('encoding') or ''
+    if encoding == 'gzip' or (len(raw) >= 2 and raw[:2] == b'\x1f\x8b'):
+        try:
+            raw = gzip.decompress(raw)
+        except Exception:  # noqa: BLE001
+            pass
+    return raw, row.get('content_type') or 'application/octet-stream'
 
 
 def _delete_media_blob(url):
+    _require_mongo()
     if not url:
         return False
-    if _use_mongo:
-        return _mongo_db.media.delete_many({'url': url}).deleted_count > 0
-    before = len(_load_local('media'))
-    db_delete('media', {'url': url})
-    return len(_load_local('media')) < before
+    return _mongo_db.media.delete_many({'url': url}).deleted_count > 0
 
 
 def optimize_image_bytes(data, kind='products'):
@@ -1531,29 +1500,23 @@ def optimize_image_bytes(data, kind='products'):
 
 
 def save_upload_bytes(kind, filename, data, content_type=None):
-    """Optimize, write bytes to disk (best-effort), and persist in the media store."""
+    """Optimize image and store ONLY in MongoDB media collection (no local disk)."""
+    _require_mongo()
     data, new_ext, new_ct = optimize_image_bytes(data, kind=kind)
     if new_ext:
         stem = filename.rsplit('.', 1)[0]
         filename = f'{stem}.{new_ext}'
         content_type = new_ct
-    folder = UPLOAD_DIR if kind == 'products' else CONTENT_UPLOAD_DIR
     url = f'/uploads/{kind}/{filename}'
-    try:
-        folder.mkdir(parents=True, exist_ok=True)
-        (folder / filename).write_bytes(data)
-    except OSError:
-        # Vercel /tmp may fail intermittently; Mongo/media.json is the source of truth.
-        pass
-    _save_media_blob(url, data, content_type=content_type, filename=filename)
+    if not _save_media_blob(url, data, content_type=content_type, filename=filename):
+        raise RuntimeError('Failed to store upload in MongoDB')
     return url
 
 
 def save_upload_file(kind, storage):
-    """Read an uploaded Werkzeug file, store it, and return the public URL."""
+    """Read an uploaded Werkzeug file, store it in MongoDB, and return the public URL."""
     ext = storage.filename.rsplit('.', 1)[1].lower()
     prefix = 'content' if kind == 'content' else 'product'
-    # Product uploads keep product_id in the filename at the call site.
     filename = f'{prefix}_{uuid.uuid4().hex[:10]}.{ext}'
     data = storage.read()
     if not data:
@@ -1563,7 +1526,7 @@ def save_upload_file(kind, storage):
 
 
 def _cached_send(directory, filename, max_age=604800):
-    """Serve a static/upload file with browser-friendly cache headers."""
+    """Serve a static asset with browser-friendly cache headers."""
     response = send_from_directory(directory, filename)
     response.cache_control.public = True
     response.cache_control.max_age = max_age
@@ -1572,41 +1535,37 @@ def _cached_send(directory, filename, max_age=604800):
 
 
 def delete_upload_file(url):
-    """Delete an uploaded image from disk and from the media store."""
-    path = _upload_path_for_url(url)
-    if path:
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:  # noqa: BLE001
-            pass
+    """Delete an uploaded image from MongoDB media store."""
     return _delete_media_blob(url)
 
 
 def serve_upload(kind, filename):
-    """Serve an upload from disk, falling back to the media store (Mongo/JSON)."""
-    folder = UPLOAD_DIR if kind == 'products' else CONTENT_UPLOAD_DIR
-    path = folder / filename
-    url = f'/uploads/{kind}/{filename}'
-    if path.is_file():
-        return _cached_send(folder, filename, max_age=604800)
-    data, content_type = _load_media_blob(url)
-    if data is None:
-        # Also check repo-root uploads (local seed files) when RUNTIME_DIR differs.
-        legacy = BASE_DIR / 'uploads' / kind / filename
-        if legacy.is_file():
-            return _cached_send(legacy.parent, filename, max_age=604800)
+    """Serve an upload from MongoDB only (no local filesystem dependency)."""
+    _require_mongo()
+    if '/' in filename or '..' in filename or '\\' in filename:
         abort(404)
-    # Cache onto disk for faster repeat hits within the same function instance.
-    try:
-        folder.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(data)
-    except OSError:
-        pass
-    return send_file(BytesIO(data), mimetype=content_type, download_name=filename, max_age=604800)
+    safe = secure_filename(filename)
+    if not safe:
+        abort(404)
+    url = f'/uploads/{kind}/{safe}'
+    data, content_type = _load_media_blob(url)
+    if data is None and safe != filename:
+        # Fall back to original basename if secure_filename changed it
+        url = f'/uploads/{kind}/{filename}'
+        data, content_type = _load_media_blob(url)
+    if data is None:
+        abort(404)
+    return send_file(
+        BytesIO(data),
+        mimetype=content_type or 'application/octet-stream',
+        download_name=safe or filename,
+        max_age=604800,
+    )
 
 
 def sync_local_uploads_to_media():
-    """Push any on-disk upload files into Mongo/media.json (run after local uploads)."""
+    """One-time migration: push any leftover on-disk uploads into MongoDB media."""
+    _require_mongo()
     synced = 0
     roots = [
         (UPLOAD_DIR, 'products'),
@@ -1627,18 +1586,19 @@ def sync_local_uploads_to_media():
             if url in seen:
                 continue
             seen.add(url)
-            existing, _ = _load_media_blob(url)
             try:
                 data = path.read_bytes()
             except OSError:
                 continue
-            # Refresh Mongo when local file is new or smaller (e.g. after recompression).
-            if existing is not None and len(existing) <= len(data):
+            if not data:
+                continue
+            existing = _mongo_db.media.find_one({'url': url}, {'size': 1})
+            if existing is not None and int(existing.get('size') or 0) >= len(data):
                 continue
             if _save_media_blob(url, data, filename=path.name):
                 synced += 1
     if synced:
-        print(f'[media] Synced {synced} local upload file(s) into {"MongoDB" if _use_mongo else "media.json"}')
+        print(f'[media] Migrated {synced} leftover local upload file(s) into MongoDB')
     return synced
 
 
@@ -1714,14 +1674,21 @@ DEFAULT_SETTINGS = {
 
 
 def get_settings():
+    """Cached settings (short TTL) — hot path for every storefront request."""
+    now = time.time()
+    cached = _settings_cache.get('data')
+    if cached is not None and (now - _settings_cache.get('at', 0)) < _SETTINGS_TTL_SEC:
+        return dict(cached)
     stored = db_find_one('settings', {'id': 'main'}) or {}
     if not stored:
-        # Persist defaults so settings always live in MongoDB/local DB, not only in memory.
+        # Persist defaults so settings always live in MongoDB, not only in memory.
         db_upsert('settings', {'id': 'main'}, dict(DEFAULT_SETTINGS))
         stored = db_find_one('settings', {'id': 'main'}) or {}
     merged = dict(DEFAULT_SETTINGS)
     merged.update({k: v for k, v in stored.items() if v is not None and k != '_id'})
-    return merged
+    _settings_cache['data'] = merged
+    _settings_cache['at'] = now
+    return dict(merged)
 
 
 def save_settings(updates):
@@ -1729,6 +1696,8 @@ def save_settings(updates):
     clean = {k: v for k, v in updates.items() if k in allowed}
     clean['updated_at'] = now_iso()
     db_upsert('settings', {'id': 'main'}, clean)
+    _settings_cache['data'] = None
+    _settings_cache['at'] = 0
     return get_settings()
 
 
@@ -1843,7 +1812,15 @@ DEFAULT_STOREFRONT_CONTENT = {
 }
 
 
+_storefront_cache = {'at': 0, 'data': None}
+_STOREFRONT_TTL_SEC = 30
+
+
 def get_storefront_content():
+    now = time.time()
+    cached = _storefront_cache.get('data')
+    if cached is not None and (now - _storefront_cache.get('at', 0)) < _STOREFRONT_TTL_SEC:
+        return json.loads(json.dumps(cached))
     stored = db_find_one('storefront_content', {'id': 'main'}) or {}
     if not stored:
         db_upsert('storefront_content', {'id': 'main'}, json.loads(json.dumps(DEFAULT_STOREFRONT_CONTENT)))
@@ -1857,7 +1834,9 @@ def get_storefront_content():
             merged[key].update(value)
         else:
             merged[key] = value
-    return merged
+    _storefront_cache['data'] = merged
+    _storefront_cache['at'] = now
+    return json.loads(json.dumps(merged))
 
 
 def save_storefront_content(data):
@@ -1866,6 +1845,8 @@ def save_storefront_content(data):
     clean = {k: data[k] for k in allowed if k in data}
     clean['updated_at'] = now_iso()
     db_upsert('storefront_content', {'id': 'main'}, clean)
+    _storefront_cache['data'] = None
+    _storefront_cache['at'] = 0
     saved = get_storefront_content()
     # Drop image files that were removed from any storefront section.
     purge_removed_uploads(previous, saved)
@@ -2219,7 +2200,7 @@ ensure_admin_users()
 
 @app.before_request
 def _vercel_mongo_guard():
-    """On Vercel, require MongoDB so the app does not depend on ephemeral /tmp JSON."""
+    """On Vercel, require a live MongoDB connection (Mongo-only app)."""
     if not IS_VERCEL or _use_mongo:
         return None
     if (request.path or '').startswith('/api/health'):
@@ -2344,7 +2325,127 @@ def uploaded_content(filename):
 
 @app.route('/api/health')
 def api_health():
-    return jsonify({'ok': True, 'db': db_mode(), 'mongo_configured': bool(MONGO_URI)})
+    # Minimal public probe — do not leak config details in production.
+    payload = {'ok': True, 'db': db_mode()}
+    if not IS_PRODUCTION:
+        payload['mongo_configured'] = bool(MONGO_URI)
+    return jsonify(payload)
+
+
+def _public_cache_headers(response, max_age=20):
+    """Short browser/CDN cache for public catalog GETs under concurrent shoppers."""
+    response.headers['Cache-Control'] = f'public, max-age={max_age}, stale-while-revalidate=30'
+    return response
+
+
+@app.route('/api/stores')
+def api_stores():
+    stores = db_find('stores', {'status': 'active'}, sort=[('name', 1)])
+    return _public_cache_headers(jsonify(stores), max_age=30)
+
+
+@app.route('/api/categories')
+def api_categories():
+    cats = db_find('categories', {'enabled': True}, sort=[('sort_order', 1)])
+    return _public_cache_headers(jsonify(cats), max_age=30)
+
+
+@app.route('/api/products')
+def api_products():
+    store_id = request.args.get('store_id')
+    category_id = request.args.get('category_id')
+    featured = request.args.get('featured')
+
+    # Push filters to Mongo when possible (avoids loading disabled products under load).
+    query = {'status': {'$ne': 'disabled'}}
+    if category_id:
+        query['category_id'] = category_id
+    if featured == '1':
+        query['featured'] = True
+    if store_id:
+        query['store_availability'] = store_id
+
+    products = db_find('products', query)
+    products = [p for p in products if p.get('status') != 'disabled']
+
+    # Batch-load categories and inventory once, then join in memory
+    # (avoids an N+1 query storm — critical for latency at scale)
+    cat_names = {c['id']: c['name'] for c in db_find('categories')}
+    inv_query = {'store_id': store_id} if store_id else {}
+    inv_by_product = {}
+    for inv in db_find('inventory', inv_query):
+        inv_by_product.setdefault(inv.get('product_id'), []).append(inv)
+
+    result = []
+    for p in products:
+        item = {
+            'id': p.get('id'),
+            'name': p.get('name'),
+            'sku': p.get('sku'),
+            'category_id': p.get('category_id'),
+            'status': p.get('status'),
+            'featured': p.get('featured'),
+            'bestseller': p.get('bestseller'),
+            'images': p.get('images') or [],
+            'variants': p.get('variants') or [],
+            'store_availability': p.get('store_availability') or [],
+            'gst_percent': p.get('gst_percent', 0),
+            'description': p.get('description') or '',
+        }
+        invs = inv_by_product.get(p['id'], [])
+        item['store_inventory'] = invs
+        item['price'] = invs[0].get('price') if invs else None
+        item['stock'] = sum(i.get('stock', 0) for i in invs)
+        item['categoryLabel'] = cat_names.get(p.get('category_id'), '')
+        item['badge'] = 'Bestseller' if p.get('bestseller') else ('Featured' if p.get('featured') else (p.get('status') or 'Available').title())
+        result.append(item)
+    return _public_cache_headers(jsonify(result), max_age=15)
+
+
+@app.route('/api/products/<product_id>')
+def api_product_detail(product_id):
+    p = db_find_one('products', {'id': product_id})
+    if not p or p.get('status') == 'disabled':
+        return jsonify({'error': 'Not found'}), 404
+    store_id = request.args.get('store_id')
+    inv_q = {'product_id': product_id}
+    if store_id:
+        inv_q['store_id'] = store_id
+    p['store_inventory'] = db_find('inventory', inv_q)
+    cat = db_find_one('categories', {'id': p.get('category_id')})
+    p['categoryLabel'] = cat['name'] if cat else ''
+    return _public_cache_headers(jsonify(p), max_age=15)
+
+
+def _apply_inventory_delta(order, sign):
+    """Atomic stock adjust for website orders. sign=-1 deducts, +1 restores.
+
+    Uses the same conditional $inc pattern as POS so concurrent customers
+    cannot oversell. Returns True if every line applied successfully.
+    """
+    applied = []
+    for line in order.get('items') or []:
+        try:
+            qty = int(line.get('qty', 0) or 0)
+        except (TypeError, ValueError):
+            qty = 0
+        if qty < 1:
+            continue
+        inv = db_find_one('inventory', {
+            'store_id': order['store_id'],
+            'product_id': line.get('product_id'),
+            'variant_id': line.get('variant_id'),
+        })
+        if not inv:
+            for inv_id, done_qty in applied:
+                _pos_adjust_stock(inv_id, -sign * done_qty)
+            return False
+        if not _pos_adjust_stock(inv['id'], sign * qty):
+            for inv_id, done_qty in applied:
+                _pos_adjust_stock(inv_id, -sign * done_qty)
+            return False
+        applied.append((inv['id'], qty))
+    return True
 
 
 def _public_customer(customer):
@@ -2577,15 +2678,20 @@ def api_account_orders():
     if not customer:
         session.pop('customer_id', None)
         return jsonify({'error': 'Login required'}), 401
-    orders = [
-        o for o in db_find('orders')
-        if o.get('customer_id') == customer.get('id')
-        or (customer.get('phone') and o.get('customer_phone') == customer.get('phone'))
-    ]
-    orders = sorted(orders, key=lambda x: x.get('created_at', ''), reverse=True)
-    stores = {s['id']: s['name'] for s in db_find('stores')}
+    phone = (customer.get('phone') or '').strip()
+    query = {'customer_id': customer.get('id')}
+    if phone:
+        query = {'$or': [
+            {'customer_id': customer.get('id')},
+            {'customer_phone': phone},
+        ]}
+    orders = db_find('orders', query, sort=[('created_at', -1)], limit=50)
+    stores = {
+        s['id']: s['name']
+        for s in _cached_collection('stores', lambda: db_find('stores'))
+    }
     items = []
-    for o in orders[:50]:
+    for o in orders:
         items.append({
             'id': o.get('order_id') or o.get('id'),
             'date': (o.get('created_at') or '')[:10],
@@ -2746,7 +2852,7 @@ def api_account_address_detail(addr_id):
 def api_public_settings():
     s = get_settings()
     # Only expose storefront-relevant settings publicly
-    return jsonify({
+    return _public_cache_headers(jsonify({
         'min_order_value': s['min_order_value'],
         'delivery_fee_below_min': s['delivery_fee_below_min'],
         'free_delivery_above': s['free_delivery_above'],
@@ -2759,12 +2865,12 @@ def api_public_settings():
         'halal_certified': s['halal_certified'],
         'seo_site_title': s['seo_site_title'],
         'seo_site_description': s['seo_site_description'],
-    })
+    }), max_age=30)
 
 
 @app.route('/api/storefront-content')
 def api_storefront_content():
-    return jsonify(get_storefront_content())
+    return _public_cache_headers(jsonify(get_storefront_content()), max_age=30)
 
 
 @app.route('/sitemap.xml')
@@ -2820,85 +2926,6 @@ def _coupon_discount(coupon, subtotal):
     return round(min(discount, subtotal), 2)
 
 
-@app.route('/api/stores')
-def api_stores():
-    stores = db_find('stores', {'status': 'active'}, sort=[('name', 1)])
-    return jsonify(stores)
-
-
-@app.route('/api/categories')
-def api_categories():
-    cats = db_find('categories', {'enabled': True}, sort=[('sort_order', 1)])
-    return jsonify(cats)
-
-
-@app.route('/api/products')
-def api_products():
-    store_id = request.args.get('store_id')
-    category_id = request.args.get('category_id')
-    featured = request.args.get('featured')
-
-    products = db_find('products')
-    products = [p for p in products if p.get('status') != 'disabled']
-    if category_id:
-        products = [p for p in products if p.get('category_id') == category_id]
-    if featured == '1':
-        products = [p for p in products if p.get('featured')]
-    if store_id:
-        products = [p for p in products if store_id in (p.get('store_availability') or [])]
-
-    # Batch-load categories and inventory once, then join in memory
-    # (avoids an N+1 query storm — critical for latency at scale)
-    cat_names = {c['id']: c['name'] for c in db_find('categories')}
-    inv_query = {'store_id': store_id} if store_id else {}
-    inv_by_product = {}
-    for inv in db_find('inventory', inv_query):
-        inv_by_product.setdefault(inv.get('product_id'), []).append(inv)
-
-    result = []
-    for p in products:
-        item = dict(p)
-        invs = inv_by_product.get(p['id'], [])
-        item['store_inventory'] = invs
-        item['price'] = invs[0].get('price') if invs else None
-        item['stock'] = sum(i.get('stock', 0) for i in invs)
-        item['categoryLabel'] = cat_names.get(p.get('category_id'), '')
-        item['badge'] = 'Bestseller' if p.get('bestseller') else ('Featured' if p.get('featured') else (p.get('status') or 'Available').title())
-        result.append(item)
-    return jsonify(result)
-
-
-@app.route('/api/products/<product_id>')
-def api_product_detail(product_id):
-    p = db_find_one('products', {'id': product_id})
-    if not p:
-        return jsonify({'error': 'Not found'}), 404
-    store_id = request.args.get('store_id')
-    inv_q = {'product_id': product_id}
-    if store_id:
-        inv_q['store_id'] = store_id
-    p['store_inventory'] = db_find('inventory', inv_q)
-    cat = db_find_one('categories', {'id': p.get('category_id')})
-    p['categoryLabel'] = cat['name'] if cat else ''
-    return jsonify(p)
-
-
-def _apply_inventory_delta(order, sign):
-    """sign=-1 deducts stock, sign=+1 restores it. Used at confirm/cancel."""
-    for line in order.get('items') or []:
-        inv = db_find_one('inventory', {
-            'store_id': order['store_id'],
-            'product_id': line.get('product_id'),
-            'variant_id': line.get('variant_id'),
-        })
-        if inv:
-            new_stock = max(0, inv.get('stock', 0) + sign * int(line.get('qty', 0)))
-            db_update('inventory', {'id': inv['id']}, {
-                'stock': new_stock,
-                'updated_at': now_iso(),
-            })
-
-
 def log_activity(kind, text, meta=None):
     db_insert('activity', {
         'id': new_id('act_'),
@@ -2927,8 +2954,7 @@ def api_place_order():
     if not store or store.get('status') != 'active':
         return jsonify({'error': 'Invalid store'}), 400
 
-    # Validate stock & compute totals (stock is only checked here;
-    # deduction happens on order confirmation per policy)
+    # Build lines + soft stock check; atomic reserve happens below (no oversell).
     lines = []
     subtotal = 0
     for raw in data['items']:
@@ -2941,7 +2967,7 @@ def api_place_order():
         if qty < 1 or qty > 500:
             return jsonify({'error': 'Invalid quantity'}), 400
         product = db_find_one('products', {'id': pid})
-        if not product:
+        if not product or product.get('status') == 'disabled':
             return jsonify({'error': f'Product {pid} not found'}), 400
         inv = db_find_one('inventory', {
             'store_id': data['store_id'], 'product_id': pid, 'variant_id': vid
@@ -2964,8 +2990,16 @@ def api_place_order():
             'price': price,
             'gst_percent': gst_pct,
             'line_total': price * qty,
+            'inventory_id': inv['id'],
         })
         subtotal += price * qty
+
+    min_order = float(settings.get('min_order_value') or 0)
+    if delivery_mode == 'delivery' and min_order > 0 and subtotal < min_order:
+        return jsonify({
+            'error': f'Minimum order value is ₹{min_order:,.0f}',
+            'min_order_value': min_order,
+        }), 400
 
     # Below the minimum order value the (configurable) delivery charge applies
     if delivery_mode == 'pickup':
@@ -2993,10 +3027,23 @@ def api_place_order():
 
     total = max(0, subtotal - discount) + delivery
 
+    # Atomic stock reserve NOW — concurrent checkouts cannot oversell.
+    reserved = []
+    for line in lines:
+        if not _pos_adjust_stock(line['inventory_id'], -int(line['qty'])):
+            for inv_id, qty in reserved:
+                _pos_adjust_stock(inv_id, qty)
+            return jsonify({
+                'error': f'Insufficient stock for {line["name"]} (just sold out)',
+            }), 409
+        reserved.append((line['inventory_id'], int(line['qty'])))
+
     # Upsert customer in MongoDB (never wipe password_hash / cart)
-    customer = db_find_one('customers', {'phone': str(data['phone'])})
-    if not customer and session.get('customer_id'):
+    customer = None
+    if session.get('customer_id'):
         customer = db_find_one('customers', {'id': session.get('customer_id')})
+    if not customer:
+        customer = db_find_one('customers', {'phone': str(data['phone'])})
     if not customer:
         customer = {
             'id': new_id('cust_'),
@@ -3024,8 +3071,11 @@ def api_place_order():
         })
         customer = db_find_one('customers', {'id': customer['id']})
         _remember_order_address(customer, data)
-    if session.get('customer_id') != customer['id']:
-        session['customer_id'] = customer['id']
+    # SECURITY: never auto-login from phone alone (account takeover via guest checkout).
+    # Keep session only if the shopper was already authenticated as this customer.
+    if session.get('customer_id') and session.get('customer_id') != customer['id']:
+        pass  # leave existing login untouched
+    # Do not set session['customer_id'] from guest order phone.
 
     order_id = f"ORD{datetime.utcnow().strftime('%y%m%d')}{uuid.uuid4().hex[:5].upper()}"
     order = {
@@ -3035,7 +3085,7 @@ def api_place_order():
         'customer_phone': str(data['phone']),
         'customer_name': data['name'],
         'store_id': data['store_id'],
-        'items': lines,
+        'items': [{k: v for k, v in line.items() if k != 'inventory_id'} for line in lines],
         'subtotal': subtotal,
         'delivery_fee': delivery,
         'coupon_code': coupon_code if discount else '',
@@ -3043,7 +3093,7 @@ def api_place_order():
         'gst_amount': gst_amount,
         'total': total,
         'status': 'new',
-        'inventory_deducted': False,
+        'inventory_deducted': True,
         'payment_method': data.get('payment_method', 'cod'),
         'delivery_mode': delivery_mode,
         'channel': data.get('channel', 'website'),
@@ -3055,7 +3105,12 @@ def api_place_order():
         'created_at': now_iso(),
         'updated_at': now_iso(),
     }
-    db_insert('orders', order)
+    try:
+        db_insert('orders', order)
+    except Exception:
+        for inv_id, qty in reserved:
+            _pos_adjust_stock(inv_id, qty)
+        raise
     log_activity('order', f"Order {order_id} placed — ₹{total:,.0f} · {store['name']}",
                  {'order_id': order_id, 'store_id': store['id']})
 
@@ -4341,13 +4396,13 @@ def api_admin_order_update(order_id):
     inventory_rebalanced = items_changed or (was_deducted != should_deduct)
 
     if inventory_rebalanced and was_deducted:
-        _apply_inventory_delta(order, +1)
+        if not _apply_inventory_delta(order, +1):
+            return jsonify({'error': 'Could not restore previous stock. Try again.'}), 409
     if inventory_rebalanced and should_deduct:
-        if not _has_stock_for_order(order.get('store_id'), required):
+        if not _apply_inventory_delta(candidate, -1):
             if was_deducted:
                 _apply_inventory_delta(order, -1)
             return jsonify({'error': 'Insufficient stock for the edited order'}), 409
-        _apply_inventory_delta(candidate, -1)
 
     updates['status'] = new_status
     updates['inventory_deducted'] = should_deduct
@@ -4669,29 +4724,16 @@ def api_admin_media_sync():
 # --- In-store POS ---
 
 def _pos_adjust_stock(inventory_id, quantity_delta):
-    """Atomically adjust a POS inventory row where possible; keep qr_units in sync."""
-    ok = False
-    if _use_mongo:
-        query = {'id': inventory_id}
-        if quantity_delta < 0:
-            query['stock'] = {'$gte': abs(quantity_delta)}
-        result = _mongo_db.inventory.update_one(
-            query,
-            {'$inc': {'stock': quantity_delta}, '$set': {'updated_at': now_iso()}},
-        )
-        ok = result.modified_count == 1
-    else:
-        inv = db_find_one('inventory', {'id': inventory_id})
-        if not inv:
-            return False
-        new_stock = inv.get('stock', 0) + quantity_delta
-        if new_stock < 0:
-            return False
-        db_update('inventory', {'id': inventory_id}, {
-            'stock': new_stock,
-            'updated_at': now_iso(),
-        })
-        ok = True
+    """Atomically adjust a POS inventory row; keep qr_units in sync."""
+    _require_mongo()
+    query = {'id': inventory_id}
+    if quantity_delta < 0:
+        query['stock'] = {'$gte': abs(quantity_delta)}
+    result = _mongo_db.inventory.update_one(
+        query,
+        {'$inc': {'stock': quantity_delta}, '$set': {'updated_at': now_iso()}},
+    )
+    ok = result.modified_count == 1
     if ok and quantity_delta > 0:
         inv = db_find_one('inventory', {'id': inventory_id})
         if inv:
@@ -5884,24 +5926,29 @@ def api_mobile_dashboard():
     else:
         store_id = (request.args.get('store_id') or '').strip()
 
+    today = datetime.utcnow().strftime('%Y-%m-%d')
+    tomorrow = (datetime.utcnow() + timedelta(days=1)).strftime('%Y-%m-%d')
     query = {}
     if store_id:
         query['store_id'] = store_id
-    orders = db_find('orders', query, sort=[('created_at', -1)], limit=500)
-    today = datetime.utcnow().strftime('%Y-%m-%d')
-    today_orders = [o for o in orders if (o.get('created_at') or '').startswith(today)]
-    today_sales = sum(float(o.get('total', 0) or 0) for o in today_orders)
-    open_count = sum(
-        1 for o in orders
-        if normalize_status(o.get('status')) in (
-            'new', 'confirmed', 'ready', 'out_for_delivery', 'pending', 'placed'
-        )
+    # Only today's window + open statuses — avoid loading 500 full order docs every home open
+    today_query = dict(query)
+    today_query['created_at'] = {'$gte': today, '$lt': tomorrow}
+    today_orders = db_find(
+        'orders',
+        today_query,
+        projection={'total': 1, 'status': 1, 'created_at': 1},
+        limit=500,
     )
+    today_sales = sum(float(o.get('total', 0) or 0) for o in today_orders)
     delivered_today = sum(
         1 for o in today_orders if normalize_status(o.get('status')) == 'delivered'
     )
+    open_query = dict(query)
+    open_query['status'] = {'$in': list(_OPEN_ORDER_STATUSES)}
+    open_count = db_count('orders', open_query)
     inv_query = {'store_id': store_id} if store_id else {}
-    inventory = db_find('inventory', inv_query)
+    inventory = db_find('inventory', inv_query, projection={'stock': 1})
     threshold = int(get_settings().get('low_stock_threshold', 10))
     low_stock = sum(1 for r in inventory if int(r.get('stock', 0) or 0) <= threshold)
     total_stock = sum(int(r.get('stock', 0) or 0) for r in inventory)
@@ -6224,8 +6271,8 @@ def api_mobile_qr_generate():
         price = float(data.get('price') or 0)
     except (TypeError, ValueError):
         return jsonify({'error': 'Quantity and price must be valid numbers'}), 400
-    if qty < 1 or qty > 100000:
-        return jsonify({'error': 'Quantity must be between 1 and 100,000'}), 400
+    if qty < 1 or qty > 500:
+        return jsonify({'error': 'Quantity must be between 1 and 500'}), 400
 
     ensure_product_template_codes(product, category=category)
     variants = product.get('variants') or []

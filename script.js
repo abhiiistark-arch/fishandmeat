@@ -77,17 +77,34 @@
     };
   }
 
+  var _metaCache = { cats: null, stores: null, content: null, at: 0 };
+  var META_TTL_MS = 60000;
+
   function loadCatalogFromApi(done) {
-    Promise.all([
-      fetch('/api/products?store_id=' + encodeURIComponent(selectedStoreId)).then(function (r) { return r.ok ? r.json() : Promise.reject(); }),
-      fetch('/api/categories').then(function (r) { return r.ok ? r.json() : Promise.reject(); }),
-      fetch('/api/stores').then(function (r) { return r.ok ? r.json() : Promise.reject(); }),
-      fetch('/api/storefront-content').then(function (r) { return r.ok ? r.json() : Promise.reject(); })
-    ]).then(function (results) {
+    var now = Date.now();
+    var metaFresh = _metaCache.cats && _metaCache.stores && _metaCache.content &&
+      (now - _metaCache.at) < META_TTL_MS;
+    var productUrl = '/api/products?store_id=' + encodeURIComponent(selectedStoreId);
+    var tasks = [
+      fetch(productUrl).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+    ];
+    if (metaFresh) {
+      tasks.push(Promise.resolve(_metaCache.cats));
+      tasks.push(Promise.resolve(_metaCache.stores));
+      tasks.push(Promise.resolve(_metaCache.content));
+    } else {
+      tasks.push(fetch('/api/categories').then(function (r) { return r.ok ? r.json() : Promise.reject(); }));
+      tasks.push(fetch('/api/stores').then(function (r) { return r.ok ? r.json() : Promise.reject(); }));
+      tasks.push(fetch('/api/storefront-content').then(function (r) { return r.ok ? r.json() : Promise.reject(); }));
+    }
+    Promise.all(tasks).then(function (results) {
       var products = results[0];
       var cats = results[1];
       var stores = results[2];
       STOREFRONT_CONTENT = results[3];
+      if (!metaFresh) {
+        _metaCache = { cats: cats, stores: stores, content: STOREFRONT_CONTENT, at: Date.now() };
+      }
       PRODUCTS = products.map(mapApiProduct);
       CATEGORIES = [{ id: 'all', label: 'All' }].concat(cats.map(function (c) {
         return { id: c.id, label: c.name, banner: c.banner || '' };

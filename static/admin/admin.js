@@ -34,6 +34,35 @@
     return data;
   }
 
+  // Shared catalog cache — Products / Inventory / QR / POS reuse one fetch
+  var _catalogBundle = { at: 0, promise: null, data: null };
+  async function loadCatalogBundle(force) {
+    var now = Date.now();
+    if (!force && _catalogBundle.data && (now - _catalogBundle.at) < 45000) {
+      return _catalogBundle.data;
+    }
+    if (!force && _catalogBundle.promise) return _catalogBundle.promise;
+    _catalogBundle.promise = Promise.all([
+      api('/api/admin/stores'),
+      api('/api/admin/categories'),
+      api('/api/admin/products?lite=1')
+    ]).then(function (rows) {
+      _catalogBundle.data = { stores: rows[0], categories: rows[1], products: rows[2] };
+      _catalogBundle.at = Date.now();
+      _catalogBundle.promise = null;
+      return _catalogBundle.data;
+    }).catch(function (err) {
+      _catalogBundle.promise = null;
+      throw err;
+    });
+    return _catalogBundle.promise;
+  }
+  function invalidateCatalogBundle() {
+    _catalogBundle.data = null;
+    _catalogBundle.at = 0;
+    _catalogBundle.promise = null;
+  }
+
   function isAbortError(err) {
     return err && (err.name === 'AbortError' || err.message === 'The user aborted a request.');
   }
@@ -883,14 +912,10 @@
       }
     },
     prepareCatalog: async function () {
-      var results = await Promise.all([
-        api('/api/admin/stores'),
-        api('/api/admin/categories'),
-        api('/api/admin/products?lite=1')
-      ]);
-      this.stores = results[0];
-      this.categories = results[1];
-      this.products = results[2];
+      var bundle = await loadCatalogBundle();
+      this.stores = bundle.stores;
+      this.categories = bundle.categories;
+      this.products = bundle.products;
       this.bindForm();
     },
     init: async function () {
@@ -977,6 +1002,7 @@
         btn.onclick = async function () {
           if (!confirm('Delete this product and its inventory rows?')) return;
           await api('/api/admin/products/' + btn.getAttribute('data-del'), { method: 'DELETE' });
+          invalidateCatalogBundle();
           toast('Product deleted');
           self.load();
         };
@@ -1297,6 +1323,7 @@
             if (!uploadRes.ok) imageWarning = true;
           }
         }
+        invalidateCatalogBundle();
 
         if (alsoGenerateQr && saved && saved.id) {
           if (!AdminShell.admin.isSuper) {
@@ -1357,14 +1384,10 @@
     abortCtrl: null,
     init: async function () {
       var self = this;
-      var initial = await Promise.all([
-        api('/api/admin/stores'),
-        api('/api/admin/categories'),
-        api('/api/admin/products?lite=1')
-      ]);
-      this.stores = initial[0];
-      this.categories = initial[1];
-      this.products = initial[2];
+      var initial = await loadCatalogBundle();
+      this.stores = initial.stores;
+      this.categories = initial.categories;
+      this.products = initial.products;
       var sel = document.getElementById('inv-store-filter');
       sel.innerHTML = '<option value="">All stores</option>' + this.stores.map(function (s) {
         return '<option value="' + s.id + '">' + esc(s.name) + '</option>';

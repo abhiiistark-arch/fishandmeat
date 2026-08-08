@@ -8,6 +8,7 @@
     admin: null,
     stores: [],
     catalog: { categories: [], products: [] },
+    catalogLoadedAt: 0,
     punchItems: [],
     lastConfirmed: [],
     lastCreatedUnitIds: [],
@@ -215,14 +216,36 @@
     });
   }
 
-  async function loadCatalog() {
+  async function loadCatalog(force) {
+    var now = Date.now();
+    if (
+      !force &&
+      state.catalog &&
+      state.catalog.products &&
+      state.catalog.products.length &&
+      state.catalogLoadedAt &&
+      (now - state.catalogLoadedAt) < 60000
+    ) {
+      if ($('gen-category')) {
+        $('gen-category').innerHTML =
+          '<option value="">Select category</option>' +
+          (state.catalog.categories || []).map(function (c) {
+            return '<option value="' + escapeHtml(c.id) + '">' + escapeHtml(c.name) + '</option>';
+          }).join('');
+      }
+      return state.catalog;
+    }
     state.catalog = await api('/api/mobile/catalog');
-    $('gen-category').innerHTML =
-      '<option value="">Select category</option>' +
-      (state.catalog.categories || []).map(function (c) {
-        return '<option value="' + escapeHtml(c.id) + '">' + escapeHtml(c.name) + '</option>';
-      }).join('');
-    $('gen-product').innerHTML = '<option value="">Select category first</option>';
+    state.catalogLoadedAt = Date.now();
+    if ($('gen-category')) {
+      $('gen-category').innerHTML =
+        '<option value="">Select category</option>' +
+        (state.catalog.categories || []).map(function (c) {
+          return '<option value="' + escapeHtml(c.id) + '">' + escapeHtml(c.name) + '</option>';
+        }).join('');
+      $('gen-product').innerHTML = '<option value="">Select category first</option>';
+    }
+    return state.catalog;
   }
 
   function fillGenProducts() {
@@ -291,6 +314,7 @@
       var unitIds = result.created_unit_ids || [];
       toast((unitIds.length || result.units_created || qty) +
         ' QR(s) generated (pending — punch to add stock)');
+      state.catalogLoadedAt = 0;
       if (unitIds.length) {
         await downloadUnitPdf(unitIds, 'fam_generated_qr.pdf');
       }
@@ -529,6 +553,7 @@
       state.punchItems = [];
       renderPunchList();
       toast('Punched into inventory');
+      state.catalogLoadedAt = 0;
       await stopScanner();
       var updated = (result && result.updated && result.updated[0]) || {};
       $('punch-done-copy').textContent =
@@ -1069,6 +1094,7 @@
         });
       }
       toast('Inventory updated');
+      state.catalogLoadedAt = 0;
       showScreen('inventory');
       await loadInventoryRows();
     } catch (e) {

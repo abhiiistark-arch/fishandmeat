@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import re
 import secrets
 import threading
@@ -86,9 +87,20 @@ def _now() -> float:
 
 def client_ip(req: Optional[Request] = None) -> str:
     req = req or request
-    forwarded = (req.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
-    if forwarded:
-        return forwarded[:64]
+    # Only trust X-Forwarded-For when explicitly behind a reverse proxy.
+    behind = (
+        os.getenv('FAM_BEHIND_PROXY', '').lower() in ('1', 'true', 'yes')
+        or os.getenv('VERCEL')
+        or os.getenv('VERCEL_ENV')
+        or (
+            os.getenv('FAM_ENV', '').lower() == 'production'
+            and os.getenv('FAM_BEHIND_PROXY', '1') != '0'
+        )
+    )
+    if behind:
+        forwarded = (req.headers.get('X-Forwarded-For') or '').split(',')[0].strip()
+        if forwarded:
+            return forwarded[:64]
     return (req.remote_addr or '0.0.0.0')[:64]
 
 
@@ -154,9 +166,12 @@ def record_api_hit(ip: str | None = None) -> tuple[bool, str]:
     ip = ip or client_ip()
     now = _now()
     authed = bool(session.get('admin_ok') or session.get('customer_id'))
+    # Only treat Bearer as authed if it looks like a real signed token (not "Bearer x")
     auth = (request.headers.get('Authorization') or '') if request else ''
-    if auth.lower().startswith('bearer '):
-        authed = True
+    if (not authed) and auth.lower().startswith('bearer '):
+        token = auth[7:].strip()
+        if token and len(token) > 40 and token.count('.') >= 1:
+            authed = True
     limit = API_RATE_LIMIT_AUTHED if authed else API_RATE_LIMIT
     with _lock:
         until = _ip_cooldown_until.get(ip, 0)

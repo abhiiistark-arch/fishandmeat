@@ -233,13 +233,9 @@ def _weighted(pairs):
 
 def clear_demo():
     """Remove previously generated demo customers/orders (tagged demo=True)."""
-    if app._use_mongo:
-        app._mongo_db.customers.delete_many({'demo': True})
-        app._mongo_db.orders.delete_many({'demo': True})
-    else:
-        for coll in ('customers', 'orders'):
-            rows = [r for r in app._load_local(coll) if not r.get('demo')]
-            app._save_local(coll, rows)
+    app._require_mongo()
+    app._mongo_db.customers.delete_many({'demo': True})
+    app._mongo_db.orders.delete_many({'demo': True})
 
 
 def seed_customers_orders(n_customers=80, n_orders=420):
@@ -352,12 +348,8 @@ def seed_customers_orders(n_customers=80, n_orders=420):
 def _bulk_insert(collection, docs):
     if not docs:
         return
-    if app._use_mongo:
-        app._mongo_db[collection].insert_many([{k: v for k, v in d.items() if k != '_id'} for d in docs])
-    else:
-        rows = app._load_local(collection)
-        rows.extend(docs)
-        app._save_local(collection, rows)
+    app._require_mongo()
+    app._mongo_db[collection].insert_many([{k: v for k, v in d.items() if k != '_id'} for d in docs])
 
 
 if __name__ == '__main__':
