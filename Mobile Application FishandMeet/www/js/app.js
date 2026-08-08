@@ -23,10 +23,167 @@
     lastBill: null,
     inventoryRows: [],
     editingInv: null,
-    catalogCategoryId: ''
+    catalogCategoryId: '',
+    connected: null
   };
 
   function $(id) { return document.getElementById(id); }
+
+  // Lag-only overlay — show only if a request takes longer than lagMs
+  var FamLag = {
+    el: null,
+    pending: 0,
+    visible: false,
+    showTimer: null,
+    hideTimer: null,
+    shownAt: 0,
+    lagMs: 420,
+    minShowMs: 380,
+    bind: function () {
+      this.el = $('fam-lag-loader');
+      if (!this.el) return;
+      this.el.hidden = false;
+      this.el.classList.add('is-idle');
+      this.el.classList.remove('is-visible');
+    },
+    begin: function () {
+      if (!this.el) this.bind();
+      if (!this.el) return;
+      this.pending += 1;
+      if (this.pending === 1 && !this.visible) {
+        var self = this;
+        clearTimeout(this.showTimer);
+        this.showTimer = setTimeout(function () {
+          if (self.pending > 0) self.show();
+        }, this.lagMs);
+      }
+    },
+    end: function () {
+      if (!this.el) return;
+      this.pending = Math.max(0, this.pending - 1);
+      if (this.pending === 0) {
+        clearTimeout(this.showTimer);
+        this.showTimer = null;
+        if (this.visible) {
+          var self = this;
+          clearTimeout(this.hideTimer);
+          var wait = Math.max(0, this.minShowMs - (Date.now() - this.shownAt));
+          this.hideTimer = setTimeout(function () { self.hide(); }, wait);
+        }
+      }
+    },
+    show: function () {
+      if (!this.el || this.visible) return;
+      this.visible = true;
+      this.shownAt = Date.now();
+      this.el.classList.remove('is-idle');
+      this.el.classList.add('is-visible');
+      this.el.setAttribute('aria-busy', 'true');
+      document.body.classList.add('fam-lagging');
+    },
+    hide: function () {
+      if (!this.el) return;
+      this.visible = false;
+      this.el.classList.remove('is-visible');
+      this.el.classList.add('is-idle');
+      this.el.setAttribute('aria-busy', 'false');
+      document.body.classList.remove('fam-lagging');
+    }
+  };
+
+  // Side badge: green when live server link is confirmed
+  var ConnStatus = {
+    timer: null,
+    started: false,
+    set: function (mode) {
+      var el = $('conn-status');
+      if (!el) return;
+      state.connected = mode;
+      el.classList.remove('is-online', 'is-offline', 'is-checking', 'hidden');
+      var label = el.querySelector('.conn-label');
+      if (mode === 'online') {
+        el.classList.add('is-online');
+        if (label) label.textContent = 'Live';
+        el.title = 'Connected to Fish and Meat server';
+        el.setAttribute('aria-label', 'Connected to server');
+      } else if (mode === 'offline') {
+        el.classList.add('is-offline');
+        if (label) label.textContent = 'Off';
+        el.title = 'Not connected — tap to retry';
+        el.setAttribute('aria-label', 'Not connected to server');
+      } else {
+        el.classList.add('is-checking');
+        if (label) label.textContent = '…';
+        el.title = 'Checking server connection';
+        el.setAttribute('aria-label', 'Checking connection');
+      }
+    },
+    show: function () {
+      var el = $('conn-status');
+      if (el) el.classList.remove('hidden');
+    },
+    hide: function () {
+      var el = $('conn-status');
+      if (el) el.classList.add('hidden');
+    },
+    ping: async function () {
+      if (!state.apiBase || !state.token) {
+        this.hide();
+        return;
+      }
+      this.show();
+      if (!navigator.onLine) {
+        this.set('offline');
+        return;
+      }
+      this.set('checking');
+      try {
+        var ctrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+        var timer = setTimeout(function () {
+          if (ctrl) ctrl.abort();
+        }, 8000);
+        var res = await fetch(state.apiBase + '/api/health', {
+          method: 'GET',
+          cache: 'no-store',
+          signal: ctrl ? ctrl.signal : undefined
+        });
+        clearTimeout(timer);
+        var data = null;
+        try { data = await res.json(); } catch (e) { /* ignore */ }
+        if (res.ok && data && data.ok !== false && data.db !== 'disconnected') {
+          this.set('online');
+        } else {
+          this.set('offline');
+        }
+      } catch (e) {
+        this.set('offline');
+      }
+    },
+    start: function () {
+      var self = this;
+      if (!this.started) {
+        this.started = true;
+        window.addEventListener('online', function () { self.ping(); });
+        window.addEventListener('offline', function () { self.set('offline'); });
+        var btn = $('conn-status');
+        if (btn) {
+          btn.addEventListener('click', function () {
+            self.ping();
+            if (state.connected === 'online') toast('Connected to server');
+            else if (state.connected === 'offline') toast('Server not reachable', true);
+          });
+        }
+      }
+      clearInterval(this.timer);
+      this.ping();
+      this.timer = setInterval(function () { self.ping(); }, 20000);
+    },
+    stop: function () {
+      clearInterval(this.timer);
+      this.timer = null;
+      this.hide();
+    }
+  };
 
   function toast(msg, isError) {
     var el = $('toast');
@@ -92,21 +249,29 @@
     var headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
     if (state.token) headers.Authorization = 'Bearer ' + state.token;
     var res;
+    FamLag.begin();
     try {
-      res = await fetch(state.apiBase + path, Object.assign({}, opts, { headers: headers }));
-    } catch (e) {
-      throw new Error('No network / server connection. Check Wi‑Fi and server URL.');
+      try {
+        res = await fetch(state.apiBase + path, Object.assign({}, opts, { headers: headers }));
+      } catch (e) {
+        ConnStatus.set('offline');
+        throw new Error('No network / server connection. Check Wi‑Fi and server URL.');
+      }
+      var data = null;
+      var ct = res.headers.get('content-type') || '';
+      if (ct.indexOf('application/json') !== -1) data = await res.json();
+      if (res.status === 401) {
+        clearSession();
+        ConnStatus.stop();
+        showScreen('login');
+        throw new Error((data && data.error) || 'Session expired — login again');
+      }
+      if (!res.ok) throw new Error((data && data.error) || 'Request failed');
+      ConnStatus.set('online');
+      return data;
+    } finally {
+      FamLag.end();
     }
-    var data = null;
-    var ct = res.headers.get('content-type') || '';
-    if (ct.indexOf('application/json') !== -1) data = await res.json();
-    if (res.status === 401) {
-      clearSession();
-      showScreen('login');
-      throw new Error((data && data.error) || 'Session expired — login again');
-    }
-    if (!res.ok) throw new Error((data && data.error) || 'Request failed');
-    return data;
   }
 
   function showScreen(name) {
@@ -136,6 +301,11 @@
     if (name !== 'punch') stopScanner();
     if (name !== 'billing-scan') stopBillScanner();
     closeDrawer();
+    if (name === 'splash' || name === 'login') {
+      ConnStatus.stop();
+    } else if (state.token && state.apiBase) {
+      ConnStatus.start();
+    }
   }
 
   function canManageInventory() {

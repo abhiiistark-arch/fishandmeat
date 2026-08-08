@@ -21,3 +21,6 @@ node_modules/
 *.zip
 .DS_Store
 Thumbs.db
+
+# Android local SDK path
+Mobile Application FishandMeet/android/local.properties

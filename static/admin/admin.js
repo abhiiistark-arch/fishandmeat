@@ -2,81 +2,71 @@
 (function (global) {
   'use strict';
 
-  // Full-page boot gate: keep overlay until shell + initial API data settle
+  // Lag-only overlay: stay hidden unless API work takes longer than lagMs
   var AdminBoot = {
     el: null,
     pending: 0,
-    seenRequest: false,
-    shellDone: false,
-    active: true,
+    visible: false,
+    showTimer: null,
     hideTimer: null,
-    startedAt: Date.now(),
-    minShowMs: 500,
-    maxWaitMs: 15000,
+    shownAt: 0,
+    lagMs: 420,
+    minShowMs: 380,
+    lockClass: 'fam-lagging',
     bind: function () {
       this.el = document.getElementById('admin-boot-loader');
-      if (!this.el) {
-        this.active = false;
-        return;
-      }
-      var self = this;
-      setTimeout(function () { self.forceHide('timeout'); }, this.maxWaitMs);
-      if (document.readyState === 'complete') this.scheduleMaybeHide();
-      else window.addEventListener('load', function () { self.scheduleMaybeHide(); });
+      if (!this.el) return;
+      this.el.hidden = false;
+      this.el.classList.add('is-idle');
+      this.el.classList.remove('is-visible');
+      this.el.setAttribute('aria-busy', 'false');
     },
     begin: function () {
-      if (!this.active) return;
+      if (!this.el) this.bind();
+      if (!this.el) return;
       this.pending += 1;
-      this.seenRequest = true;
+      if (this.pending === 1 && !this.visible) {
+        var self = this;
+        clearTimeout(this.showTimer);
+        this.showTimer = setTimeout(function () {
+          if (self.pending > 0) self.show();
+        }, this.lagMs);
+      }
     },
     end: function () {
-      if (!this.active) return;
+      if (!this.el) return;
       this.pending = Math.max(0, this.pending - 1);
-      this.scheduleMaybeHide();
-    },
-    markShellDone: function () {
-      this.shellDone = true;
-      this.scheduleMaybeHide();
-    },
-    scheduleMaybeHide: function () {
-      var self = this;
-      clearTimeout(this.hideTimer);
-      this.hideTimer = setTimeout(function () { self.maybeHide(); }, 90);
-    },
-    maybeHide: function () {
-      if (!this.active) return;
-      if (!this.shellDone) return;
-      if (this.pending > 0) return;
-      var elapsed = Date.now() - this.startedAt;
-      // Give page modules a moment to fire their first API calls
-      if (!this.seenRequest && elapsed < 900) {
-        var self = this;
-        this.hideTimer = setTimeout(function () { self.maybeHide(); }, 120);
-        return;
+      if (this.pending === 0) {
+        clearTimeout(this.showTimer);
+        this.showTimer = null;
+        if (this.visible) this.scheduleHide();
       }
-      var wait = Math.max(0, this.minShowMs - elapsed);
+    },
+    show: function () {
+      if (!this.el || this.visible) return;
+      this.visible = true;
+      this.shownAt = Date.now();
+      this.el.classList.remove('is-idle');
+      this.el.classList.add('is-visible');
+      this.el.setAttribute('aria-busy', 'true');
+      document.body.classList.add(this.lockClass);
+    },
+    scheduleHide: function () {
       var self = this;
       clearTimeout(this.hideTimer);
+      var wait = Math.max(0, this.minShowMs - (Date.now() - this.shownAt));
       this.hideTimer = setTimeout(function () { self.hide(); }, wait);
     },
     hide: function () {
-      if (!this.active) return;
-      this.active = false;
-      document.body.classList.remove('admin-booting');
-      document.body.classList.add('admin-ready');
       if (!this.el) return;
-      this.el.classList.add('is-done');
+      this.visible = false;
+      this.el.classList.remove('is-visible');
+      this.el.classList.add('is-idle');
       this.el.setAttribute('aria-busy', 'false');
-      var el = this.el;
-      setTimeout(function () {
-        if (el && el.parentNode) el.parentNode.removeChild(el);
-      }, 380);
+      document.body.classList.remove(this.lockClass);
     },
-    forceHide: function () {
-      this.pending = 0;
-      this.shellDone = true;
-      this.hide();
-    }
+    // Kept for older call sites — no-op with lag-only mode
+    markShellDone: function () {}
   };
 
   function toast(msg, isError) {
@@ -275,7 +265,6 @@
     },
     init: async function () {
       var self = this;
-      try {
       this.initSidebarScroll();
       if (!this.admin.isSuper && this.admin.storeId) {
         this.storeId = this.admin.storeId;
@@ -339,9 +328,6 @@
 
       this.initSearch();
       this.refreshBadges();
-      } finally {
-        AdminBoot.markShellDone();
-      }
     },
     refreshBadges: async function () {
       try {
