@@ -4988,8 +4988,25 @@ def _list_pos_orders(store_id, limit=20):
     query = {'channel': 'in_store'}
     if store_id:
         query['store_id'] = store_id
-    orders = db_find('orders', query, sort=[('created_at', -1)], limit=limit)
-    stores = {s['id']: s['name'] for s in _cached_collection('stores', lambda: db_find('stores'))}
+    orders = db_find(
+        'orders',
+        query,
+        sort=[('created_at', -1)],
+        limit=limit,
+        projection={
+            'id': 1,
+            'order_id': 1,
+            'store_id': 1,
+            'customer_name': 1,
+            'customer_phone': 1,
+            'total': 1,
+            'payment_method': 1,
+            'created_at': 1,
+            'status': 1,
+            'channel': 1,
+        },
+    )
+    stores = {s['id']: s['name'] for s in _cached_collection('stores', lambda: db_find('stores', projection={'id': 1, 'name': 1}))}
     for order in orders:
         order['store_name'] = stores.get(order.get('store_id'), '')
     return orders
@@ -5996,10 +6013,15 @@ def api_mobile_dashboard():
     open_query['status'] = {'$in': list(_OPEN_ORDER_STATUSES)}
     open_count = db_count('orders', open_query)
     inv_query = {'store_id': store_id} if store_id else {}
-    inventory = db_find('inventory', inv_query, projection={'stock': 1})
+    inventory = db_find('inventory', inv_query, projection={'stock': 1, 'id': 1})
     threshold = int(get_settings().get('low_stock_threshold', 10))
-    low_stock = sum(1 for r in inventory if int(r.get('stock', 0) or 0) <= threshold)
-    total_stock = sum(int(r.get('stock', 0) or 0) for r in inventory)
+    low_stock = 0
+    total_stock = 0
+    for r in inventory:
+        stock = int(r.get('stock', 0) or 0)
+        total_stock += stock
+        if stock <= threshold:
+            low_stock += 1
     return jsonify({
         'ok': True,
         'admin': staff,
@@ -6257,12 +6279,26 @@ def api_mobile_qr_units():
         store_id = (staff.get('store_id') or store_id or '').strip()
     if not store_id:
         return jsonify({'error': 'Select a store'}), 400
-    products_by_id = {p['id']: p for p in db_find('products')}
-    categories_by_id = {c['id']: c for c in db_find('categories')}
+    try:
+        limit = min(300, max(1, int(request.args.get('limit', 150))))
+    except (TypeError, ValueError):
+        limit = 150
     units = db_find('qr_units', {
         'store_id': store_id,
         'status': {'$in': ['pending', 'in_stock']},
-    }, sort=[('created_at', -1)])
+    }, sort=[('created_at', -1)], limit=limit)
+    product_ids = list({u.get('product_id') for u in units if u.get('product_id')})
+    products_by_id = {}
+    if product_ids:
+        for p in db_find('products', {'id': {'$in': product_ids}}, projection={
+            'id': 1, 'name': 1, 'sku': 1, 'category_id': 1, 'variants': 1
+        }):
+            products_by_id[p['id']] = p
+    category_ids = list({(p.get('category_id') or '') for p in products_by_id.values() if p.get('category_id')})
+    categories_by_id = {}
+    if category_ids:
+        for c in db_find('categories', {'id': {'$in': category_ids}}, projection={'id': 1, 'name': 1}):
+            categories_by_id[c['id']] = c
     items = []
     for unit in units:
         product = products_by_id.get(unit.get('product_id')) or {}
@@ -6288,7 +6324,7 @@ def api_mobile_qr_units():
             'created_at': unit.get('created_at') or '',
             'price': float(unit.get('price') or 0),
         })
-    return jsonify({'items': items, 'store_id': store_id})
+    return jsonify({'items': items, 'store_id': store_id, 'count': len(items)})
 
 
 @app.route('/api/mobile/qr-generate', methods=['POST'])
@@ -6484,7 +6520,9 @@ def api_mobile_pos_orders():
             return denied
         if staff.get('role') != ROLE_SUPER and not store_id:
             return jsonify({'error': 'Your account is not assigned to a store'}), 403
-        return jsonify(_list_pos_orders(store_id, request.args.get('limit', 20)))
+        orders = _list_pos_orders(store_id, request.args.get('limit', 40))
+        # Object wrapper keeps clients resilient; `items` is the canonical list.
+        return jsonify({'ok': True, 'items': orders, 'orders': orders, 'count': len(orders)})
 
     data = parse_json()
     payload, status = _create_pos_order(data, staff)

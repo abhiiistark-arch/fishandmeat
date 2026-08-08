@@ -37,8 +37,8 @@
     showTimer: null,
     hideTimer: null,
     shownAt: 0,
-    lagMs: 420,
-    minShowMs: 380,
+    lagMs: 900,
+    minShowMs: 280,
     bind: function () {
       this.el = $('fam-lag-loader');
       if (!this.el) return;
@@ -174,9 +174,11 @@
           });
         }
       }
-      clearInterval(this.timer);
-      this.ping();
-      this.timer = setInterval(function () { self.ping(); }, 20000);
+      // Keep one interval — do not re-ping on every screen change (was causing lag).
+      if (!this.timer) {
+        this.ping();
+        this.timer = setInterval(function () { self.ping(); }, 30000);
+      }
     },
     stop: function () {
       clearInterval(this.timer);
@@ -245,6 +247,9 @@
   function clearSession() {
     state.token = '';
     state.admin = null;
+    state.stores = [];
+    state.storesLoadedAt = 0;
+    state.catalogLoadedAt = 0;
     try { localStorage.removeItem(STORAGE_KEY); } catch (e) { /* ignore */ }
   }
 
@@ -254,10 +259,13 @@
     var headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
     if (state.token) headers.Authorization = 'Bearer ' + state.token;
     var res;
-    FamLag.begin();
+    var useLag = !opts.skipLag;
+    if (useLag) FamLag.begin();
     try {
       try {
-        res = await fetch(state.apiBase + path, Object.assign({}, opts, { headers: headers }));
+        var fetchOpts = Object.assign({}, opts, { headers: headers });
+        delete fetchOpts.skipLag;
+        res = await fetch(state.apiBase + path, fetchOpts);
       } catch (e) {
         ConnStatus.set('offline');
         throw new Error('No network / server connection. Check Wi‑Fi and server URL.');
@@ -275,7 +283,7 @@
       ConnStatus.set('online');
       return data == null ? {} : data;
     } finally {
-      FamLag.end();
+      if (useLag) FamLag.end();
     }
   }
 
@@ -419,12 +427,26 @@
     }).join('');
   }
 
-  async function loadStores() {
-    var data = await api('/api/mobile/stores');
+  async function loadStores(force) {
+    var now = Date.now();
+    if (
+      !force &&
+      asArray(state.stores).length &&
+      state.storesLoadedAt &&
+      (now - state.storesLoadedAt) < 90000
+    ) {
+      ['punch-store', 'gen-store', 'print-store', 'bill-store', 'inv-store', 'cat-store'].forEach(function (id) {
+        if ($(id)) fillStoreSelect($(id));
+      });
+      return state.stores;
+    }
+    var data = await api('/api/mobile/stores', { skipLag: true });
     state.stores = asArray(data);
+    state.storesLoadedAt = Date.now();
     ['punch-store', 'gen-store', 'print-store', 'bill-store', 'inv-store', 'cat-store'].forEach(function (id) {
       if ($(id)) fillStoreSelect($(id));
     });
+    return state.stores;
   }
 
   async function loadCatalog(force) {
@@ -1199,28 +1221,54 @@
     }
   }
 
+  function extractOrderList(data) {
+    if (Array.isArray(data)) return data;
+    if (!data || typeof data !== 'object') return [];
+    if (Array.isArray(data.items)) return data.items;
+    if (Array.isArray(data.orders)) return data.orders;
+    if (Array.isArray(data.results)) return data.results;
+    return [];
+  }
+
   async function openRecentBills() {
-    await loadStores();
-    var storeId = $('bill-store').value;
-    var url = '/api/mobile/pos/orders?limit=20';
-    if (storeId) url += '&store_id=' + encodeURIComponent(storeId);
-    var orders = asArray(await api(url));
+    showScreen('billing-recent');
     var el = $('bill-recent-list');
-    if (!el) return;
-    if (!orders.length) {
-      el.innerHTML = '<p class="muted">No recent in-store bills.</p>';
-    } else {
+    if (el) el.innerHTML = '<p class="muted">Loading recent bills…</p>';
+    try {
+      await loadStores();
+      var storeId = ($('bill-store') && $('bill-store').value) || '';
+      // Prefer locked staff store when present
+      if (state.admin && state.admin.role !== 'Super Admin' && state.admin.store_id) {
+        storeId = state.admin.store_id;
+      }
+      var url = '/api/mobile/pos/orders?limit=40';
+      if (storeId) url += '&store_id=' + encodeURIComponent(storeId);
+      var data = await api(url, { skipLag: true });
+      var orders = extractOrderList(data);
+      if (!el) return;
+      if (!orders.length) {
+        el.innerHTML = '<p class="muted">No recent in-store bills' +
+          (storeId ? ' for this store' : '') +
+          '. Complete a sale from In-Store Billing to see it here.</p>';
+        return;
+      }
       el.innerHTML = orders.map(function (o) {
+        var when = String(o.created_at || '').slice(0, 19).replace('T', ' ');
         return '<div class="list-card">' +
-          '<div><strong>' + escapeHtml(o.order_id) + '</strong>' +
+          '<div><strong>' + escapeHtml(o.order_id || o.id || 'Bill') + '</strong>' +
           '<div class="code">' + escapeHtml(o.customer_name || 'Walk-in') +
-          ' · ' + escapeHtml(o.store_name || '') +
-          ' · ' + escapeHtml(String(o.created_at || '').slice(0, 16).replace('T', ' ')) +
+          (o.store_name ? ' · ' + escapeHtml(o.store_name) : '') +
+          (when ? ' · ' + escapeHtml(when) : '') +
+          (o.payment_method ? ' · ' + escapeHtml(String(o.payment_method).toUpperCase()) : '') +
           '</div></div>' +
           '<div class="value">' + money(o.total) + '</div></div>';
       }).join('');
+    } catch (e) {
+      if (el) {
+        el.innerHTML = '<p class="error-text">' + escapeHtml(e.message || 'Could not load recent bills') + '</p>';
+      }
+      toast(e.message || 'Could not load recent bills', true);
     }
-    showScreen('billing-recent');
   }
 
   async function openInventory() {
@@ -1515,6 +1563,12 @@
     };
     $('btn-bill-checkout').onclick = checkoutBill;
     $('btn-bill-invoice').onclick = downloadBillInvoice;
+    var billRecentAfter = $('btn-bill-recent-after');
+    if (billRecentAfter) {
+      billRecentAfter.onclick = function () {
+        openRecentBills().catch(function (e) { toast(e.message, true); });
+      };
+    }
     $('btn-bill-another').onclick = function () {
       startBilling().catch(function (e) { toast(e.message, true); });
     };
