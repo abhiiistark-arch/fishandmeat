@@ -128,6 +128,31 @@ app.config['PROPAGATE_EXCEPTIONS'] = False
 app.config['TRAP_HTTP_EXCEPTIONS'] = True
 app.config['TRAP_BAD_REQUEST_ERRORS'] = True
 
+# nginx / reverse-proxy: trust X-Forwarded-* so HTTPS + client IP work under gunicorn.
+# Enable with FAM_BEHIND_PROXY=1 (recommended when nginx terminates TLS).
+_BEHIND_PROXY = (
+    IS_VERCEL
+    or os.getenv('FAM_BEHIND_PROXY', '').lower() in ('1', 'true', 'yes')
+    or (IS_PRODUCTION and os.getenv('FAM_BEHIND_PROXY', '1') != '0')
+)
+if _BEHIND_PROXY:
+    try:
+        from werkzeug.middleware.proxy_fix import ProxyFix
+        # nginx typically sets 1 hop: X-Forwarded-For / Proto / Host
+        app.wsgi_app = ProxyFix(
+            app.wsgi_app,
+            x_for=int(os.getenv('FAM_PROXY_X_FOR', '1')),
+            x_proto=int(os.getenv('FAM_PROXY_X_PROTO', '1')),
+            x_host=int(os.getenv('FAM_PROXY_X_HOST', '1')),
+            x_port=int(os.getenv('FAM_PROXY_X_PORT', '1')),
+            x_prefix=int(os.getenv('FAM_PROXY_X_PREFIX', '0')),
+        )
+    except Exception as _proxy_err:  # noqa: BLE001
+        print(f'[proxy] ProxyFix not applied: {_proxy_err}')
+
+# WSGI aliases — gunicorn / uwsgi / waitress all use one of these
+application = app
+
 
 @app.context_processor
 def inject_admin_cache_bust():
@@ -264,6 +289,11 @@ _local_db_lock = threading.RLock()
 
 
 def _connect_mongo():
+    """Connect Mongo for this process. Safe under gunicorn workers (no --preload).
+
+    Each worker imports app.py separately by default, so each gets its own client.
+    If you use gunicorn --preload, call reset_mongo_after_fork() from post_fork.
+    """
     global _mongo_client, _mongo_db, _use_mongo
     if not MONGO_URI:
         _use_mongo = False
@@ -273,13 +303,16 @@ def _connect_mongo():
         # Longer timeouts tolerate flaky home-network SRV/DNS lookups;
         # shorter timeouts keep Vercel cold starts from hanging too long.
         timeout_ms = 8000 if IS_VERCEL else 20000
+        # connect=False: open sockets lazily (better with forking servers).
         _mongo_client = MongoClient(
             MONGO_URI,
             serverSelectionTimeoutMS=timeout_ms,
             connectTimeoutMS=timeout_ms,
             socketTimeoutMS=timeout_ms,
-            maxPoolSize=50 if IS_VERCEL else 100,
+            maxPoolSize=int(os.getenv('MONGO_MAX_POOL', '50' if IS_VERCEL else '25')),
+            minPoolSize=0,
             retryWrites=True,
+            connect=False,
         )
         # Retry the ping a few times — SRV resolution can time out transiently
         last_err = None
@@ -329,7 +362,8 @@ def _connect_mongo():
         # Binary image blobs keyed by public URL (/uploads/...)
         _mongo_db.media.create_index([('url', ASCENDING)], unique=True)
         _use_mongo = True
-        print('[db] Connected to MongoDB Atlas')
+        kind = 'Atlas' if 'mongodb+srv://' in MONGO_URI else 'MongoDB'
+        print(f'[db] Connected to {kind} ({MONGO_DB_NAME})')
         return True
     except Exception as e:
         print(f'[db] Mongo unavailable ({e}) — using local JSON storage')
@@ -339,7 +373,30 @@ def _connect_mongo():
         return False
 
 
+def close_mongo():
+    """Close Mongo client for this process (gunicorn worker shutdown / re-fork)."""
+    global _mongo_client, _mongo_db, _use_mongo
+    client = _mongo_client
+    _mongo_client = None
+    _mongo_db = None
+    _use_mongo = False
+    if client is not None:
+        try:
+            client.close()
+        except Exception:
+            pass
+
+
+def reset_mongo_after_fork():
+    """Call from gunicorn post_fork when using --preload."""
+    close_mongo()
+    return _connect_mongo()
+
+
 _connect_mongo()
+if not _use_mongo and MONGO_URI == '':
+    # Multi-worker + local JSON files can race; warn once per process.
+    print('[db] WARNING: local JSON mode — for gunicorn multi-worker prefer MongoDB URI')
 
 
 def _json_path(collection):
@@ -7168,7 +7225,9 @@ def api_report_pdf():
 
 
 # ---------------------------------------------------------------------------
-# Main
+# Main — both entry styles are supported:
+#   1) python app.py
+#   2) gunicorn -c gunicorn.conf.py app:app   (nginx → gunicorn multi-worker)
 # ---------------------------------------------------------------------------
 
 if __name__ == '__main__':
@@ -7176,10 +7235,13 @@ if __name__ == '__main__':
     print(f'  Storefront: http://127.0.0.1:5000/')
     print(f'  Admin:      http://127.0.0.1:5000/admin/login')
     print(f'  Database:   {db_mode()}')
+    print('  Dev run:    python app.py')
+    print('  Prod run:   gunicorn -c gunicorn.conf.py "app:app"')
     debug = FLASK_DEBUG and not IS_PRODUCTION
     if IS_PRODUCTION and FLASK_DEBUG:
         print('  WARNING: FLASK_DEBUG ignored in production')
     # Prefer localhost bind in production; 0.0.0.0 only when explicitly requested
+    # (nginx usually proxies to 127.0.0.1:8000 via gunicorn — see gunicorn.conf.py)
     host = os.getenv('FAM_HOST', '127.0.0.1' if IS_PRODUCTION else '0.0.0.0')
     port = int(os.getenv('FAM_PORT', '5000'))
-    app.run(debug=debug, host=host, port=port)
+    app.run(debug=debug, host=host, port=port, use_reloader=debug)
