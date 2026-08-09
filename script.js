@@ -576,11 +576,12 @@
     setText('home-hero-line3', c.hero.title_line_3);
     setText('home-hero-description', c.hero.description);
     setText('hero-shop', c.hero.primary_button);
-    setText('hero-locations', c.hero.secondary_button);
+    setText('hero-locations-label', c.hero.secondary_button || 'Find a Store');
     // Hero photo is embedded in index.html (assets/hero.webp) for fast first paint.
     var trust = document.getElementById('home-trust-items');
     trust.innerHTML = (c.trust.items || []).map(function (item) {
-      return '<span>&#10003; ' + esc(item) + '</span>';
+      return '<span class="trust-item"><span class="trust-ico" data-icon="' + trustIconKey(item) +
+        '" aria-hidden="true"></span>' + esc(item) + '</span>';
     }).join('');
 
     setText('home-why-eyebrow', c.why_us.eyebrow);
@@ -1415,9 +1416,23 @@
     });
   }
 
+  function trustIconKey(label) {
+    var t = String(label || '').toLowerCase();
+    if (t.indexOf('fssai') !== -1 || t.indexOf('certif') !== -1) return 'badge';
+    if (t.indexOf('frozen') !== -1 || t.indexOf('freshness') !== -1 || t.indexOf('snow') !== -1) return 'snow';
+    if (t.indexOf('cash') !== -1 || t.indexOf('cod') !== -1 || t.indexOf('payment') !== -1) return 'cash';
+    if (t.indexOf('deliver') !== -1 || t.indexOf('same-day') !== -1 || t.indexOf('same day') !== -1) return 'scooter';
+    if (t.indexOf('preserv') !== -1 || t.indexOf('leaf') !== -1 || t.indexOf('natural') !== -1) return 'leaf';
+    return 'badge';
+  }
+
   /* ---- HEADER ---- */
   function renderHeader() {
-    document.getElementById('nav-cart').textContent = 'Cart (' + cartCount() + ')';
+    var count = cartCount();
+    var badge = document.getElementById('nav-cart-badge');
+    var cartBtn = document.getElementById('nav-cart');
+    if (badge) badge.textContent = String(count);
+    if (cartBtn) cartBtn.setAttribute('aria-label', 'Cart (' + count + ')');
     var acctEl = document.getElementById('nav-account');
     if (state.user) {
       acctEl.textContent = 'Hi, ' + state.user.name;

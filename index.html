@@ -12,7 +12,7 @@
 <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap" />
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
 <noscript><link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" /></noscript>
-<link rel="stylesheet" href="style.css?v=20260809-noloader" />
+<link rel="stylesheet" href="style.css?v=20260809-icons" />
 <link rel="preload" as="image" href="assets/hero.webp" type="image/webp" fetchpriority="high" />
 </head>
 <body>
@@ -28,7 +28,13 @@
       </div>
     </div>
     <div class="header-search" id="header-search">
-      <input type="search" id="store-search" placeholder="Search products or categories…" autocomplete="off" aria-label="Search products or categories" aria-autocomplete="list" aria-controls="store-search-results" />
+      <span class="header-search-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="7"></circle>
+          <path d="M20 20l-3.5-3.5"></path>
+        </svg>
+      </span>
+      <input type="search" id="store-search" placeholder="Search for fresh meat, fish, chicken &amp; more..." autocomplete="off" aria-label="Search for fresh meat, fish, chicken and more" aria-autocomplete="list" aria-controls="store-search-results" />
       <div class="header-search-results hidden" id="store-search-results" role="listbox"></div>
     </div>
     <button type="button" class="nav-toggle" id="nav-toggle" aria-label="Open menu" aria-expanded="false" aria-controls="main-nav">
@@ -41,8 +47,15 @@
         <span class="nav-link" id="nav-locations">Locations</span>
       </div>
       <span class="nav-link account-link" id="nav-account"></span>
-      <span class="nav-link cart-link" id="nav-cart">Cart (0)</span>
     </nav>
+    <button type="button" class="cart-btn" id="nav-cart" aria-label="Cart">
+      <svg class="cart-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <circle cx="9" cy="20" r="1.4"></circle>
+        <circle cx="18" cy="20" r="1.4"></circle>
+        <path d="M3 4h2l2.4 11.2a1.5 1.5 0 0 0 1.5 1.2h8.8a1.5 1.5 0 0 0 1.5-1.2L21 8H7"></path>
+      </svg>
+      <span class="cart-badge" id="nav-cart-badge">0</span>
+    </button>
   </div>
 </header>
 
@@ -51,12 +64,30 @@
   <section class="hero" data-storefront-section="hero">
     <div class="hero-inner">
       <div>
-        <div class="pill" id="home-hero-pill">NOW DELIVERING &middot; ANDHERI &middot; KHARGHAR &middot; THANE</div>
+        <div class="pill">
+          <span class="pill-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 7h11v8H3z"></path>
+              <path d="M14 10h4l3 3v2h-7z"></path>
+              <circle cx="7" cy="17" r="1.6"></circle>
+              <circle cx="17" cy="17" r="1.6"></circle>
+            </svg>
+          </span>
+          <span id="home-hero-pill">NOW DELIVERING &middot; ANDHERI &middot; KHARGHAR &middot; THANE &middot; GHATKOPAR</span>
+        </div>
         <h1 class="hero-title"><span id="home-hero-line1">Farm Fresh Meat.</span><br /><span class="c-gold" id="home-hero-accent">Ocean Fresh Fish.</span><br /><span id="home-hero-line3">Delivered Cold.</span></h1>
         <p class="hero-copy" id="home-hero-description">Hand-cut chicken and mutton, day-fresh fish, and ready-to-cook packs — sourced daily and frozen at peak freshness. Pay cash on delivery, every time.</p>
         <div class="hero-actions">
           <button class="btn btn-gold" id="hero-shop">Shop Now</button>
-          <button class="btn btn-outline-white" id="hero-locations">Find a Store</button>
+          <button class="btn btn-outline-white" id="hero-locations">
+            <span class="btn-ico" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 21s7-5.2 7-11a7 7 0 1 0-14 0c0 5.8 7 11 7 11z"></path>
+                <circle cx="12" cy="10" r="2.4"></circle>
+              </svg>
+            </span>
+            <span id="hero-locations-label">Find a Store</span>
+          </button>
         </div>
       </div>
       <div class="hero-visual" id="home-hero-visual">
@@ -77,11 +108,11 @@
 
   <section class="trust-strip" data-storefront-section="trust">
     <div class="trust-strip-inner" id="home-trust-items">
-      <span>&#10003; FSSAI Certified</span>
-      <span>&#10003; Frozen at Peak Freshness</span>
-      <span>&#10003; Cash on Delivery</span>
-      <span>&#10003; Same-Day Delivery</span>
-      <span>&#10003; No Preservatives</span>
+      <span class="trust-item"><span class="trust-ico" data-icon="badge"></span>FSSAI Certified</span>
+      <span class="trust-item"><span class="trust-ico" data-icon="snow"></span>Frozen at Peak Freshness</span>
+      <span class="trust-item"><span class="trust-ico" data-icon="cash"></span>Cash on Delivery</span>
+      <span class="trust-item"><span class="trust-ico" data-icon="scooter"></span>Same-Day Delivery</span>
+      <span class="trust-item"><span class="trust-ico" data-icon="leaf"></span>No Preservatives</span>
     </div>
   </section>
 
@@ -322,6 +353,6 @@
   </div>
 </footer>
 
-<script src="script.js?v=20260809-noloader" defer></script>
+<script src="script.js?v=20260809-icons" defer></script>
 </body>
 </html>

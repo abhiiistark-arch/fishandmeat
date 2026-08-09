@@ -1733,7 +1733,7 @@ DEFAULT_STOREFRONT_CONTENT = {
     ],
     'hero': {
         'enabled': True,
-        'pill': 'NOW DELIVERING · ANDHERI · KHARGHAR · THANE',
+        'pill': 'NOW DELIVERING · ANDHERI · KHARGHAR · THANE · GHATKOPAR',
         'title_line_1': 'Farm Fresh Meat.',
         'title_accent': 'Ocean Fresh Fish.',
         'title_line_3': 'Delivered Cold.',

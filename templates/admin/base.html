@@ -99,6 +99,12 @@
       <div class="admin-topbar">
         <div class="topbar-greeting" id="topbar-greeting">Welcome, {{ admin_user.name if admin_user else 'Admin' }}{% if admin_user and admin_user.username %} · @{{ admin_user.username }}{% endif %}</div>
         <div class="topbar-search">
+          <span class="topbar-search-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="11" cy="11" r="7"></circle>
+              <path d="M20 20l-3.5-3.5"></path>
+            </svg>
+          </span>
           <input type="search" id="global-search" placeholder="Search orders, products, customers…" autocomplete="off" />
           <div class="search-results hidden" id="global-search-results"></div>
         </div>
