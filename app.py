@@ -494,6 +494,12 @@ def db_update(collection, query, updates):
     return result.modified_count
 
 
+def db_update_many(collection, query, updates):
+    _require_mongo()
+    result = _mongo_db[collection].update_many(query, {'$set': updates})
+    return result.modified_count
+
+
 def db_increment(collection, query, field, amount):
     """Atomically increment one numeric field and return the updated document."""
     _require_mongo()
@@ -1159,7 +1165,8 @@ ROLE_PAGES = {
 _stats_cache = {}
 _STATS_CACHE_TTL = 45  # seconds — slicer repeats hit cache while data stays fresh enough
 _ref_cache = {}
-_REF_CACHE_TTL = 60  # seconds for rarely-changing lookups (products/categories/stores)
+_REF_CACHE_TTL = 5  # short TTL — admin catalog edits must show on storefront immediately
+
 _badges_cache = {}
 _BADGES_CACHE_TTL = 15
 _settings_cache = {'at': 0, 'data': None}
@@ -1828,7 +1835,7 @@ DEFAULT_STOREFRONT_CONTENT = {
 
 
 _storefront_cache = {'at': 0, 'data': None}
-_STOREFRONT_TTL_SEC = 30
+_STOREFRONT_TTL_SEC = 0  # always read fresh so admin edits show instantly on storefront
 
 
 def get_storefront_content():
@@ -2380,22 +2387,30 @@ def api_health():
     return jsonify(payload)
 
 
-def _public_cache_headers(response, max_age=20):
-    """Short browser/CDN cache for public catalog GETs under concurrent shoppers."""
-    response.headers['Cache-Control'] = f'public, max-age={max_age}, stale-while-revalidate=30'
+def _public_cache_headers(response, max_age=0):
+    """Public catalog headers — prefer fresh data so admin edits appear instantly."""
+    if max_age and max_age > 0:
+        response.headers['Cache-Control'] = (
+            f'public, max-age={max_age}, stale-while-revalidate=5'
+        )
+    else:
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+    response.headers['Vary'] = 'Accept-Encoding'
+    return response
     return response
 
 
 @app.route('/api/stores')
 def api_stores():
     stores = db_find('stores', {'status': 'active'}, sort=[('name', 1)])
-    return _public_cache_headers(jsonify(stores), max_age=30)
+    return _public_cache_headers(jsonify(stores), max_age=0)
 
 
 @app.route('/api/categories')
 def api_categories():
     cats = db_find('categories', {'enabled': True}, sort=[('sort_order', 1)])
-    return _public_cache_headers(jsonify(cats), max_age=30)
+    return _public_cache_headers(jsonify(cats), max_age=0)
 
 
 @app.route('/api/products')
@@ -2447,7 +2462,7 @@ def api_products():
         item['categoryLabel'] = cat_names.get(p.get('category_id'), '')
         item['badge'] = 'Bestseller' if p.get('bestseller') else ('Featured' if p.get('featured') else (p.get('status') or 'Available').title())
         result.append(item)
-    return _public_cache_headers(jsonify(result), max_age=15)
+    return _public_cache_headers(jsonify(result), max_age=0)
 
 
 @app.route('/api/products/<product_id>')
@@ -2462,7 +2477,7 @@ def api_product_detail(product_id):
     p['store_inventory'] = db_find('inventory', inv_q)
     cat = db_find_one('categories', {'id': p.get('category_id')})
     p['categoryLabel'] = cat['name'] if cat else ''
-    return _public_cache_headers(jsonify(p), max_age=15)
+    return _public_cache_headers(jsonify(p), max_age=0)
 
 
 def _apply_inventory_delta(order, sign):
@@ -2913,12 +2928,12 @@ def api_public_settings():
         'halal_certified': s['halal_certified'],
         'seo_site_title': s['seo_site_title'],
         'seo_site_description': s['seo_site_description'],
-    }), max_age=30)
+    }), max_age=0)
 
 
 @app.route('/api/storefront-content')
 def api_storefront_content():
-    return _public_cache_headers(jsonify(get_storefront_content()), max_age=30)
+    return _public_cache_headers(jsonify(get_storefront_content()), max_age=0)
 
 
 @app.route('/sitemap.xml')
@@ -4025,6 +4040,8 @@ def api_admin_categories():
     db_insert('categories', cat)
     ensure_category_code(cat)
     _invalidate_ref_cache('categories')
+    _storefront_cache['data'] = None
+    _storefront_cache['at'] = 0
     return jsonify(cat), 201
 
 
@@ -4038,11 +4055,31 @@ def api_admin_category_detail(cat_id):
         return jsonify({'error': 'Category not found'}), 404
 
     if request.method == 'DELETE':
+        # Keep products; clear their category link so nothing is orphaned wrongly.
+        blanked = db_update_many(
+            'products',
+            {'category_id': cat_id},
+            {'category_id': '', 'updated_at': now_iso()},
+        )
+        # Drop deleted category from CMS Product Range picks.
+        content = get_storefront_content()
+        pr = dict(content.get('product_range') or {})
+        ids = list(pr.get('category_ids') or [])
+        if cat_id in ids:
+            pr['category_ids'] = [x for x in ids if x != cat_id]
+            save_storefront_content({'product_range': pr})
+        else:
+            _storefront_cache['data'] = None
+            _storefront_cache['at'] = 0
         delete_upload_file(category.get('banner'))
         db_delete('categories', {'id': cat_id})
-        _invalidate_ref_cache('categories')
-        log_activity('system', f"Category {category.get('name', cat_id)} deleted")
-        return jsonify({'ok': True})
+        _invalidate_ref_cache('categories', 'products_by_id')
+        log_activity(
+            'system',
+            f"Category {category.get('name', cat_id)} deleted"
+            + (f' ({blanked} products uncategorized)' if blanked else '')
+        )
+        return jsonify({'ok': True, 'products_uncategorized': blanked})
 
     data = parse_json()
     allowed = [
@@ -4059,6 +4096,8 @@ def api_admin_category_detail(cat_id):
         delete_upload_file(category.get('banner'))
     db_update('categories', {'id': cat_id}, updates)
     _invalidate_ref_cache('categories')
+    _storefront_cache['data'] = None
+    _storefront_cache['at'] = 0
     return jsonify(db_find_one('categories', {'id': cat_id}))
 
 

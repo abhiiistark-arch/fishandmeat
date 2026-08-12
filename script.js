@@ -78,24 +78,29 @@
   }
 
   var _metaCache = { cats: null, stores: null, content: null, at: 0 };
-  var META_TTL_MS = 60000;
+  var META_TTL_MS = 0; // always refetch so admin edits show instantly on storefront
+
+  function fetchJsonNoStore(url) {
+    return fetch(url, { cache: 'no-store', credentials: 'same-origin' })
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(); });
+  }
 
   function loadCatalogFromApi(done) {
     var now = Date.now();
-    var metaFresh = _metaCache.cats && _metaCache.stores && _metaCache.content &&
+    var metaFresh = META_TTL_MS > 0 && _metaCache.cats && _metaCache.stores && _metaCache.content &&
       (now - _metaCache.at) < META_TTL_MS;
     var productUrl = '/api/products?store_id=' + encodeURIComponent(selectedStoreId);
     var tasks = [
-      fetch(productUrl).then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+      fetchJsonNoStore(productUrl)
     ];
     if (metaFresh) {
       tasks.push(Promise.resolve(_metaCache.cats));
       tasks.push(Promise.resolve(_metaCache.stores));
       tasks.push(Promise.resolve(_metaCache.content));
     } else {
-      tasks.push(fetch('/api/categories').then(function (r) { return r.ok ? r.json() : Promise.reject(); }));
-      tasks.push(fetch('/api/stores').then(function (r) { return r.ok ? r.json() : Promise.reject(); }));
-      tasks.push(fetch('/api/storefront-content').then(function (r) { return r.ok ? r.json() : Promise.reject(); }));
+      tasks.push(fetchJsonNoStore('/api/categories'));
+      tasks.push(fetchJsonNoStore('/api/stores'));
+      tasks.push(fetchJsonNoStore('/api/storefront-content'));
     }
     Promise.all(tasks).then(function (results) {
       var products = results[0];
@@ -121,6 +126,24 @@
       API_LIVE = false;
       if (done) done();
     });
+  }
+
+  function refreshStorefrontLive() {
+    _metaCache.at = 0;
+    loadCatalogFromApi(function () {
+      if (state.page === 'home') renderHome();
+      else renderCurrentPage();
+      renderHeader();
+    });
+  }
+
+  var _liveRefreshTimer = 0;
+  function scheduleStorefrontRefresh() {
+    if (_liveRefreshTimer) clearTimeout(_liveRefreshTimer);
+    _liveRefreshTimer = setTimeout(function () {
+      _liveRefreshTimer = 0;
+      refreshStorefrontLive();
+    }, 250);
   }
 
   function findProduct(id) {
@@ -1487,6 +1510,13 @@
     restoreCustomerSession();
     loadCatalogFromApi(function () {
       renderHome();
+    });
+
+    document.addEventListener('visibilitychange', function () {
+      if (!document.hidden) scheduleStorefrontRefresh();
+    });
+    window.addEventListener('focus', function () {
+      scheduleStorefrontRefresh();
     });
   }
 

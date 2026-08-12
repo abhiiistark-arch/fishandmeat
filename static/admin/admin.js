@@ -992,7 +992,8 @@
           '<td>' + (c.sort_order || 0) + '</td>' +
           '<td>' + (c.enabled ? '<span class="badge green">Enabled</span>' : '<span class="badge red">Disabled</span>') + '</td>' +
           '<td><button class="btn btn-sm btn-outline" data-edit="' + c.id + '">Edit</button> ' +
-          '<button class="btn btn-sm btn-outline" data-toggle="' + c.id + '">' + (c.enabled ? 'Disable' : 'Enable') + '</button></td></tr>';
+          '<button class="btn btn-sm btn-outline" data-toggle="' + c.id + '">' + (c.enabled ? 'Disable' : 'Enable') + '</button> ' +
+          '<button class="btn btn-sm btn-danger" data-del="' + c.id + '">Delete</button></td></tr>';
       }).join('') || '<tr><td colspan="7">' + (focus ? 'No matching category found.' : 'No categories') + '</td></tr>';
       tbody.querySelectorAll('[data-edit]').forEach(function (btn) {
         btn.onclick = function () {
@@ -1006,8 +1007,27 @@
             method: 'PUT',
             body: JSON.stringify({ enabled: !c.enabled })
           });
+          invalidateCatalogBundle();
           toast('Category updated');
           self.load();
+        };
+      });
+      tbody.querySelectorAll('[data-del]').forEach(function (btn) {
+        btn.onclick = async function () {
+          var c = cats.find(function (x) { return x.id === btn.getAttribute('data-del'); });
+          if (!c) return;
+          if (!confirm(
+            'Delete category "' + c.name + '"?\n\nProducts in this category will NOT be deleted — their category will be cleared.'
+          )) return;
+          try {
+            var res = await api('/api/admin/categories/' + c.id, { method: 'DELETE' });
+            invalidateCatalogBundle();
+            var n = (res && res.products_uncategorized) || 0;
+            toast(n ? ('Category deleted. ' + n + ' product(s) uncategorized.') : 'Category deleted');
+            self.load();
+          } catch (err) {
+            toast((err && err.message) || 'Delete failed', true);
+          }
         };
       });
     },
@@ -1040,6 +1060,7 @@
       };
       if (id) await api('/api/admin/categories/' + id, { method: 'PUT', body: JSON.stringify(body) });
       else await api('/api/admin/categories', { method: 'POST', body: JSON.stringify(body) });
+      invalidateCatalogBundle();
       closeModal('cat-modal');
       toast('Category saved');
       this.load();
@@ -1355,9 +1376,10 @@
       );
 
       var catSel = document.getElementById('p-category');
-      catSel.innerHTML = this.categories.map(function (c) {
+      catSel.innerHTML = '<option value="">— No category —</option>' + this.categories.map(function (c) {
         return '<option value="' + c.id + '"' + (p.category_id === c.id ? ' selected' : '') + '>' + esc(c.name) + '</option>';
       }).join('');
+      if (!p.category_id) catSel.value = '';
       catSel.onchange = function () {
         if (isEdit || readParameters('p-parameters').length) return;
         var category = self.categories.find(function (c) { return c.id === catSel.value; });
