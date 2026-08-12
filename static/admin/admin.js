@@ -3078,20 +3078,87 @@
       this.wireImagePicker(document.querySelector('[data-cms-section="why_us"] .cms-image-picker'), c.why_us.image);
 
       var selectedCats = c.product_range.category_ids || [];
-      document.getElementById('cms-range-categories').innerHTML = this.categories.map(function (cat) {
-        return '<label><input type="checkbox" value="' + cat.id + '"' +
-          (selectedCats.indexOf(cat.id) !== -1 ? ' checked' : '') + '> ' + esc(cat.name) + '</label>';
-      }).join('');
+      this.renderPickList('cms-range-categories', this.categories.map(function (cat) {
+        return { id: cat.id, label: cat.name };
+      }), selectedCats, 'Add category…');
       var selectedProducts = c.favourites.product_ids || [];
-      document.getElementById('cms-fav-products').innerHTML = this.products.map(function (p) {
-        return '<label><input type="checkbox" value="' + p.id + '"' +
-          (selectedProducts.indexOf(p.id) !== -1 ? ' checked' : '') + '> ' + esc(p.name) + '</label>';
-      }).join('');
+      this.renderPickList('cms-fav-products', this.products.map(function (p) {
+        return { id: p.id, label: p.name };
+      }), selectedProducts, 'Add product…');
+    },
+    renderPickList: function (containerId, allItems, selectedIds, placeholder) {
+      var root = document.getElementById(containerId);
+      if (!root) return;
+      var self = this;
+      var selected = (selectedIds || []).slice();
+      var byId = {};
+      (allItems || []).forEach(function (item) { byId[item.id] = item; });
+
+      function draw() {
+        var cards = selected.map(function (id) {
+          var item = byId[id];
+          if (!item) return '';
+          return '<div class="cms-pick-card" data-id="' + esc(item.id) + '">' +
+            '<span class="cms-pick-label">' + esc(item.label) + '</span>' +
+            '<button type="button" class="cms-pick-remove" data-remove="' + esc(item.id) +
+            '" title="Remove" aria-label="Remove ' + esc(item.label) + '">&times;</button></div>';
+        }).join('');
+
+        var remaining = (allItems || []).filter(function (item) {
+          return selected.indexOf(item.id) === -1;
+        });
+        var options = remaining.map(function (item) {
+          return '<option value="' + esc(item.id) + '">' + esc(item.label) + '</option>';
+        }).join('');
+
+        root.innerHTML =
+          '<div class="cms-pick-items">' +
+            (cards || '<div class="cms-pick-empty muted">No boxes selected yet.</div>') +
+          '</div>' +
+          '<div class="cms-pick-add">' +
+            '<select class="cms-pick-select"' + (remaining.length ? '' : ' disabled') + '>' +
+              '<option value="">' + esc(placeholder || 'Add…') + '</option>' + options +
+            '</select>' +
+            '<button type="button" class="btn btn-outline btn-sm cms-pick-add-btn"' +
+              (remaining.length ? '' : ' disabled') + '>+ Add</button>' +
+          '</div>';
+
+        root.querySelectorAll('[data-remove]').forEach(function (btn) {
+          btn.onclick = function () {
+            var id = btn.getAttribute('data-remove');
+            selected = selected.filter(function (x) { return x !== id; });
+            draw();
+          };
+        });
+        var addBtn = root.querySelector('.cms-pick-add-btn');
+        var select = root.querySelector('.cms-pick-select');
+        if (addBtn && select) {
+          addBtn.onclick = function () {
+            var id = select.value;
+            if (!id || selected.indexOf(id) !== -1) return;
+            selected.push(id);
+            draw();
+          };
+        }
+      }
+
+      root._cmsSelected = function () { return selected.slice(); };
+      draw();
+    },
+    pickListValues: function (containerId) {
+      var root = document.getElementById(containerId);
+      if (root && typeof root._cmsSelected === 'function') return root._cmsSelected();
+      return Array.from(document.querySelectorAll('#' + containerId + ' .cms-pick-card')).map(function (el) {
+        return el.getAttribute('data-id');
+      }).filter(Boolean);
     },
     save: async function () {
       var self = this;
       function val(id) { return document.getElementById(id).value.trim(); }
       function checked(id) {
+        if (id === 'cms-range-categories' || id === 'cms-fav-products') {
+          return self.pickListValues(id);
+        }
         return Array.from(document.querySelectorAll('#' + id + ' input:checked')).map(function (x) { return x.value; });
       }
       var ordered = Array.from(document.querySelectorAll('[data-cms-section]')).map(function (panel) {

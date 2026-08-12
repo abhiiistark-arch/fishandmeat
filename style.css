@@ -400,17 +400,64 @@ body.nav-open { overflow: hidden; }
 .feature-desc { color: #55594F; font-size: 14px; line-height: 1.5; }
 
 /* RANGE / TILES */
-.range-section { background: #1E3A22; padding: 90px 40px; color: #fff; }
-.tile-grid { display: grid; grid-template-columns: repeat(5, 1fr); gap: 20px; margin-top: 44px; }
-.tile { cursor: pointer; }
-.tile-image { background: repeating-linear-gradient(45deg, #274D2C, #274D2C 10px, #2C572F 10px, #2C572F 20px); border-radius: 8px; height: 140px; display: flex; align-items: center; justify-content: center; margin-bottom: 14px; overflow: hidden; }
+.range-section { background: #1E3A22; padding: 90px 40px; color: #fff; overflow-x: clip; }
+.range-section .section-inner { max-width: 1400px; margin: 0 auto; width: 100%; }
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: 20px;
+  margin-top: 44px;
+  width: 100%;
+  max-width: 100%;
+}
+.tile {
+  cursor: pointer;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.tile-image {
+  background: repeating-linear-gradient(45deg, #274D2C, #274D2C 10px, #2C572F 10px, #2C572F 20px);
+  border-radius: 8px;
+  height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 14px;
+  overflow: hidden;
+  width: 100%;
+}
 .tile-image span { font-family: monospace; font-size: 11px; color: #D8DCCF; text-align: center; padding: 10px; }
 .tile-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.tile-label { font-weight: 700; font-size: 15px; }
+.tile-label {
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1.3;
+  word-break: break-word;
+}
 
 /* PRODUCT GRID / CARDS */
-.product-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 22px; max-width: 1400px; margin: 0 auto; padding: 0 40px; }
-.product-card { background: #fff; border: 1px solid #E7E2D6; border-radius: 10px; overflow: hidden; cursor: pointer; }
+.product-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 22px;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 0 40px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.product-card {
+  background: #fff;
+  border: 1px solid #E7E2D6;
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
 .product-card.is-bestseller { background: #FFF4CC; border-color: #E7B430; }
 .product-card.is-available { background: #E8F2EA; border-color: #9CBBA1; }
 .product-image { background: repeating-linear-gradient(45deg, #EDE7D6, #EDE7D6 10px, #E2DAC4 10px, #E2DAC4 20px); height: 150px; display: flex; align-items: center; justify-content: center; }
@@ -636,8 +683,8 @@ body.nav-open { overflow: hidden; }
 @media (max-width: 1100px) {
   .header-inner, .section, .section-header, .hero, .page-container, .product-grid, .custom-section,
   .trust-strip, .range-section, .promise-section, .cta-banner, .footer { padding-left: 28px; padding-right: 28px; }
-  .product-grid { grid-template-columns: repeat(3, 1fr); }
-  .tile-grid { grid-template-columns: repeat(3, 1fr); }
+  .tile-grid { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  .product-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
   .location-grid { grid-template-columns: repeat(2, 1fr); }
   .hero-inner, .why-us, .promise-inner { gap: 40px; }
   .cart-grid, .checkout-grid { grid-template-columns: 1fr 300px; gap: 28px; }
@@ -656,8 +703,8 @@ body.nav-open { overflow: hidden; }
   .hero { padding-top: 56px; padding-bottom: 40px; }
   .section, .range-section, .promise-section { padding-top: 64px; padding-bottom: 64px; }
   .hero-inner, .why-us, .promise-inner, .detail-grid, .cart-grid, .checkout-grid, .custom-section-grid, .order-details-grid { grid-template-columns: 1fr; gap: 28px; }
-  .tile-grid { grid-template-columns: repeat(2, 1fr); }
-  .product-grid { grid-template-columns: repeat(2, 1fr); }
+  .tile-grid { grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .product-grid { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
   .location-grid { grid-template-columns: 1fr; }
   .footer-grid { grid-template-columns: 1fr; }
   .account-form-grid { grid-template-columns: 1fr; }

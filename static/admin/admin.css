@@ -1067,6 +1067,88 @@ dialog.modal:has(.wide) { max-width: 720px; }
   border-radius: 7px;
   background: var(--cream);
 }
+.cms-pick-list {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--cream);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 100%;
+  overflow: hidden;
+}
+.cms-fav-pick { max-height: 360px; }
+.cms-pick-items {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+  max-width: 100%;
+  overflow: auto;
+  max-height: 280px;
+  padding: 2px;
+}
+.cms-pick-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-height: 52px;
+  min-width: 0;
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 36px 12px 14px;
+  box-sizing: border-box;
+}
+.cms-pick-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink);
+  line-height: 1.35;
+  word-break: break-word;
+}
+.cms-pick-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 50%;
+  background: #f3ece0;
+  color: var(--red);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.cms-pick-remove:hover {
+  background: #A5342A;
+  color: #fff;
+}
+.cms-pick-empty {
+  grid-column: 1 / -1;
+  padding: 10px 4px;
+  font-size: 13px;
+}
+.cms-pick-add {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+.cms-pick-select {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: #fff;
+  font: inherit;
+}
 .cms-image-picker { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
 .cms-image-preview {
   display: flex;
@@ -1324,6 +1406,8 @@ dialog.modal:has(.wide) { max-width: 720px; }
   .data-table { min-width: 560px; font-size: 12px; }
   .qr-print-toolbar { grid-template-columns: 1fr; }
   .actions-cell { white-space: nowrap; }
+  .cms-pick-items { grid-template-columns: 1fr; max-height: none; }
+  .cms-pick-add { grid-template-columns: 1fr; }
 }
 
 /* Generate QR */

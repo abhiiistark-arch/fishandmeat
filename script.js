@@ -626,13 +626,19 @@
       return c.id !== 'all' && (!rangeIds.length || rangeIds.indexOf(c.id) !== -1);
     });
     tileGrid.innerHTML = rangeCategories.map(function (c) {
-      var tileVisual = c.banner
-        ? imgTag(c.banner, c.label, { width: 480, height: 280 })
-        : '<span>[ ' + esc(c.label) + ' photo ]</span>';
+      var label = c.label || 'Category';
+      var fallback = '<span>[ ' + esc(label) + ' photo ]</span>';
+      var tileVisual = fallback;
+      if (c.banner && String(c.banner).indexOf('/') === 0) {
+        tileVisual =
+          '<img src="' + esc(c.banner) + '" alt="' + esc(label) + '" width="480" height="280" loading="lazy" decoding="async" ' +
+          'onerror="this.onerror=null;var s=document.createElement(\'span\');s.textContent=this.getAttribute(\'data-fallback\')||\'[ photo ]\';this.replaceWith(s);" ' +
+          'data-fallback="[ ' + esc(label) + ' photo ]" />';
+      }
       return '' +
         '<div class="tile" data-cat="' + c.id + '">' +
           '<div class="tile-image">' + tileVisual + '</div>' +
-          '<div class="tile-label">' + esc(c.label) + '</div>' +
+          '<div class="tile-label">' + esc(label) + '</div>' +
         '</div>';
     }).join('');
     tileGrid.querySelectorAll('[data-cat]').forEach(function (el) {
