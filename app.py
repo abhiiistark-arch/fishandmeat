@@ -1315,6 +1315,43 @@ def set_admin_session(member):
     session.permanent = False
 
 
+def _staff_vault_key():
+    return hashlib.sha256(f'{SECRET_KEY}|staff-password-vault'.encode()).digest()
+
+
+def seal_staff_password(plain):
+    """Reversible Super-Admin view of a staff password. Login still uses the hash."""
+    raw = (plain or '').encode('utf-8')
+    if not raw:
+        return ''
+    nonce = os.urandom(16)
+    key = _staff_vault_key()
+    stream = hashlib.sha256(key + nonce).digest()
+    while len(stream) < len(raw):
+        stream += hashlib.sha256(stream[-32:]).digest()
+    enc = bytes(a ^ b for a, b in zip(raw, stream))
+    mac = hmac.new(key, nonce + enc, hashlib.sha256).digest()
+    return base64.urlsafe_b64encode(nonce + mac + enc).decode('ascii')
+
+
+def unseal_staff_password(token):
+    if not token:
+        return ''
+    try:
+        blob = base64.urlsafe_b64decode(token.encode('ascii'))
+        nonce, mac, enc = blob[:16], blob[16:48], blob[48:]
+        key = _staff_vault_key()
+        expect = hmac.new(key, nonce + enc, hashlib.sha256).digest()
+        if not hmac.compare_digest(mac, expect):
+            return ''
+        stream = hashlib.sha256(key + nonce).digest()
+        while len(stream) < len(enc):
+            stream += hashlib.sha256(stream[-32:]).digest()
+        return bytes(a ^ b for a, b in zip(enc, stream)).decode('utf-8')
+    except Exception:
+        return ''
+
+
 def _is_locked_recovery_staff(member):
     if not member:
         return False
@@ -1326,12 +1363,45 @@ def _is_locked_recovery_staff(member):
     )
 
 
+def _is_canonical_recovery_staff(member):
+    return bool(member) and member.get('id') == RECOVERY_STAFF_ID
+
+
+def _dedupe_recovery_staff():
+    """Keep one recovery Super Admin; drop extra copies from worker races."""
+    if not _use_mongo or _mongo_db is None:
+        return 0
+    keep = _mongo_db.staff.find_one({'id': RECOVERY_STAFF_ID}) or _mongo_db.staff.find_one(
+        {'username': RECOVERY_USERNAME}
+    )
+    if not keep:
+        return 0
+    keep_oid = keep['_id']
+    extra_q = {
+        '$or': [
+            {'username': RECOVERY_USERNAME},
+            {'locked_recovery': True},
+            {'id': RECOVERY_STAFF_ID},
+        ]
+    }
+    deleted = 0
+    for doc in _mongo_db.staff.find(extra_q, {'_id': 1}):
+        if doc.get('_id') == keep_oid:
+            continue
+        _mongo_db.staff.delete_one({'_id': doc['_id']})
+        deleted += 1
+    if keep.get('id') != RECOVERY_STAFF_ID:
+        _mongo_db.staff.update_one({'_id': keep_oid}, {'$set': {'id': RECOVERY_STAFF_ID}})
+    return deleted
+
+
 def ensure_recovery_admin():
-    """Always write the hardcoded recovery Super Admin into Mongo."""
+    """Always write the hardcoded recovery Super Admin into Mongo (exactly one row)."""
     desired = {
         'name': 'Emergency Super Admin',
         'username': RECOVERY_USERNAME,
         'password_hash': hash_password(RECOVERY_PASSWORD),
+        'password_vault': seal_staff_password(RECOVERY_PASSWORD),
         'role': ROLE_SUPER,
         'store_id': '',
         'phone': '',
@@ -1339,15 +1409,23 @@ def ensure_recovery_admin():
         'active': True,
         'locked_recovery': True,
         'updated_at': now_iso(),
+        'id': RECOVERY_STAFF_ID,
     }
+    if _use_mongo and _mongo_db is not None:
+        _mongo_db.staff.update_one(
+            {'id': RECOVERY_STAFF_ID},
+            {'$set': desired, '$setOnInsert': {'created_at': now_iso()}},
+            upsert=True,
+        )
+        removed = _dedupe_recovery_staff()
+        if removed:
+            print(f'[auth] Removed {removed} duplicate recovery Super Admin row(s)')
+        return
     existing = db_find_one('staff', {'id': RECOVERY_STAFF_ID}) or db_find_one(
         'staff', {'username': RECOVERY_USERNAME}
     )
     if existing:
         db_update('staff', {'id': existing['id']}, desired)
-        if existing.get('id') != RECOVERY_STAFF_ID:
-            # Keep a stable id so Staff UI protections stay reliable.
-            db_update('staff', {'id': existing['id']}, {'id': RECOVERY_STAFF_ID})
         return
     db_insert('staff', {
         'id': RECOVERY_STAFF_ID,
@@ -6808,9 +6886,44 @@ def api_admin_coupon_detail(coupon_id):
 
 # --- Staff (login accounts + duty status) ---
 
+def reveal_staff_password(member):
+    if not member:
+        return ''
+    if _is_locked_recovery_staff(member):
+        return RECOVERY_PASSWORD
+    stored = unseal_staff_password(member.get('password_vault') or '')
+    if stored:
+        return stored
+    hashed = member.get('password_hash') or ''
+    if not hashed:
+        return ''
+    for candidate in (ADMIN_PASSWORD, 'abhi123', RECOVERY_PASSWORD):
+        if candidate and verify_password(hashed, candidate):
+            return candidate
+    return ''
+
+
+def hydrate_staff_password_vault(member):
+    """Save a viewable copy when we can recover it, without changing the login hash."""
+    if not member or not member.get('id'):
+        return member
+    if member.get('password_vault') and unseal_staff_password(member.get('password_vault')):
+        return member
+    plain = reveal_staff_password(member)
+    if not plain:
+        return member
+    sealed = seal_staff_password(plain)
+    db_update('staff', {'id': member['id']}, {
+        'password_vault': sealed,
+        'updated_at': now_iso(),
+    })
+    member['password_vault'] = sealed
+    return member
+
+
 def _staff_public(member, stores=None):
     stores = stores or {s['id']: s['name'] for s in db_find('stores')}
-    return {
+    row = {
         'id': member.get('id'),
         'name': member.get('name', ''),
         'username': member.get('username', ''),
@@ -6825,6 +6938,10 @@ def _staff_public(member, stores=None):
         'created_at': member.get('created_at'),
         'updated_at': member.get('updated_at'),
     }
+    if admin_is_super():
+        row['password'] = reveal_staff_password(member)
+        row['password_known'] = bool(row['password'])
+    return row
 
 
 @app.route('/api/admin/staff', methods=['GET', 'POST'])
@@ -6832,7 +6949,10 @@ def _staff_public(member, stores=None):
 def api_admin_staff():
     stores = {s['id']: s['name'] for s in db_find('stores')}
     if request.method == 'GET':
+        _dedupe_recovery_staff()
         staff = db_find('staff', sort=[('name', 1)])
+        if admin_is_super():
+            staff = [hydrate_staff_password_vault(m) for m in staff]
         scoped = resolve_store_scope(request.args.get('store_id'))
         role = session.get('admin_role')
         if role == ROLE_BILLING:
@@ -6876,6 +6996,7 @@ def api_admin_staff():
         'name': name,
         'username': username,
         'password_hash': hash_password(password),
+        'password_vault': seal_staff_password(password),
         'role': role,
         'store_id': store_id,
         'phone': data.get('phone', ''),
@@ -6899,8 +7020,13 @@ def api_admin_staff_detail(staff_id):
     if request.method == 'DELETE':
         if not admin_is_super():
             return jsonify({'error': 'Only Super Admin can remove staff'}), 403
-        if member.get('username') == 'abhi' or _is_locked_recovery_staff(member):
-            return jsonify({'error': 'Cannot delete the primary or recovery Super Admin account'}), 400
+        if member.get('username') == 'abhi':
+            return jsonify({'error': 'Cannot delete the primary Super Admin account'}), 400
+        if _is_locked_recovery_staff(member):
+            removed = _dedupe_recovery_staff()
+            if not removed and _is_canonical_recovery_staff(member):
+                return jsonify({'error': 'Cannot delete the recovery Super Admin account'}), 400
+            return jsonify({'ok': True, 'removed_duplicates': removed})
         db_delete('staff', {'id': staff_id})
         return jsonify({'ok': True})
 
@@ -6960,6 +7086,7 @@ def api_admin_staff_detail(staff_id):
         if len(data['password']) < 4:
             return jsonify({'error': 'Password must be at least 4 characters'}), 400
         updates['password_hash'] = hash_password(data['password'])
+        updates['password_vault'] = seal_staff_password(data['password'])
     if 'on_duty' in updates:
         updates['on_duty'] = bool(updates['on_duty'])
     if 'active' in updates:

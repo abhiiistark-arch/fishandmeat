@@ -17,7 +17,7 @@
   <div class="table-wrap">
     <table class="data-table" id="staff-table">
       <thead>
-        <tr><th>Name</th><th>Username</th><th>Role</th><th>Store</th><th>Phone</th><th>Duty</th><th></th></tr>
+        <tr><th>Name</th><th>Username</th><th>Password</th><th>Role</th><th>Store</th><th>Phone</th><th>Duty</th><th></th></tr>
       </thead>
       <tbody></tbody>
     </table>
@@ -31,7 +31,7 @@
     <div class="form-grid">
       <div class="field"><label>Name</label><input id="stf-name" required /></div>
       <div class="field"><label>Username</label><input id="stf-username" required autocomplete="off" /></div>
-      <div class="field"><label>Password</label><input id="stf-password" type="password" autocomplete="new-password" placeholder="Set login password" /></div>
+      <div class="field"><label>Password</label><input id="stf-password" type="text" autocomplete="off" placeholder="Login password" /></div>
       <div class="field"><label>Role</label><select id="stf-role"></select></div>
       <div class="field"><label>Store</label><select id="stf-store"></select></div>
       <div class="field"><label>Phone</label><input id="stf-phone" /></div>
@@ -42,7 +42,7 @@
         <select id="stf-active"><option value="true">Active</option><option value="false">Disabled</option></select>
       </div>
     </div>
-    <p class="muted" id="stf-password-hint">Leave password blank when editing to keep the current password.</p>
+    <p class="muted" id="stf-password-hint">Current password is shown when it is known. Leave unchanged to keep it.</p>
     <div class="modal-actions">
       <button type="button" class="btn btn-outline" id="staff-cancel">Cancel</button>
       <button type="submit" class="btn btn-dark">Save Staff</button>

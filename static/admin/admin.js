@@ -2780,8 +2780,10 @@
       tbody.innerHTML = list.map(function (m) {
         var actions = '';
         if (self.canManage) {
-          actions = '<button class="btn btn-sm btn-outline" data-edit="' + m.id + '">Edit</button> ' +
-            '<button class="btn btn-sm btn-outline" data-del="' + m.id + '">Remove</button>';
+          actions = '<button class="btn btn-sm btn-outline" data-edit="' + m.id + '">Edit</button>';
+          if (m.username !== 'abhi' && !m.locked_recovery) {
+            actions += ' <button class="btn btn-sm btn-outline" data-del="' + m.id + '">Remove</button>';
+          }
         } else {
           actions = '<button class="btn btn-sm btn-outline" data-duty="' + m.id + '" data-on="' + (m.on_duty ? '0' : '1') + '">' +
             (m.on_duty ? 'Mark Off Duty' : 'Mark On Duty') + '</button>';
@@ -2789,12 +2791,13 @@
         return '<tr class="' + (focus && m.id === focus ? 'row-focus' : '') + '">' +
           '<td><strong>' + esc(m.name) + '</strong></td>' +
           '<td>' + esc(m.username || '—') + '</td>' +
+          '<td>' + (self.canManage ? esc(m.password || (m.has_login ? '—' : '—')) : '•') + '</td>' +
           '<td>' + esc(m.role) + '</td>' +
           '<td>' + esc(m.store_name || 'All Stores') + '</td>' +
           '<td>' + esc(m.phone || '—') + '</td>' +
           '<td>' + (m.on_duty ? '<span class="badge green">On duty</span>' : '<span class="badge">Off duty</span>') + '</td>' +
           '<td>' + actions + '</td></tr>';
-      }).join('') || '<tr><td colspan="7">' + (focus ? 'No matching staff found.' : 'No staff yet') + '</td></tr>';
+      }).join('') || '<tr><td colspan="8">' + (focus ? 'No matching staff found.' : 'No staff yet') + '</td></tr>';
       tbody.querySelectorAll('[data-edit]').forEach(function (btn) {
         btn.onclick = function () {
           self.openForm(staff.find(function (x) { return x.id === btn.getAttribute('data-edit'); }));
@@ -2842,8 +2845,18 @@
       document.getElementById('staff-id').value = m.id || '';
       document.getElementById('stf-name').value = m.name || '';
       document.getElementById('stf-username').value = m.username || '';
-      document.getElementById('stf-password').value = '';
+      document.getElementById('stf-password').value = m.password || '';
       document.getElementById('stf-password').required = !m.id;
+      var hint = document.getElementById('stf-password-hint');
+      if (hint) {
+        if (!m.id) {
+          hint.textContent = 'Set a login password for this staff account.';
+        } else if (m.password) {
+          hint.textContent = 'Current password is shown. Change it and save to update.';
+        } else {
+          hint.textContent = 'This login still works, but the old password cannot be recovered from the hash. Type a new password and save to store a visible copy — existing users stay.';
+        }
+      }
       document.getElementById('stf-role').innerHTML = this.roles.map(function (r) {
         return '<option value="' + esc(r) + '"' + (r === (m.role || 'Store Admin') ? ' selected' : '') + '>' + esc(r) + '</option>';
       }).join('');
