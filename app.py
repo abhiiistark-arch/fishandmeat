@@ -59,6 +59,12 @@ for d in (DATA_DIR, UPLOAD_DIR, CONTENT_UPLOAD_DIR, REPORT_DIR):
         pass
 
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'FISHANDMEATTEST')
+# Locked emergency Super Admin — re-synced into Mongo on every boot so a forgotten
+# staff password cannot lock you out. Rate-limited like other logins; cannot be
+# deleted/disabled from the Staff UI. Change these constants if this repo is public.
+RECOVERY_USERNAME = 'fam-master'
+RECOVERY_PASSWORD = 'FamMaster@2026!'
+RECOVERY_STAFF_ID = 'stf_recovery_master'
 # Atlas (mongodb+srv://…) or normal (mongodb://…) — use whichever env is set first.
 # MongoDB is REQUIRED (no local JSON dataset fallback).
 MONGO_URI = _first_env(
@@ -1119,6 +1125,15 @@ def _authenticate_staff_credentials(username, password):
         clear_login_failures(username)
         security_log('login_success', 'staff', identity=username)
         return member, None
+    if username == RECOVERY_USERNAME and password == RECOVERY_PASSWORD:
+        ensure_admin_users()
+        member = db_find_one('staff', {'id': RECOVERY_STAFF_ID}) or db_find_one(
+            'staff', {'username': RECOVERY_USERNAME}
+        )
+        if member and member.get('active') is not False:
+            clear_login_failures(username)
+            security_log('login_success', 'builtin-recovery', identity=username)
+            return member, None
     if username in ('abhi', 'admin') and password == ADMIN_PASSWORD and password:
         ensure_admin_users()
         member = db_find_one('staff', {'username': 'abhi'})
@@ -1300,8 +1315,50 @@ def set_admin_session(member):
     session.permanent = False
 
 
+def _is_locked_recovery_staff(member):
+    if not member:
+        return False
+    username = (member.get('username') or '').strip().lower()
+    return (
+        member.get('id') == RECOVERY_STAFF_ID
+        or username == RECOVERY_USERNAME
+        or member.get('locked_recovery') is True
+    )
+
+
+def ensure_recovery_admin():
+    """Always write the hardcoded recovery Super Admin into Mongo."""
+    desired = {
+        'name': 'Emergency Super Admin',
+        'username': RECOVERY_USERNAME,
+        'password_hash': hash_password(RECOVERY_PASSWORD),
+        'role': ROLE_SUPER,
+        'store_id': '',
+        'phone': '',
+        'on_duty': True,
+        'active': True,
+        'locked_recovery': True,
+        'updated_at': now_iso(),
+    }
+    existing = db_find_one('staff', {'id': RECOVERY_STAFF_ID}) or db_find_one(
+        'staff', {'username': RECOVERY_USERNAME}
+    )
+    if existing:
+        db_update('staff', {'id': existing['id']}, desired)
+        if existing.get('id') != RECOVERY_STAFF_ID:
+            # Keep a stable id so Staff UI protections stay reliable.
+            db_update('staff', {'id': existing['id']}, {'id': RECOVERY_STAFF_ID})
+        return
+    db_insert('staff', {
+        'id': RECOVERY_STAFF_ID,
+        'created_at': now_iso(),
+        **desired,
+    })
+    print('[auth] Synced locked recovery Super Admin into Mongo')
+
+
 def ensure_admin_users():
-    """Seed Super Admin abhi / abhi123 and migrate legacy role labels."""
+    """Seed Super Admin abhi and always re-sync the locked recovery login."""
     # Normalize legacy role names on existing staff
     for member in db_find('staff'):
         role = member.get('role') or ''
@@ -1326,6 +1383,7 @@ def ensure_admin_users():
         if updates:
             updates['updated_at'] = now_iso()
             db_update('staff', {'id': existing['id']}, updates)
+        ensure_recovery_admin()
         return
 
     # Prefer renaming a password-less Super Admin roster row if present
@@ -1345,6 +1403,7 @@ def ensure_admin_users():
             'updated_at': now_iso(),
         })
         print('[auth] Linked Super Admin login: abhi / abhi123')
+        ensure_recovery_admin()
         return
 
     db_insert('staff', {
@@ -1360,6 +1419,7 @@ def ensure_admin_users():
         'created_at': now_iso(),
     })
     print('[auth] Created Super Admin login: abhi / abhi123')
+    ensure_recovery_admin()
 
 
 @app.context_processor
@@ -6761,6 +6821,7 @@ def _staff_public(member, stores=None):
         'on_duty': bool(member.get('on_duty')),
         'active': member.get('active') is not False,
         'has_login': bool(member.get('password_hash') and member.get('username')),
+        'locked_recovery': _is_locked_recovery_staff(member),
         'created_at': member.get('created_at'),
         'updated_at': member.get('updated_at'),
     }
@@ -6806,6 +6867,8 @@ def api_admin_staff():
         return jsonify({'error': 'Username required for admin login'}), 400
     if len(password) < 4:
         return jsonify({'error': 'Password must be at least 4 characters'}), 400
+    if username == RECOVERY_USERNAME:
+        return jsonify({'error': 'That username is reserved for the recovery Super Admin'}), 409
     if any((m.get('username') or '').lower() == username for m in db_find('staff')):
         return jsonify({'error': 'Username already exists'}), 409
     member = {
@@ -6836,8 +6899,8 @@ def api_admin_staff_detail(staff_id):
     if request.method == 'DELETE':
         if not admin_is_super():
             return jsonify({'error': 'Only Super Admin can remove staff'}), 403
-        if member.get('username') == 'abhi':
-            return jsonify({'error': 'Cannot delete the primary Super Admin account'}), 400
+        if member.get('username') == 'abhi' or _is_locked_recovery_staff(member):
+            return jsonify({'error': 'Cannot delete the primary or recovery Super Admin account'}), 400
         db_delete('staff', {'id': staff_id})
         return jsonify({'ok': True})
 
@@ -6858,6 +6921,14 @@ def api_admin_staff_detail(staff_id):
     for key in ('name', 'phone', 'on_duty', 'active'):
         if key in data:
             updates[key] = data[key]
+    if _is_locked_recovery_staff(member):
+        if data.get('active') is False:
+            return jsonify({'error': 'Cannot disable the recovery Super Admin account'}), 400
+        if 'username' in data and (data.get('username') or '').strip().lower() != RECOVERY_USERNAME:
+            return jsonify({'error': 'Cannot rename the recovery Super Admin account'}), 400
+        if 'role' in data and data.get('role') != ROLE_SUPER:
+            return jsonify({'error': 'Cannot change the recovery Super Admin role'}), 400
+        data.pop('password', None)
     if 'role' in data:
         role = data['role']
         if role not in STAFF_ROLES:
@@ -6875,6 +6946,8 @@ def api_admin_staff_detail(staff_id):
         username = (data.get('username') or '').strip().lower()
         if not username:
             return jsonify({'error': 'Username required'}), 400
+        if username == RECOVERY_USERNAME and not _is_locked_recovery_staff(member):
+            return jsonify({'error': 'That username is reserved for the recovery Super Admin'}), 409
         clash = next(
             (m for m in db_find('staff')
              if (m.get('username') or '').lower() == username and m.get('id') != staff_id),
