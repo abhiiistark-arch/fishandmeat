@@ -492,6 +492,9 @@ body.nav-open { overflow: hidden; }
 .location-tag { color: #E7B430; font-size: 11px; font-weight: 700; letter-spacing: 1px; margin-bottom: 10px; }
 .location-name { font-family: 'Sora', sans-serif; font-weight: 800; font-size: 22px; margin-bottom: 8px; }
 .location-area { font-size: 14px; color: #D8DCCF; margin-bottom: 6px; }
+.location-phone { font-size: 14px; color: #fff; margin: 4px 0; }
+.location-phone a { color: #fff; text-decoration: none; font-weight: 600; }
+.location-phone a:hover { color: #E7B430; }
 .location-hours { font-size: 13px; color: #D8DCCF; }
 
 /* CTA BANNER */

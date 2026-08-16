@@ -2536,7 +2536,6 @@ def _public_cache_headers(response, max_age=0):
         response.headers['Pragma'] = 'no-cache'
     response.headers['Vary'] = 'Accept-Encoding'
     return response
-    return response
 
 
 @app.route('/api/stores')
@@ -4118,6 +4117,7 @@ def api_admin_stores():
     if not store['name']:
         return jsonify({'error': 'Store name required'}), 400
     db_insert('stores', store)
+    _invalidate_ref_cache('stores')
     log_activity('store', f"Store {store['name']} added")
     return jsonify(store), 201
 
@@ -4132,8 +4132,19 @@ def api_admin_store_detail(store_id):
     if request.method == 'DELETE':
         if not admin_is_super():
             return jsonify({'error': 'Only Super Admin can delete stores'}), 403
-        db_delete('stores', {'id': store_id})
+        remaining = db_count('stores', {'id': {'$ne': store_id}})
+        if remaining < 1:
+            return jsonify({'error': 'Keep at least one store'}), 400
+        # Keep orders, products, customers, QR units and other stores.
+        # Drop only this store's inventory and unlink it from product availability.
+        if _use_mongo and _mongo_db is not None:
+            _mongo_db.products.update_many(
+                {'store_availability': store_id},
+                {'$pull': {'store_availability': store_id}},
+            )
         db_delete('inventory', {'store_id': store_id})
+        db_delete('stores', {'id': store_id})
+        _invalidate_ref_cache()
         log_activity('system', f"Store {store.get('name', store_id)} deleted")
         return jsonify({'ok': True})
     if not admin_is_super():
@@ -4145,6 +4156,7 @@ def api_admin_store_detail(store_id):
         updates['delivery_radius_km'] = float(updates['delivery_radius_km'] or 0)
     updates['updated_at'] = now_iso()
     db_update('stores', {'id': store_id}, updates)
+    _invalidate_ref_cache('stores')
     return jsonify(db_find_one('stores', {'id': store_id}))
 
 

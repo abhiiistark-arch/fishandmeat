@@ -115,7 +115,14 @@
         return { id: c.id, label: c.name, banner: c.banner || '' };
       }));
       LOCATIONS = stores.map(function (s) {
-        return { id: s.id, name: s.name, area: s.address, hours: s.hours, tag: s.tag || 'Store' };
+        return {
+          id: s.id,
+          name: s.name,
+          area: s.address,
+          hours: s.hours,
+          tag: s.tag || 'Store',
+          contact: s.contact || s.phone || ''
+        };
       });
       if (LOCATIONS.length && !LOCATIONS.some(function (s) { return s.id === selectedStoreId; })) {
         selectedStoreId = LOCATIONS[0].id;
@@ -679,11 +686,19 @@
 
     var locGrid = document.getElementById('location-grid');
     locGrid.innerHTML = LOCATIONS.map(function (loc) {
+      var phones = String(loc.contact || '').split(/[\n,;/|]+/).map(function (n) {
+        return n.replace(/\s+/g, ' ').trim();
+      }).filter(Boolean);
+      var phoneHtml = phones.map(function (n) {
+        var href = n.replace(/[^\d+]/g, '');
+        return '<div class="location-phone"><a href="tel:' + esc(href) + '">📞 ' + esc(n) + '</a></div>';
+      }).join('');
       return '' +
         '<div class="location-card">' +
           '<div class="location-tag">' + esc(loc.tag) + '</div>' +
           '<div class="location-name">' + esc(loc.name) + '</div>' +
           '<div class="location-area">' + esc(loc.area) + '</div>' +
+          phoneHtml +
           '<div class="location-hours">' + esc(loc.hours) + '</div>' +
         '</div>';
     }).join('');

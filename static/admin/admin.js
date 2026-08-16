@@ -874,18 +874,42 @@
         return '<tr>' +
           '<td><strong>' + esc(s.name) + '</strong></td>' +
           '<td>' + esc(s.address) + '</td>' +
-          '<td>' + esc(s.contact) + '</td>' +
+          '<td>' + esc(s.contact || '—') + '</td>' +
           '<td>' + esc(s.hours) + '</td>' +
           '<td>' + (s.delivery_radius_km != null ? s.delivery_radius_km + ' km' : '—') + '</td>' +
           '<td>' + esc(s.manager || '—') + '</td>' +
           '<td>' + statusBadge(s.status) + '</td>' +
           '<td>' + esc(s.tag || '') + '</td>' +
-          '<td><button class="btn btn-sm btn-outline" data-edit="' + s.id + '">Edit</button></td></tr>';
-      }).join('');
+          '<td><button class="btn btn-sm btn-outline" data-edit="' + s.id + '">Edit</button> ' +
+          '<button class="btn btn-sm btn-danger" data-del="' + s.id + '">Delete</button></td></tr>';
+      }).join('') || '<tr><td colspan="9">No stores yet</td></tr>';
       tbody.querySelectorAll('[data-edit]').forEach(function (btn) {
         btn.onclick = function () {
           var s = stores.find(function (x) { return x.id === btn.getAttribute('data-edit'); });
           self.openForm(s);
+        };
+      });
+      tbody.querySelectorAll('[data-del]').forEach(function (btn) {
+        btn.onclick = async function () {
+          var s = stores.find(function (x) { return x.id === btn.getAttribute('data-del'); });
+          if (!s) return;
+          if (stores.length < 2) {
+            toast('Keep at least one store. Add another store before deleting this one.', true);
+            return;
+          }
+          if (!confirm(
+            'Delete store "' + s.name + '"?\n\n' +
+            'This removes it from the website, POS and punch forms.\n' +
+            'Orders and products are kept. Only this store\'s inventory rows are removed.'
+          )) return;
+          try {
+            await api('/api/admin/stores/' + s.id, { method: 'DELETE' });
+            invalidateCatalogBundle();
+            toast('Store deleted');
+            self.load();
+          } catch (err) {
+            toast((err && err.message) || 'Could not delete store', true);
+          }
         };
       });
     },
@@ -917,6 +941,7 @@
       };
       if (id) await api('/api/admin/stores/' + id, { method: 'PUT', body: JSON.stringify(body) });
       else await api('/api/admin/stores', { method: 'POST', body: JSON.stringify(body) });
+      invalidateCatalogBundle();
       closeModal('store-modal');
       toast('Store saved');
       this.load();
