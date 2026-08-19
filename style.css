@@ -64,7 +64,7 @@ img { max-width: 100%; height: auto; }
    inside its box to sit optically level with the wordmark. */
 .brand-logo { width: 76px; height: 76px; object-fit: contain; flex-shrink: 0; transform: scale(1.5); transform-origin: center; }
 .brand-name { font-family: 'Sora', sans-serif; font-weight: 800; font-size: 20px; line-height: 1.15; letter-spacing: 0.2px; white-space: nowrap; }
-.brand-tagline { margin-top: 5px; font-size: 10px; line-height: 1.3; color: #6b6f66; letter-spacing: 1px; font-weight: 600; white-space: nowrap; }
+.brand-tagline { margin-top: 5px; font-size: 8.5px; line-height: 1.2; color: #6b6f66; letter-spacing: 0.45px; font-weight: 600; white-space: nowrap; }
 .header-search {
   position: relative;
   flex: 1 1 360px;
@@ -516,7 +516,44 @@ body.nav-open { overflow: hidden; }
 .detail-image { height: 440px; border-radius: 12px; overflow: hidden; }
 .detail-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .detail-title { font-size: 34px; font-weight: 800; margin: 0 0 14px; }
-.detail-price { font-family: 'Sora', sans-serif; font-size: 28px; font-weight: 800; color: #1E3A22; margin-bottom: 18px; }
+.detail-price-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.detail-availability { display: inline-block; background: #E8F5E9; color: #1E3A22; font-size: 12px; font-weight: 700; padding: 4px 12px; border-radius: 999px; }
+.detail-availability.out { background: #FCEAE8; color: #A5342A; }
+.variant-section { margin: 22px 0 18px; }
+.variant-label { font-size: 14px; font-weight: 700; color: #20241F; margin-bottom: 12px; }
+.variant-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.variant-card {
+  position: relative;
+  border: 1.5px solid #E7E2D6;
+  border-radius: 8px;
+  background: #fff;
+  padding: 16px 10px 14px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.variant-card:hover { border-color: #9AA89C; }
+.variant-card.selected { border-color: #1E3A22; box-shadow: 0 0 0 1px #1E3A22; }
+.variant-card.disabled { opacity: 0.45; cursor: not-allowed; }
+.variant-check {
+  display: none;
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #1E3A22;
+  color: #fff;
+  font-size: 11px;
+  line-height: 18px;
+  font-weight: 800;
+}
+.variant-card.selected .variant-check { display: block; }
+.variant-weight { display: block; font-size: 15px; font-weight: 700; color: #20241F; margin-bottom: 4px; }
+.variant-price { display: block; font-size: 13px; font-weight: 600; color: #55594F; }
+.detail-qty-label { font-size: 14px; font-weight: 700; margin-bottom: 10px; }
+.detail-price { font-family: 'Sora', sans-serif; font-size: 28px; font-weight: 800; color: #1E3A22; margin: 0; }
 .detail-price span { font-size: 15px; font-weight: 600; color: #55594F; }
 .detail-desc { font-size: 15px; line-height: 1.7; color: #55594F; margin: 0 0 30px; max-width: 460px; }
 .detail-parameters { display: flex; flex-wrap: wrap; gap: 10px; margin: -12px 0 18px; max-width: 520px; }
@@ -755,7 +792,7 @@ body.nav-open { overflow: hidden; }
   .account-link { border-bottom: none; padding-top: 14px; }
   .brand-logo { width: 62px; height: 62px; }
   .brand-name { font-size: 17px; }
-  .brand-tagline { font-size: 9px; letter-spacing: 0.6px; }
+  .brand-tagline { font-size: 8px; letter-spacing: 0.35px; white-space: nowrap; }
   .cart-line { flex-wrap: wrap; }
   .detail-image { max-height: 320px; height: auto; aspect-ratio: 4 / 3; }
   .detail-title { font-size: 28px; }
@@ -785,7 +822,8 @@ body.nav-open { overflow: hidden; }
   .hero-actions .btn { width: 100%; text-align: center; }
   .brand-name { font-size: 15px; }
   .brand-logo { width: 54px; height: 54px; }
-  .brand-tagline { display: none; }
+  .brand-tagline { display: block; font-size: 6.5px; letter-spacing: 0.15px; white-space: nowrap; line-height: 1.2; }
+  .brand > div { min-width: 0; overflow: visible; }
   .h1 { font-size: 28px; }
   .h2, .h2-sm { font-size: 26px; }
   .hero-title { font-size: 30px; }
@@ -811,6 +849,7 @@ body.nav-open { overflow: hidden; }
 @media (max-width: 380px) {
   .brand-logo { width: 46px; height: 46px; }
   .brand-name { font-size: 14px; }
+  .brand-tagline { font-size: 5.8px; letter-spacing: 0.1px; }
   .header-inner { gap: 8px; }
   .detail-title { font-size: 24px; }
   .tab { padding: 9px 15px; font-size: 13px; }

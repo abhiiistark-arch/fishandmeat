@@ -11,7 +11,7 @@ import hashlib
 import calendar
 import threading
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from io import BytesIO
 from pathlib import Path
@@ -1798,6 +1798,9 @@ def parse_json():
 # Settings (singleton doc, admin-configurable)
 # ---------------------------------------------------------------------------
 
+FROZEN_FOOD_CATEGORY_ID = 'cat_frozen'
+FROZEN_GST_PERCENT = 5.0
+
 DEFAULT_SETTINGS = {
     'id': 'main',
     # Inventory
@@ -1849,6 +1852,15 @@ def get_settings():
     _settings_cache['data'] = merged
     _settings_cache['at'] = now
     return dict(merged)
+
+
+def effective_gst_percent(product):
+    """Frozen Food category always carries 5% GST (CGST + SGST split on receipts)."""
+    if not product:
+        return 0.0
+    if product.get('category_id') == FROZEN_FOOD_CATEGORY_ID:
+        return FROZEN_GST_PERCENT
+    return float(product.get('gst_percent', 0) or 0)
 
 
 def save_settings(updates):
@@ -2202,6 +2214,7 @@ def seed_if_empty():
             'inventory_model': 'variant',  # product | variant
             'variants': variants,
             'store_availability': list(store_map.values()),
+            'gst_percent': FROZEN_GST_PERCENT if cat == FROZEN_FOOD_CATEGORY_ID else 0,
             'created_at': now_iso(),
             'updated_at': now_iso(),
         }
@@ -2296,6 +2309,16 @@ def ensure_default_parameters():
             })
 
 
+def ensure_frozen_gst():
+    """Backfill 5% GST on all Frozen Food products."""
+    for product in db_find('products', {'category_id': FROZEN_FOOD_CATEGORY_ID}):
+        if float(product.get('gst_percent') or 0) != FROZEN_GST_PERCENT:
+            db_update('products', {'id': product['id']}, {
+                'gst_percent': FROZEN_GST_PERCENT,
+                'updated_at': now_iso(),
+            })
+
+
 def ensure_media_assets():
     """Attach existing design/upload images to records that still have empty image fields."""
     hero_url = '/assets/hero.webp'
@@ -2354,6 +2377,7 @@ def ensure_media_assets():
 if _use_mongo:
     seed_if_empty()
     ensure_default_parameters()
+    ensure_frozen_gst()
     ensure_media_assets()
     sync_local_uploads_to_media()
     ensure_admin_users()
@@ -2589,7 +2613,7 @@ def api_products():
             'images': p.get('images') or [],
             'variants': p.get('variants') or [],
             'store_availability': p.get('store_availability') or [],
-            'gst_percent': p.get('gst_percent', 0),
+            'gst_percent': effective_gst_percent(p),
             'description': p.get('description') or '',
         }
         invs = inv_by_product.get(p['id'], [])
@@ -3181,7 +3205,7 @@ def api_place_order():
             return jsonify({'error': f'Insufficient stock for {product["name"]}'}), 400
 
         price = inv['price']
-        gst_pct = float(product.get('gst_percent', 0) or 0)
+        gst_pct = effective_gst_percent(product)
         lines.append({
             'product_id': pid,
             'variant_id': vid,
@@ -4299,15 +4323,19 @@ def api_admin_products():
         if 'parameters' in data
         else normalize_parameters((category or {}).get('parameters'))
     )
+    category_id = data.get('category_id', '')
     product = {
         'id': new_id('p'),
         'name': name,
         'description': data.get('description', ''),
         'sku': data.get('sku') or f'FAM-{uuid.uuid4().hex[:6].upper()}',
-        'category_id': data.get('category_id', ''),
+        'category_id': category_id,
         'images': data.get('images', []),
         'status': data.get('status', 'available'),
-        'gst_percent': float(data.get('gst_percent', 0) or 0),
+        'gst_percent': (
+            FROZEN_GST_PERCENT if category_id == FROZEN_FOOD_CATEGORY_ID
+            else float(data.get('gst_percent', 0) or 0)
+        ),
         'expiry_info': data.get('expiry_info', ''),
         'nutritional_info': data.get('nutritional_info', ''),
         'parameters': parameters,
@@ -4361,6 +4389,9 @@ def api_admin_product_detail(product_id):
         updates['parameters'] = normalize_parameters(updates['parameters'])
     if 'gst_percent' in updates:
         updates['gst_percent'] = float(updates['gst_percent'] or 0)
+    next_category = updates.get('category_id', product.get('category_id'))
+    if next_category == FROZEN_FOOD_CATEGORY_ID:
+        updates['gst_percent'] = FROZEN_GST_PERCENT
     updates['updated_at'] = now_iso()
     if 'images' in updates:
         purge_removed_uploads(product.get('images') or [], updates.get('images') or [])
@@ -4571,7 +4602,7 @@ def _normalize_admin_order_items(order, raw_items):
             'variant_label': variant.get('label', ''),
             'qty': qty,
             'price': price,
-            'gst_percent': float(product.get('gst_percent', 0) or 0),
+            'gst_percent': effective_gst_percent(product),
             'line_total': round(price * qty, 2),
         })
     if not normalized:
@@ -5065,7 +5096,7 @@ def _create_pos_order(data, staff):
             'variant_label': variant.get('label', ''),
             'qty': qty,
             'price': price,
-            'gst_percent': float(product.get('gst_percent', 0) or 0),
+            'gst_percent': effective_gst_percent(product),
             'line_total': line_total,
             'qr_units': unit_payload,
             'qr_codes': [u['qr_code'] for u in unit_payload if u.get('qr_code')],
@@ -5169,6 +5200,7 @@ def _create_pos_order(data, staff):
             'staff_id': staff.get('id'),
         },
     )
+    order['receipt'] = _build_receipt_data(order)
     return {'ok': True, 'order': order}, 201
 
 
@@ -5238,6 +5270,94 @@ def _enrich_inventory_rows(store_id):
         })
     enriched.sort(key=lambda row: ((row.get('product_name') or '').lower(), row.get('variant_label') or ''))
     return enriched
+
+
+def _format_receipt_phone(phone):
+    digits = re.sub(r'\D', '', str(phone or ''))
+    if len(digits) == 10:
+        return f'{digits[:5]} {digits[5:]}'
+    return phone or '—'
+
+
+def _format_receipt_datetime(iso_str):
+    if not iso_str:
+        return ''
+    try:
+        raw = str(iso_str).replace('Z', '+00:00')
+        dt = datetime.fromisoformat(raw)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        ist = timezone(timedelta(hours=5, minutes=30))
+        return dt.astimezone(ist).strftime('%d/%m/%Y %H:%M')
+    except (TypeError, ValueError):
+        return str(iso_str)[:16].replace('T', ' ')
+
+
+def _receipt_item_label(item):
+    name = item.get('name') or ''
+    variant = (item.get('variant_label') or '').strip()
+    if variant and variant not in name:
+        return f'{name} ({variant})'
+    return name
+
+
+def _build_receipt_data(order):
+    """Structured payload for 80mm thermal receipts (Essae PR-55 and similar)."""
+    settings = get_settings()
+    store = db_find_one('stores', {'id': order.get('store_id')}) or {}
+    gst_amount = float(order.get('gst_amount') or 0)
+    half_gst = round(gst_amount / 2, 2) if gst_amount else 0.0
+    discount = float(order.get('discount') or 0)
+    payment = (order.get('payment_method') or 'cash').lower()
+    payment_labels = {
+        'cash': 'Cash',
+        'card': 'Card',
+        'upi': 'UPI',
+        'cod': 'Cash on Delivery',
+    }
+    channel = order.get('channel') or order.get('delivery_mode') or ''
+    return {
+        'business_name': 'FISH AND MEAT',
+        'title': 'TAX INVOICE',
+        'address': store.get('address') or order.get('address') or '',
+        'gstin': settings.get('gst_number') or '',
+        'fssai': settings.get('fssai_number') or '',
+        'invoice': order.get('order_id') or order.get('id') or '',
+        'date': _format_receipt_datetime(order.get('created_at')),
+        'customer': order.get('customer_name') or 'Walk-in Customer',
+        'mobile': _format_receipt_phone(order.get('customer_phone')),
+        'order_type': 'In-Store' if channel == 'in_store' else 'Delivery',
+        'items': [{
+            'name': _receipt_item_label(it),
+            'qty': it.get('qty', 0),
+            'rate': f"{float(it.get('price', 0) or 0):,.2f}",
+            'amount': f"{float(it.get('line_total', 0) or (it.get('price', 0) * it.get('qty', 0))):,.2f}",
+        } for it in (order.get('items') or [])],
+        'subtotal': f"{float(order.get('subtotal', 0) or 0):,.2f}",
+        'discount': f"{discount:,.2f}" if discount else '',
+        'cgst': f"{half_gst:,.2f}" if half_gst else '',
+        'sgst': f"{half_gst:,.2f}" if half_gst else '',
+        'delivery': f"{float(order.get('delivery_fee', 0) or 0):,.2f}",
+        'total': f"{float(order.get('total', 0) or 0):,.2f}",
+        'payment_line': f"Paid by {payment_labels.get(payment, payment.upper())}",
+        'footer_lines': ['Thank you. Please visit again.'],
+        'fine_print': [
+            'Frozen items: keep at -18°C.',
+            'No return on perishable goods.',
+        ],
+    }
+
+
+def _render_thermal_receipt_html(order, auto_print=False):
+    return render_template(
+        'receipt/thermal.html',
+        receipt=_build_receipt_data(order),
+        auto_print=auto_print,
+    )
+
+
+def _find_order_for_receipt(order_id):
+    return db_find_one('orders', {'order_id': order_id}) or db_find_one('orders', {'id': order_id})
 
 
 def _build_invoice_pdf(order):
@@ -6722,7 +6842,7 @@ def api_mobile_pos_orders():
 @mobile_auth_required
 def api_mobile_pos_invoice(order_id):
     staff = request.mobile_staff
-    order = db_find_one('orders', {'order_id': order_id}) or db_find_one('orders', {'id': order_id})
+    order = _find_order_for_receipt(order_id)
     if not order or order.get('channel') != 'in_store':
         return jsonify({'error': 'Bill not found'}), 404
     denied = _mobile_assert_store(staff, order.get('store_id'))
@@ -6735,6 +6855,22 @@ def api_mobile_pos_invoice(order_id):
         download_name=f'invoice_{order["order_id"]}.pdf',
         mimetype='application/pdf',
     )
+
+
+@app.route('/api/mobile/pos/receipt/<order_id>', methods=['GET'])
+@mobile_auth_required
+def api_mobile_pos_receipt(order_id):
+    staff = request.mobile_staff
+    order = _find_order_for_receipt(order_id)
+    if not order or order.get('channel') != 'in_store':
+        return jsonify({'error': 'Bill not found'}), 404
+    denied = _mobile_assert_store(staff, order.get('store_id'))
+    if denied:
+        return denied
+    if request.args.get('format') == 'json':
+        return jsonify({'ok': True, 'receipt': _build_receipt_data(order)})
+    auto_print = request.args.get('auto') == '1' or request.args.get('print') == '1'
+    return make_response(_render_thermal_receipt_html(order, auto_print=auto_print))
 
 
 @app.route('/api/mobile/inventory', methods=['GET', 'POST'])
@@ -7212,7 +7348,7 @@ def api_admin_search():
 @app.route('/api/admin/orders/<order_id>/invoice')
 @admin_required
 def api_admin_order_invoice(order_id):
-    order = db_find_one('orders', {'order_id': order_id}) or db_find_one('orders', {'id': order_id})
+    order = _find_order_for_receipt(order_id)
     if not order:
         return jsonify({'error': 'Order not found'}), 404
     denied = assert_store_access(order.get('store_id'))
@@ -7221,6 +7357,21 @@ def api_admin_order_invoice(order_id):
     buf = _build_invoice_pdf(order)
     return send_file(buf, as_attachment=True, download_name=f'invoice_{order["order_id"]}.pdf',
                      mimetype='application/pdf')
+
+
+@app.route('/api/admin/orders/<order_id>/receipt')
+@admin_required
+def api_admin_order_receipt(order_id):
+    order = _find_order_for_receipt(order_id)
+    if not order:
+        return jsonify({'error': 'Order not found'}), 404
+    denied = assert_store_access(order.get('store_id'))
+    if denied:
+        return denied
+    if request.args.get('format') == 'json':
+        return jsonify({'ok': True, 'receipt': _build_receipt_data(order)})
+    auto_print = request.args.get('auto') == '1' or request.args.get('print') == '1'
+    return make_response(_render_thermal_receipt_html(order, auto_print=auto_print))
 
 
 # --- Reports PDF / XLSX ---

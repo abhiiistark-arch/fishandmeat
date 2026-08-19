@@ -56,11 +56,16 @@
   <div class="modal-card">
     <h2>Sale Completed</h2>
     <p id="pos-success-copy"></p>
+    <p class="muted">Receipt sent to your default printer (Essae PR-55). Set it as default in Windows if needed.</p>
     <div class="modal-actions">
       <button class="btn btn-outline" id="pos-success-close" type="button">New Sale</button>
-      <a class="btn btn-dark" id="pos-invoice" target="_blank">Download Invoice</a>
+      <button class="btn btn-dark" id="pos-print-receipt" type="button">Print Again</button>
+      <a class="btn btn-outline" id="pos-invoice" target="_blank">Download PDF</a>
     </div>
   </div>
 </dialog>
 {% endblock %}
-{% block scripts %}<script>AdminPOS.init();</script>{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='shared/thermal-receipt.js') }}?v={{ cache_bust }}"></script>
+<script>AdminPOS.init();</script>
+{% endblock %}

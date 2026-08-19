@@ -61,6 +61,7 @@
       id: p.id,
       name: p.name,
       category: p.category_id || p.category || '',
+      category_id: p.category_id || p.category || '',
       categoryLabel: p.categoryLabel || '',
       price: p.price != null ? p.price : 0,
       unit: unit,
@@ -73,8 +74,40 @@
       stock: Number(p.stock || 0),
       variant_id: variantId,
       variants: p.variants || [],
-      store_inventory: p.store_inventory || []
+      store_inventory: p.store_inventory || [],
+      gst_percent: Number(p.gst_percent || 0)
     };
+  }
+
+  function inventoryRow(product, variantId) {
+    return (product.store_inventory || []).find(function (r) {
+      return r.variant_id === variantId;
+    });
+  }
+
+  function variantMeta(product, variantId) {
+    var variant = (product.variants || []).find(function (v) { return v.id === variantId; }) || {};
+    var inv = inventoryRow(product, variantId);
+    return {
+      id: variantId,
+      label: variant.label || variant.unit || 'Default',
+      unit: variant.unit || variant.label || 'unit',
+      price: inv ? Number(inv.price || 0) : Number(product.price || 0),
+      stock: inv ? Number(inv.stock || 0) : 0
+    };
+  }
+
+  function defaultVariantId(product) {
+    var variants = product.variants || [];
+    for (var i = 0; i < variants.length; i++) {
+      var inv = inventoryRow(product, variants[i].id);
+      if (inv && inv.stock > 0) return variants[i].id;
+    }
+    return variants.length ? variants[0].id : product.variant_id;
+  }
+
+  function cartLineKey(item) {
+    return item.id + '::' + (item.variant_id || '');
   }
 
   var _metaCache = { cats: null, stores: null, content: null, at: 0 };
@@ -209,6 +242,7 @@
     page: 'home',
     category: 'all',
     selectedProductId: null,
+    selectedVariantId: null,
     detailQty: 1,
     cart: [],
     user: null,
@@ -223,7 +257,8 @@
   var SETTINGS = {
     min_order_value: 499,
     delivery_fee_below_min: 49,
-    free_delivery_above: 499
+    free_delivery_above: 499,
+    gst_enabled: true
   };
   fetch('/api/settings').then(function (r) { return r.ok ? r.json() : null; }).then(function (s) {
     if (s) { SETTINGS = Object.assign(SETTINGS, s); renderCurrentPage(); }
@@ -255,11 +290,32 @@
   function cartLines() {
     return state.cart.map(function (c) {
       var p = findProduct(c.id) || {};
-      return Object.assign({}, p, { qty: c.qty, lineTotal: (p.price || 0) * c.qty });
+      var variantId = c.variant_id || defaultVariantId(p);
+      var meta = variantMeta(p, variantId);
+      var price = meta.price || p.price || 0;
+      var unit = meta.unit || p.unit || 'unit';
+      var label = meta.label || unit;
+      return Object.assign({}, p, {
+        qty: c.qty,
+        variant_id: variantId,
+        variant_label: label,
+        unit: unit,
+        price: price,
+        lineTotal: price * c.qty,
+        cartKey: cartLineKey(c)
+      });
     });
   }
   function cartSubtotal() {
     return cartLines().reduce(function (n, l) { return n + l.lineTotal; }, 0);
+  }
+  function cartGstAmount() {
+    if (!SETTINGS.gst_enabled) return 0;
+    return cartLines().reduce(function (sum, l) {
+      var pct = Number(l.gst_percent || 0);
+      if (!pct) return sum;
+      return sum + l.lineTotal * pct / (100 + pct);
+    }, 0);
   }
   function deliveryFee() {
     var sub = cartSubtotal();
@@ -270,22 +326,27 @@
     return state.coupon ? state.coupon.discount : 0;
   }
 
-  function addToCart(id, qty) {
+  function addToCart(id, qty, variantId) {
     qty = qty || 1;
-    var existing = state.cart.find(function (c) { return c.id === id; });
+    var product = findProduct(id) || {};
+    variantId = variantId || defaultVariantId(product);
+    var key = id + '::' + (variantId || '');
+    var existing = state.cart.find(function (c) { return cartLineKey(c) === key; });
     if (existing) existing.qty += qty;
-    else state.cart.push({ id: id, qty: qty });
+    else state.cart.push({ id: id, qty: qty, variant_id: variantId });
     saveCart();
     renderHeader();
   }
-  function changeQty(id, delta) {
-    state.cart = state.cart.map(function (c) { return c.id === id ? Object.assign({}, c, { qty: c.qty + delta }) : c; }).filter(function (c) { return c.qty > 0; });
+  function changeQty(cartKey, delta) {
+    state.cart = state.cart.map(function (c) {
+      return cartLineKey(c) === cartKey ? Object.assign({}, c, { qty: c.qty + delta }) : c;
+    }).filter(function (c) { return c.qty > 0; });
     saveCart();
     renderHeader();
     renderCurrentPage();
   }
-  function removeItem(id) {
-    state.cart = state.cart.filter(function (c) { return c.id !== id; });
+  function removeItem(cartKey) {
+    state.cart = state.cart.filter(function (c) { return cartLineKey(c) !== cartKey; });
     saveCart();
     renderHeader();
     renderCurrentPage();
@@ -297,7 +358,11 @@
     function updatePage() {
       state.page = page;
       if (opts.category !== undefined) state.category = opts.category;
-      if (opts.productId !== undefined) { state.selectedProductId = opts.productId; state.detailQty = 1; }
+      if (opts.productId !== undefined) {
+        state.selectedProductId = opts.productId;
+        if (!opts.keepVariant) state.selectedVariantId = null;
+        if (!opts.keepQty) state.detailQty = 1;
+      }
       document.querySelectorAll('.page').forEach(function (el) { el.classList.add('hidden'); });
       document.getElementById('page-' + page).classList.remove('hidden');
       renderCurrentPage();
@@ -734,34 +799,79 @@
     var p = findProduct(state.selectedProductId);
     if (!p) { navigate('catalog'); return; }
     var el = document.getElementById('product-detail');
+    var variantId = state.selectedVariantId || defaultVariantId(p);
+    state.selectedVariantId = variantId;
+    var selected = variantMeta(p, variantId);
+    var variants = (p.variants || []).length
+      ? p.variants
+      : [{ id: p.variant_id || 'v1', label: p.unit || 'Default', unit: p.unit || 'unit' }];
+    var variantCards = variants.map(function (v) {
+      var meta = variantMeta(p, v.id);
+      var isSelected = v.id === variantId;
+      var disabled = meta.stock <= 0;
+      return '<button type="button" class="variant-card' + (isSelected ? ' selected' : '') +
+        (disabled ? ' disabled' : '') + '" data-variant="' + esc(v.id) + '"' +
+        (disabled ? ' disabled' : '') + '>' +
+        '<span class="variant-check" aria-hidden="true">&#10003;</span>' +
+        '<span class="variant-weight">' + esc(meta.label) + '</span>' +
+        '<span class="variant-price">&#8377;' + meta.price + '</span>' +
+        '</button>';
+    }).join('');
     var detailImage = imgTag(p.image, p.name, { width: 700, height: 700, eager: true })
       || '<div class="placeholder-label">[ ' + esc(p.image) + ' ]</div>';
     var parameters = (p.parameters || []).map(function (item) {
       return '<div class="detail-parameter"><span>' + esc(item.label) + '</span><strong>' + esc(item.value) + '</strong></div>';
     }).join('');
+    var inStock = selected.stock > 0;
     el.innerHTML = '' +
       '<div class="detail-grid">' +
         '<div class="detail-image' + ((typeof p.image === 'string' && p.image.indexOf('/') === 0) ? '' : ' placeholder placeholder-light') + '">' + detailImage + '</div>' +
         '<div>' +
           '<div class="eyebrow c-red">' + esc(p.categoryLabel) + '</div>' +
           '<h1 class="detail-title">' + esc(p.name) + '</h1>' +
-          '<div class="badge">' + esc(p.badge) + '</div>' +
-          '<div class="detail-price">&#8377;' + p.price + ' <span>/ ' + esc(p.unit) + '</span></div>' +
+          '<div class="detail-price-row">' +
+            '<div class="detail-price">&#8377;' + selected.price + ' <span>/ ' + esc(selected.unit) + '</span></div>' +
+            '<span class="detail-availability' + (inStock ? '' : ' out') + '">' +
+              (inStock ? 'Available' : 'Out of Stock') + '</span>' +
+          '</div>' +
           '<p class="detail-desc">' + esc(p.desc) + '</p>' +
           (parameters ? '<div class="detail-parameters" aria-label="Product parameters">' + parameters + '</div>' : '') +
-          '<div class="detail-stock ' + (p.stock > 0 ? 'in-stock' : 'out-of-stock') + '">' +
-            (p.stock > 0 ? esc(p.stock) + ' in stock at this store' : 'Currently out of stock') +
+          '<div class="detail-stock ' + (inStock ? 'in-stock' : 'out-of-stock') + '">' +
+            (inStock ? esc(selected.stock) + ' in stock at this store' : 'Currently out of stock') +
           '</div>' +
+          (variants.length > 1
+            ? '<div class="variant-section"><div class="variant-label">Select Weight</div><div class="variant-grid">' +
+              variantCards + '</div></div>'
+            : '') +
+          '<div class="detail-qty-label">Quantity</div>' +
           '<div class="qty-row">' +
-            '<div class="qty-stepper"><button id="qty-dec">&minus;</button><span id="qty-val">' + state.detailQty + '</span><button id="qty-inc">+</button></div>' +
-            '<span style="font-size:13px;color:#55594F;">' + esc(p.unit) + '(s)</span>' +
+            '<div class="qty-stepper"><button id="qty-dec" type="button">&minus;</button><span id="qty-val">' + state.detailQty + '</span><button id="qty-inc" type="button">+</button></div>' +
+            '<span style="font-size:13px;color:#55594F;">' + esc(selected.label) + '</span>' +
           '</div>' +
-          '<button class="btn btn-dark" id="detail-add">Add to Cart</button>' +
+          '<button class="btn btn-dark" id="detail-add"' + (inStock ? '' : ' disabled') + '>Add to Cart</button>' +
         '</div>' +
       '</div>';
-    document.getElementById('qty-dec').addEventListener('click', function () { state.detailQty = Math.max(1, state.detailQty - 1); document.getElementById('qty-val').textContent = state.detailQty; });
-    document.getElementById('qty-inc').addEventListener('click', function () { state.detailQty += 1; document.getElementById('qty-val').textContent = state.detailQty; });
-    document.getElementById('detail-add').addEventListener('click', function () { addToCart(p.id, state.detailQty); state.detailQty = 1; navigate('product', { productId: p.id }); });
+    el.querySelectorAll('[data-variant]').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (btn.disabled) return;
+        state.selectedVariantId = btn.getAttribute('data-variant');
+        renderProductDetail();
+      });
+    });
+    document.getElementById('qty-dec').addEventListener('click', function () {
+      state.detailQty = Math.max(1, state.detailQty - 1);
+      document.getElementById('qty-val').textContent = state.detailQty;
+    });
+    document.getElementById('qty-inc').addEventListener('click', function () {
+      state.detailQty += 1;
+      document.getElementById('qty-val').textContent = state.detailQty;
+    });
+    document.getElementById('detail-add').addEventListener('click', function () {
+      addToCart(p.id, state.detailQty, variantId);
+      state.detailQty = 1;
+      renderProductDetail();
+      renderHeader();
+    });
 
     var relatedGrid = document.getElementById('related-products');
     var related = relatedProductsFor(p, 4);
@@ -788,10 +898,12 @@
           return '' +
             '<div class="cart-line">' +
               '<div class="cart-thumb">' + thumb + '</div>' +
-              '<div class="cart-line-info"><div class="cart-line-name">' + esc(l.name) + '</div><div class="cart-line-price">&#8377;' + l.price + ' / ' + esc(l.unit) + '</div></div>' +
-              '<div class="qty-stepper"><button data-dec="' + l.id + '">&minus;</button><span>' + l.qty + '</span><button data-inc="' + l.id + '">+</button></div>' +
+              '<div class="cart-line-info"><div class="cart-line-name">' + esc(l.name) +
+              (l.variant_label ? ' <span class="muted">(' + esc(l.variant_label) + ')</span>' : '') +
+              '</div><div class="cart-line-price">&#8377;' + l.price + ' / ' + esc(l.unit) + '</div></div>' +
+              '<div class="qty-stepper"><button data-dec="' + esc(l.cartKey) + '">&minus;</button><span>' + l.qty + '</span><button data-inc="' + esc(l.cartKey) + '">+</button></div>' +
               '<div class="cart-line-total">&#8377;' + l.lineTotal + '</div>' +
-              '<span class="remove-btn" data-remove="' + l.id + '">Remove</span>' +
+              '<span class="remove-btn" data-remove="' + esc(l.cartKey) + '">Remove</span>' +
             '</div>';
         }).join('') + '</div>' +
         '<div class="card">' +
@@ -901,13 +1013,27 @@
     if (applyBtn) applyBtn.onclick = applyCoupon;
 
     var lines = cartLines(), sub = cartSubtotal(), fee = deliveryFee(), disc = couponDiscount();
+    var gstAmount = cartGstAmount();
+    var halfGst = gstAmount > 0 ? (gstAmount / 2) : 0;
     var total = Math.max(0, sub - disc) + fee;
     document.getElementById('checkout-summary-lines').innerHTML = lines.map(function (l) {
-      return '<div class="summary-line"><span>' + esc(l.name) + ' &times; ' + l.qty + '</span><span>&#8377;' + l.lineTotal + '</span></div>';
+      var label = l.variant_label ? l.name + ' (' + l.variant_label + ')' : l.name;
+      return '<div class="summary-line"><span>' + esc(label) + ' &times; ' + l.qty + '</span><span>&#8377;' + l.lineTotal + '</span></div>';
     }).join('');
-    document.getElementById('checkout-subtotal').textContent = '\u20b9' + sub;
+    document.getElementById('checkout-subtotal').textContent = '\u20b9' + sub.toFixed(2);
     document.getElementById('checkout-delivery').textContent = '\u20b9' + fee;
-    document.getElementById('checkout-total').textContent = '\u20b9' + total;
+    document.getElementById('checkout-total').textContent = '\u20b9' + total.toFixed(2);
+    var cgstRow = document.getElementById('checkout-cgst-row');
+    var sgstRow = document.getElementById('checkout-sgst-row');
+    if (cgstRow && sgstRow) {
+      var showGst = gstAmount > 0;
+      cgstRow.classList.toggle('hidden', !showGst);
+      sgstRow.classList.toggle('hidden', !showGst);
+      if (showGst) {
+        document.getElementById('checkout-cgst').textContent = '\u20b9' + halfGst.toFixed(2);
+        document.getElementById('checkout-sgst').textContent = '\u20b9' + halfGst.toFixed(2);
+      }
+    }
     var discRow = document.getElementById('checkout-discount-row');
     if (discRow) {
       discRow.classList.toggle('hidden', !disc);

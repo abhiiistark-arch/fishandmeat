@@ -1177,13 +1177,29 @@
         escapeHtml(((result.order && result.order.payment_method) || 'cash').toUpperCase()) +
         '</div></article>';
       showScreen('billing-done');
-      toast('Bill created');
+      if (window.ThermalReceipt && result.order) {
+        window.ThermalReceipt.printReceipt(result.order.receipt || result.order);
+      }
+      toast('Bill created — printing receipt');
     } catch (e) {
       err.textContent = e.message || 'Could not complete sale';
     } finally {
       btn.disabled = false;
       btn.textContent = 'Complete Sale';
     }
+  }
+
+  function printBillReceipt() {
+    if (!state.lastBill) {
+      toast('No bill to print', true);
+      return;
+    }
+    if (!window.ThermalReceipt) {
+      toast('Print module not loaded', true);
+      return;
+    }
+    window.ThermalReceipt.printReceipt(state.lastBill.receipt || state.lastBill);
+    toast('Sending to printer…');
   }
 
   async function downloadBillInvoice() {
@@ -1562,6 +1578,7 @@
       showScreen('billing');
     };
     $('btn-bill-checkout').onclick = checkoutBill;
+    $('btn-bill-print').onclick = printBillReceipt;
     $('btn-bill-invoice').onclick = downloadBillInvoice;
     var billRecentAfter = $('btn-bill-recent-after');
     if (billRecentAfter) {

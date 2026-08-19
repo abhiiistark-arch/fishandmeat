@@ -3603,6 +3603,17 @@
           'Bill ' + order.order_id + ' · ' + money(order.total) + ' · ' +
           (order.payment_method || '').toUpperCase() + ' · by ' + (order.staff_name || AdminShell.admin.name);
         document.getElementById('pos-invoice').href = '/api/admin/orders/' + order.order_id + '/invoice';
+        var printBtn = document.getElementById('pos-print-receipt');
+        if (printBtn) {
+          printBtn.onclick = function () {
+            if (global.ThermalReceipt) {
+              global.ThermalReceipt.printReceipt(order.receipt || order);
+            }
+          };
+        }
+        if (global.ThermalReceipt) {
+          global.ThermalReceipt.printReceipt(order.receipt || order);
+        }
         openModal('pos-success-modal');
         await self.loadProducts();
         self.loadRecent();
@@ -3624,9 +3635,19 @@
           (o.staff_name ? '<div class="muted">by ' + esc(o.staff_name) + '</div>' : '') +
           '</td><td>' +
           esc((o.payment_method || '').toUpperCase()) + '</td><td>' + money(o.total) +
-          '</td><td><a class="btn btn-sm btn-outline" target="_blank" href="/api/admin/orders/' +
-          encodeURIComponent(o.order_id) + '/invoice">Invoice</a></td></tr>';
+          '</td><td class="pos-recent-actions">' +
+          '<button class="btn btn-sm btn-dark pos-print-bill" type="button" data-order="' + esc(o.order_id) + '">Print Bill</button> ' +
+          '<a class="btn btn-sm btn-outline" target="_blank" href="/api/admin/orders/' +
+          encodeURIComponent(o.order_id) + '/invoice">PDF</a></td></tr>';
       }).join('') || '<tr><td colspan="7">No in-store bills yet for this store.</td></tr>';
+      document.querySelectorAll('.pos-print-bill').forEach(function (btn) {
+        btn.onclick = function () {
+          var orderId = btn.getAttribute('data-order');
+          if (global.ThermalReceipt && global.ThermalReceipt.printByUrl) {
+            global.ThermalReceipt.printByUrl('/api/admin/orders/' + encodeURIComponent(orderId) + '/receipt?auto=1');
+          }
+        };
+      });
     }
   };
 
