@@ -115,7 +115,7 @@
         </tr>
       </thead>
       <tbody>
-        {% for item in receipt.items %}
+        {% for item in receipt['items'] %}
         <tr>
           <td class="item-name">{{ item.name }}</td>
           <td class="num col-qty">{{ item.qty }}</td>
