@@ -144,6 +144,7 @@
         _metaCache = { cats: cats, stores: stores, content: STOREFRONT_CONTENT, at: Date.now() };
       }
       PRODUCTS = products.map(mapApiProduct);
+      enrichCartFromCatalog();
       CATEGORIES = [{ id: 'all', label: 'All' }].concat(cats.map(function (c) {
         return { id: c.id, label: c.name, banner: c.banner || '' };
       }));
@@ -189,6 +190,29 @@
   function findProduct(id) {
     for (var i = 0; i < PRODUCTS.length; i++) if (PRODUCTS[i].id === id) return PRODUCTS[i];
     return null;
+  }
+
+  function cartItemSnapshot(product, variantId) {
+    product = product || {};
+    variantId = variantId || defaultVariantId(product);
+    var meta = variantMeta(product, variantId);
+    return {
+      name: product.name || '',
+      price: meta.price || product.price || 0,
+      unit: meta.unit || product.unit || 'unit',
+      variant_label: meta.label || '',
+      image: product.image || (product.images && product.images[0]) || ''
+    };
+  }
+
+  function enrichCartFromCatalog() {
+    if (!state.cart.length) return;
+    state.cart = state.cart.map(function (c) {
+      if (c.name && c.price != null) return c;
+      var p = findProduct(c.id);
+      if (!p) return c;
+      return Object.assign({}, c, cartItemSnapshot(p, c.variant_id));
+    });
   }
   function esc(str) {
     return String(str == null ? '' : str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -292,18 +316,24 @@
       var p = findProduct(c.id) || {};
       var variantId = c.variant_id || defaultVariantId(p);
       var meta = variantMeta(p, variantId);
-      var price = meta.price || p.price || 0;
-      var unit = meta.unit || p.unit || 'unit';
-      var label = meta.label || unit;
-      return Object.assign({}, p, {
+      var price = c.price != null ? c.price : (meta.price || p.price || 0);
+      var unit = c.unit || meta.unit || p.unit || 'unit';
+      var label = c.variant_label || meta.label || unit;
+      var name = c.name || p.name || 'Product';
+      var image = c.image || p.image || (p.images && p.images[0]) || '';
+      return {
+        id: c.id,
+        name: name,
+        image: image,
         qty: c.qty,
         variant_id: variantId,
         variant_label: label,
         unit: unit,
         price: price,
+        gst_percent: p.gst_percent,
         lineTotal: price * c.qty,
         cartKey: cartLineKey(c)
-      });
+      };
     });
   }
   function cartSubtotal() {
@@ -331,9 +361,14 @@
     var product = findProduct(id) || {};
     variantId = variantId || defaultVariantId(product);
     var key = id + '::' + (variantId || '');
+    var snap = cartItemSnapshot(product, variantId);
     var existing = state.cart.find(function (c) { return cartLineKey(c) === key; });
-    if (existing) existing.qty += qty;
-    else state.cart.push({ id: id, qty: qty, variant_id: variantId });
+    if (existing) {
+      existing.qty += qty;
+      if (product.name) Object.assign(existing, snap);
+    } else {
+      state.cart.push(Object.assign({ id: id, qty: qty, variant_id: variantId }, snap));
+    }
     saveCart();
     renderHeader();
   }
@@ -1291,6 +1326,7 @@
           applyCustomerPayload(data.customer);
           if (Array.isArray(data.cart)) state.cart = data.cart;
           if (data.preferred_store_id) selectedStoreId = data.preferred_store_id;
+          enrichCartFromCatalog();
           renderHeader();
           loadAccountOrders();
         } else {
@@ -1658,6 +1694,15 @@
     });
     window.addEventListener('focus', function () {
       scheduleStorefrontRefresh();
+    });
+    window.addEventListener('pageshow', function (e) {
+      if (e.persisted) {
+        loadCatalogFromApi(function () {
+          enrichCartFromCatalog();
+          renderCurrentPage();
+          renderHeader();
+        });
+      }
     });
   }
 

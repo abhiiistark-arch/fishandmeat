@@ -92,9 +92,9 @@
   function renderReceiptHtml(receipt) {
     var rows = (receipt.items || []).map(function (it) {
       return '<tr><td class="item-name">' + esc(it.name) + '</td>' +
-        '<td class="num">' + esc(it.qty) + '</td>' +
-        '<td class="num">' + esc(it.rate) + '</td>' +
-        '<td class="num">' + esc(it.amount) + '</td></tr>';
+        '<td class="num col-qty">' + esc(it.qty) + '</td>' +
+        '<td class="num col-rate">' + esc(it.rate) + '</td>' +
+        '<td class="num col-amt">' + esc(it.amount) + '</td></tr>';
     }).join('');
 
     var discountRow = receipt.discount
@@ -128,11 +128,16 @@
       '.kv td{vertical-align:top;padding:1px 0}' +
       '.kv .k{white-space:nowrap;padding-right:6px}' +
       '.kv .v{text-align:right;width:100%}' +
-      '.items{width:100%;border-collapse:collapse;font-size:10px;margin:4px 0}' +
+      '.items{width:100%;border-collapse:collapse;table-layout:fixed;font-size:10px;margin:4px 0}' +
+      '.items col.col-item{width:42%}.items col.col-qty{width:10%}' +
+      '.items col.col-rate{width:22%}.items col.col-amt{width:26%}' +
       '.items th{text-align:left;font-weight:700;padding:2px 0;border-bottom:1px dashed #000}' +
       '.items th.num,.items td.num{text-align:right;white-space:nowrap}' +
+      '.items th.col-qty,.items td.col-qty{text-align:center;padding-left:1mm;padding-right:1mm}' +
+      '.items th.col-rate,.items td.col-rate{padding-left:2mm;padding-right:1mm}' +
+      '.items th.col-amt,.items td.col-amt{padding-left:3mm}' +
       '.items td{padding:3px 0;vertical-align:top}' +
-      '.items .item-name{word-break:break-word;padding-right:4px}' +
+      '.items .item-name{word-break:break-word;padding-right:2mm;overflow-wrap:anywhere}' +
       '.totals{width:100%;font-size:10px;margin-top:4px}' +
       '.totals td{padding:2px 0}.totals .label{text-align:left}' +
       '.totals .value{text-align:right;white-space:nowrap}' +
@@ -154,7 +159,8 @@
       '<tr><td class="k">Mobile:</td><td class="v">' + esc(receipt.mobile) + '</td></tr>' +
       '<tr><td class="k">Order type:</td><td class="v">' + esc(receipt.order_type) + '</td></tr>' +
       '</table><hr class="rule">' +
-      '<table class="items"><thead><tr><th>Item</th><th class="num">Qty</th><th class="num">Rate</th><th class="num">Amount</th></tr></thead><tbody>' +
+      '<table class="items"><colgroup><col class="col-item"><col class="col-qty"><col class="col-rate"><col class="col-amt"></colgroup>' +
+      '<thead><tr><th>Item</th><th class="num col-qty">Qty</th><th class="num col-rate">Rate</th><th class="num col-amt">Amt</th></tr></thead><tbody>' +
       rows + '</tbody></table><hr class="rule">' +
       '<table class="totals">' +
       '<tr><td class="label">Subtotal:</td><td class="value">' + esc(receipt.subtotal) + '</td></tr>' +

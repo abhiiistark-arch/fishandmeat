@@ -830,6 +830,61 @@
       .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+  function formatIST(iso) {
+    if (!iso) return '';
+    try {
+      return new Date(String(iso).replace('Z', '+00:00')).toLocaleString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      }).replace(',', '');
+    } catch (e) {
+      return String(iso).slice(0, 16).replace('T', ' ');
+    }
+  }
+
+  async function printPosBill(orderId) {
+    if (!global.ThermalReceipt || !global.ThermalReceipt.printReceipt) {
+      toast('Print module not loaded. Refresh the page.', true);
+      return;
+    }
+    try {
+      var data = await apiSilent('/api/admin/orders/' + encodeURIComponent(orderId) + '/receipt?format=json');
+      if (data && data.receipt) {
+        global.ThermalReceipt.printReceipt(data.receipt);
+      } else {
+        toast('Could not load bill for printing', true);
+      }
+    } catch (e) {
+      toast(e.message || 'Could not print bill', true);
+    }
+  }
+
+  function posRecentRowHtml(o) {
+    var receiptUrl = '/api/admin/orders/' + encodeURIComponent(o.order_id) + '/receipt';
+    return '<tr><td><strong>' + esc(o.order_id) + '</strong></td><td>' +
+      esc(formatIST(o.created_at)) + '</td><td>' +
+      esc(o.store_name) + '</td><td>' + esc(o.customer_name) +
+      (o.staff_name ? '<div class="muted">by ' + esc(o.staff_name) + '</div>' : '') +
+      '</td><td>' +
+      esc((o.payment_method || '').toUpperCase()) + '</td><td>' + money(o.total) +
+      '</td><td class="pos-recent-actions">' +
+      '<button class="btn btn-sm btn-dark pos-print-bill" type="button" data-order="' + esc(o.order_id) + '">Print Bill</button> ' +
+      '<a class="btn btn-sm btn-outline" target="_blank" href="' + receiptUrl + '">View Bill</a></td></tr>';
+  }
+
+  function wirePosRecentPrintButtons() {
+    document.querySelectorAll('.pos-print-bill').forEach(function (btn) {
+      btn.onclick = function () {
+        printPosBill(btn.getAttribute('data-order'));
+      };
+    });
+  }
+
   function renderParameterEditor(hostId, parameters) {
     var host = document.getElementById(hostId);
     if (!host) return;
@@ -1969,7 +2024,7 @@
         var isFocus = focus && (o.order_id === focus || o.id === focus);
         return '<tr class="' + (isFocus ? 'row-focus' : '') + '">' +
           '<td><strong>' + esc(o.order_id) + '</strong></td>' +
-          '<td>' + esc((o.created_at || '').slice(0, 16).replace('T', ' ')) + '</td>' +
+          '<td>' + esc(formatIST(o.created_at)) + '</td>' +
           '<td>' + esc(o.customer_name) + '<br><span class="muted">' + esc(o.customer_phone) + '</span></td>' +
           '<td>' + esc(o.store_name) + '</td>' +
           '<td>' + mode + '</td>' +
@@ -2138,6 +2193,9 @@
         this.page = 1;
         this.load();
         AdminShell.refreshBadges();
+        if (global.AdminPOS && typeof global.AdminPOS.loadRecent === 'function') {
+          global.AdminPOS.loadRecent().catch(function () { /* ignore */ });
+        }
       } catch (e) {
         toast(e.message || 'Could not delete order', true);
       }
@@ -3422,6 +3480,9 @@
       };
       document.getElementById('pos-checkout').onclick = function () { self.checkout(); };
       document.getElementById('pos-success-close').onclick = function () { closeModal('pos-success-modal'); };
+      document.addEventListener('visibilitychange', function () {
+        if (!document.hidden) self.loadRecent();
+      });
       this.loadDraft();
       await this.loadProducts();
       this.loadRecent();
@@ -3643,7 +3704,8 @@
         document.getElementById('pos-success-copy').textContent =
           'Bill ' + order.order_id + ' · ' + money(order.total) + ' · ' +
           (order.payment_method || '').toUpperCase() + ' · by ' + (order.staff_name || AdminShell.admin.name);
-        document.getElementById('pos-invoice').href = '/api/admin/orders/' + order.order_id + '/invoice';
+        document.getElementById('pos-invoice').href = '/api/admin/orders/' + order.order_id + '/receipt';
+        document.getElementById('pos-invoice').textContent = 'View Bill';
         var printBtn = document.getElementById('pos-print-receipt');
         if (printBtn) {
           printBtn.onclick = function () {
@@ -3665,26 +3727,9 @@
         apiSilent('/api/admin/pos/orders?limit=20&store_id=' + encodeURIComponent(
           document.getElementById('pos-store').value
         )).then(function (recentRows) {
-          document.querySelector('#pos-recent tbody').innerHTML = recentRows.map(function (o) {
-            return '<tr><td><strong>' + esc(o.order_id) + '</strong></td><td>' +
-              esc((o.created_at || '').slice(0, 16).replace('T', ' ')) + '</td><td>' +
-              esc(o.store_name) + '</td><td>' + esc(o.customer_name) +
-              (o.staff_name ? '<div class="muted">by ' + esc(o.staff_name) + '</div>' : '') +
-              '</td><td>' +
-              esc((o.payment_method || '').toUpperCase()) + '</td><td>' + money(o.total) +
-              '</td><td class="pos-recent-actions">' +
-              '<button class="btn btn-sm btn-dark pos-print-bill" type="button" data-order="' + esc(o.order_id) + '">Print Bill</button> ' +
-              '<a class="btn btn-sm btn-outline" target="_blank" href="/api/admin/orders/' +
-              encodeURIComponent(o.order_id) + '/invoice">PDF</a></td></tr>';
-          }).join('') || '<tr><td colspan="7">No in-store bills yet for this store.</td></tr>';
-          document.querySelectorAll('.pos-print-bill').forEach(function (btn) {
-            btn.onclick = function () {
-              var orderId = btn.getAttribute('data-order');
-              if (global.ThermalReceipt && global.ThermalReceipt.printByUrl) {
-                global.ThermalReceipt.printByUrl('/api/admin/orders/' + encodeURIComponent(orderId) + '/receipt?auto=1');
-              }
-            };
-          });
+          document.querySelector('#pos-recent tbody').innerHTML = recentRows.map(posRecentRowHtml).join('') ||
+            '<tr><td colspan="7">No in-store bills yet for this store.</td></tr>';
+          wirePosRecentPrintButtons();
         }).catch(function () { /* ignore */ });
         apiSilent('/api/admin/badges').then(function (b) {
           var ob = document.getElementById('badge-orders');
@@ -3702,26 +3747,9 @@
     loadRecent: async function () {
       var storeId = document.getElementById('pos-store').value;
       var rows = await api('/api/admin/pos/orders?limit=20&store_id=' + encodeURIComponent(storeId));
-      document.querySelector('#pos-recent tbody').innerHTML = rows.map(function (o) {
-        return '<tr><td><strong>' + esc(o.order_id) + '</strong></td><td>' +
-          esc((o.created_at || '').slice(0, 16).replace('T', ' ')) + '</td><td>' +
-          esc(o.store_name) + '</td><td>' + esc(o.customer_name) +
-          (o.staff_name ? '<div class="muted">by ' + esc(o.staff_name) + '</div>' : '') +
-          '</td><td>' +
-          esc((o.payment_method || '').toUpperCase()) + '</td><td>' + money(o.total) +
-          '</td><td class="pos-recent-actions">' +
-          '<button class="btn btn-sm btn-dark pos-print-bill" type="button" data-order="' + esc(o.order_id) + '">Print Bill</button> ' +
-          '<a class="btn btn-sm btn-outline" target="_blank" href="/api/admin/orders/' +
-          encodeURIComponent(o.order_id) + '/invoice">PDF</a></td></tr>';
-      }).join('') || '<tr><td colspan="7">No in-store bills yet for this store.</td></tr>';
-      document.querySelectorAll('.pos-print-bill').forEach(function (btn) {
-        btn.onclick = function () {
-          var orderId = btn.getAttribute('data-order');
-          if (global.ThermalReceipt && global.ThermalReceipt.printByUrl) {
-            global.ThermalReceipt.printByUrl('/api/admin/orders/' + encodeURIComponent(orderId) + '/receipt?auto=1');
-          }
-        };
-      });
+      document.querySelector('#pos-recent tbody').innerHTML = rows.map(posRecentRowHtml).join('') ||
+        '<tr><td colspan="7">No in-store bills yet for this store.</td></tr>';
+      wirePosRecentPrintButtons();
     }
   };
 

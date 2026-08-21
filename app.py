@@ -2644,7 +2644,7 @@ def api_product_detail(product_id):
     return _public_cache_headers(jsonify(p), max_age=0)
 
 
-def _apply_inventory_delta(order, sign):
+def _apply_inventory_delta(order, sign, sync_qr_on_restore=True):
     """Atomic stock adjust for website orders. sign=-1 deducts, +1 restores.
 
     Uses the same conditional $inc pattern as POS so concurrent customers
@@ -2665,11 +2665,12 @@ def _apply_inventory_delta(order, sign):
         })
         if not inv:
             for inv_id, done_qty in applied:
-                _pos_adjust_stock(inv_id, -sign * done_qty)
+                _pos_adjust_stock(inv_id, -sign * done_qty, sync_qr=False)
             return False
-        if not _pos_adjust_stock(inv['id'], sign * qty):
+        sync_qr = sync_qr_on_restore if sign > 0 else False
+        if not _pos_adjust_stock(inv['id'], sign * qty, sync_qr=sync_qr):
             for inv_id, done_qty in applied:
-                _pos_adjust_stock(inv_id, -sign * done_qty)
+                _pos_adjust_stock(inv_id, -sign * done_qty, sync_qr=False)
             return False
         applied.append((inv['id'], qty))
     return True
@@ -4637,7 +4638,7 @@ def api_admin_order_update(order_id):
 
     if request.method == 'DELETE':
         if order.get('inventory_deducted'):
-            _apply_inventory_delta(order, +1)
+            _apply_inventory_delta(order, +1, sync_qr_on_restore=False)
             log_activity('inventory', f"Stock restored for deleted order {order.get('order_id')}")
         db_delete('orders', {'id': order['id']})
         log_activity('order', f"Order {order.get('order_id')} deleted")
@@ -4994,8 +4995,8 @@ def api_admin_media_sync():
 
 # --- In-store POS ---
 
-def _pos_adjust_stock(inventory_id, quantity_delta):
-    """Atomically adjust a POS inventory row; keep qr_units in sync."""
+def _pos_adjust_stock(inventory_id, quantity_delta, sync_qr=True):
+    """Atomically adjust a POS inventory row; optionally keep qr_units in sync."""
     _require_mongo()
     query = {'id': inventory_id}
     if quantity_delta < 0:
@@ -5005,7 +5006,7 @@ def _pos_adjust_stock(inventory_id, quantity_delta):
         {'$inc': {'stock': quantity_delta}, '$set': {'updated_at': now_iso()}},
     )
     ok = result.modified_count == 1
-    if ok and quantity_delta > 0:
+    if ok and quantity_delta > 0 and sync_qr:
         inv = db_find_one('inventory', {'id': inventory_id})
         if inv:
             sync_qr_units_for_inventory_row(inv)
