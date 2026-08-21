@@ -985,11 +985,13 @@ def _claim_one_qr_unit(unit_id):
     )
 
 
-def claim_qr_units_for_sale(store_id, product_id, variant_id, qty, preferred_unit_ids=None):
+def claim_qr_units_for_sale(store_id, product_id, variant_id, qty, preferred_unit_ids=None, sync_missing=True):
     """
     Pick `qty` in-stock units for a sale. Preferred unit ids (from scanned QRs)
     are claimed first; remaining slots come from oldest stock.
     Claims are atomic so two concurrent bills cannot take the same unit.
+
+    sync_missing=False skips creating QR units during checkout (fast POS path).
     """
     qty = int(qty or 0)
     if qty < 1:
@@ -1015,13 +1017,14 @@ def claim_qr_units_for_sale(store_id, product_id, variant_id, qty, preferred_uni
             claimed.append(locked)
     need = qty - len(claimed)
     if need > 0:
-        inv = db_find_one('inventory', {
-            'store_id': store_id,
-            'product_id': product_id,
-            'variant_id': variant_id,
-        })
-        if inv:
-            sync_qr_units_for_inventory_row(inv)
+        if sync_missing:
+            inv = db_find_one('inventory', {
+                'store_id': store_id,
+                'product_id': product_id,
+                'variant_id': variant_id,
+            })
+            if inv:
+                sync_qr_units_for_inventory_row(inv)
         pool = db_find('qr_units', {
             'store_id': store_id,
             'product_id': product_id,
@@ -5009,6 +5012,53 @@ def _pos_adjust_stock(inventory_id, quantity_delta):
     return ok
 
 
+def _pos_catalog(store_id):
+    """Lightweight in-store catalog — only in-stock variants for one store."""
+    if not store_id:
+        return {'store_id': '', 'categories': [], 'products': []}
+    categories = db_find('categories', {'enabled': True}, projection={'id': 1, 'name': 1, 'code': 1})
+    products = db_find('products', projection={
+        'id': 1, 'name': 1, 'sku': 1, 'category_id': 1, 'status': 1, 'variants': 1,
+    })
+    inventory_rows = db_find('inventory', {'store_id': store_id})
+    inv_by_product = {}
+    for row in inventory_rows:
+        inv_by_product.setdefault(row.get('product_id'), []).append(row)
+    catalog_products = []
+    for p in products:
+        if (p.get('status') or 'available') == 'disabled':
+            continue
+        related = inv_by_product.get(p.get('id')) or []
+        store_inventory = []
+        for r in related:
+            stock = int(r.get('stock') or 0)
+            if stock < 1:
+                continue
+            store_inventory.append({
+                'id': r.get('id'),
+                'variant_id': r.get('variant_id'),
+                'price': float(r.get('price') or 0),
+                'stock': stock,
+            })
+        if not store_inventory:
+            continue
+        catalog_products.append({
+            'id': p.get('id'),
+            'name': p.get('name'),
+            'sku': p.get('sku') or '',
+            'category_id': p.get('category_id') or '',
+            'variants': p.get('variants') or [],
+            'store_inventory': store_inventory,
+        })
+    catalog_products.sort(key=lambda r: (r.get('name') or '').lower())
+    categories.sort(key=lambda c: (c.get('name') or '').lower())
+    return {
+        'store_id': store_id,
+        'categories': categories,
+        'products': catalog_products,
+    }
+
+
 def _create_pos_order(data, staff):
     """Shared in-store billing for admin session + mobile Bearer auth.
 
@@ -5035,6 +5085,17 @@ def _create_pos_order(data, staff):
     if not raw_items:
         return {'error': 'Add at least one item'}, 400
 
+    if not raw_items:
+        return {'error': 'Add at least one item'}, 400
+
+    product_ids = list({raw.get('product_id') for raw in raw_items if raw.get('product_id')})
+    products_by_id = {
+        p['id']: p for p in db_find('products', {'id': {'$in': product_ids}})
+    } if product_ids else {}
+    inventory_by_key = {}
+    for inv in db_find('inventory', {'store_id': store_id, 'product_id': {'$in': product_ids}}):
+        inventory_by_key[(inv.get('product_id'), inv.get('variant_id'))] = inv
+
     lines = []
     subtotal = 0.0
     deductions = []
@@ -5048,12 +5109,8 @@ def _create_pos_order(data, staff):
             return {'error': 'Invalid quantity'}, 400
         product_id = raw.get('product_id')
         variant_id = raw.get('variant_id')
-        product = db_find_one('products', {'id': product_id})
-        inv = db_find_one('inventory', {
-            'store_id': store_id,
-            'product_id': product_id,
-            'variant_id': variant_id,
-        })
+        product = products_by_id.get(product_id)
+        inv = inventory_by_key.get((product_id, variant_id))
         if not product or not inv:
             return {'error': 'Product or variant is unavailable at this store'}, 400
         if inv.get('stock', 0) < qty:
@@ -5065,19 +5122,18 @@ def _create_pos_order(data, staff):
             preferred_unit_ids.append(raw.get('unit_id'))
         for uid in (raw.get('unit_ids') or []):
             preferred_unit_ids.append(uid)
-        claimed = claim_qr_units_for_sale(
-            store_id, product_id, variant_id, qty, preferred_unit_ids=preferred_unit_ids
-        )
-        if len(claimed) < qty:
-            sync_qr_units_for_inventory_row(inv, product=product)
+        claimed = []
+        # Manual POS adds (no scanned QR) — stock-only, no QR sync during checkout.
+        if preferred_unit_ids:
             claimed = claim_qr_units_for_sale(
-                store_id, product_id, variant_id, qty, preferred_unit_ids=preferred_unit_ids
+                store_id, product_id, variant_id, qty,
+                preferred_unit_ids=preferred_unit_ids,
+                sync_missing=False,
             )
-        if len(claimed) < qty:
-            return {
-                'error': f'Not enough unique QR units for {product["name"]} '
-                         f'(need {qty}, found {len(claimed)}). Generate/sync QR first.'
-            }, 409
+            if len(claimed) < qty:
+                return {
+                    'error': f'QR unit unavailable for {product["name"]}. Rescan or refresh.'
+                }, 409
         variant = next(
             (v for v in product.get('variants') or [] if v.get('id') == variant_id),
             {},
@@ -5430,6 +5486,18 @@ def _build_invoice_pdf(order):
     doc.build(story)
     buf.seek(0)
     return buf
+
+
+@app.route('/api/admin/pos/catalog', methods=['GET'])
+@admin_required
+def api_admin_pos_catalog():
+    store_id = resolve_store_scope(request.args.get('store_id'))
+    if not store_id:
+        return jsonify({'error': 'Select a store'}), 400
+    denied = assert_store_access(store_id)
+    if denied:
+        return denied
+    return jsonify(_pos_catalog(store_id))
 
 
 @app.route('/api/admin/pos/orders', methods=['GET', 'POST'])

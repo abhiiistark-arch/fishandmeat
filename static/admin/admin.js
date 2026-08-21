@@ -91,19 +91,35 @@
     }, opts, { headers: headers });
     AdminBoot.begin();
     try {
-      var res = await fetch(url, fetchOpts);
-      if (res.status === 401) {
-        window.location.href = '/admin/login';
-        throw new Error('Unauthorized');
-      }
-      var data = null;
-      var ct = res.headers.get('content-type') || '';
-      if (ct.includes('application/json')) data = await res.json();
-      if (!res.ok) throw new Error((data && data.error) || 'Request failed');
-      return data;
+      return await apiFetch(url, fetchOpts);
     } finally {
       AdminBoot.end();
     }
+  }
+
+  async function apiSilent(url, opts) {
+    opts = opts || {};
+    var headers = Object.assign({ 'Content-Type': 'application/json' }, opts.headers || {});
+    try {
+      var csrf = document.cookie.split(';').map(function (c) { return c.trim(); })
+        .find(function (c) { return c.indexOf('fam_csrf=') === 0; });
+      if (csrf) headers['X-CSRF-Token'] = decodeURIComponent(csrf.split('=').slice(1).join('='));
+    } catch (e) { /* ignore */ }
+    var fetchOpts = Object.assign({ credentials: 'same-origin' }, opts, { headers: headers });
+    return apiFetch(url, fetchOpts);
+  }
+
+  async function apiFetch(url, fetchOpts) {
+    var res = await fetch(url, fetchOpts);
+    if (res.status === 401) {
+      window.location.href = '/admin/login';
+      throw new Error('Unauthorized');
+    }
+    var data = null;
+    var ct = res.headers.get('content-type') || '';
+    if (ct.includes('application/json')) data = await res.json();
+    if (!res.ok) throw new Error((data && data.error) || 'Request failed');
+    return data;
   }
 
   // Shared catalog cache — Products / Inventory / QR / POS reuse one fetch
@@ -3410,11 +3426,36 @@
       await this.loadProducts();
       this.loadRecent();
     },
-    loadProducts: async function () {
+    loadProducts: async function (opts) {
+      opts = opts || {};
       var storeId = document.getElementById('pos-store').value;
-      this.products = await api('/api/products?store_id=' + encodeURIComponent(storeId));
+      var fetcher = opts.silent ? apiSilent : api;
+      var payload = await fetcher('/api/admin/pos/catalog?store_id=' + encodeURIComponent(storeId));
+      this.products = payload.products || [];
+      if (payload.categories && payload.categories.length) {
+        this.categories = payload.categories.filter(function (c) { return c.enabled !== false; });
+        var catEl = document.getElementById('pos-category');
+        if (catEl) {
+          catEl.innerHTML = '<option value="">All categories</option>' +
+            this.categories.map(function (c) {
+              return '<option value="' + c.id + '">' + esc(c.name) + '</option>';
+            }).join('');
+        }
+      }
       this.renderProducts();
       this.renderCart();
+    },
+    applyLocalStockFromSale: function (soldRows) {
+      var self = this;
+      (soldRows || []).forEach(function (row) {
+        var product = self.products.find(function (p) { return p.id === row.product_id; });
+        if (!product) return;
+        var inv = (product.store_inventory || []).find(function (i) {
+          return i.variant_id === row.variant_id;
+        });
+        if (inv) inv.stock = Math.max(0, Number(inv.stock || 0) - Number(row.qty || 0));
+      });
+      this.renderProducts();
     },
     variantFor: function (product, variantId) {
       return (product.variants || []).find(function (v) { return v.id === variantId; }) || {};
@@ -3612,12 +3653,45 @@
           };
         }
         if (global.ThermalReceipt) {
-          global.ThermalReceipt.printReceipt(order.receipt || order);
+          setTimeout(function () {
+            global.ThermalReceipt.printReceipt(order.receipt || order);
+          }, 60);
         }
         openModal('pos-success-modal');
-        await self.loadProducts();
-        self.loadRecent();
-        AdminShell.refreshBadges();
+        self.applyLocalStockFromSale(rows);
+        self.renderCart();
+        // Background refresh — do not block next sale or show loading overlay
+        self.loadProducts({ silent: true }).catch(function () { /* ignore */ });
+        apiSilent('/api/admin/pos/orders?limit=20&store_id=' + encodeURIComponent(
+          document.getElementById('pos-store').value
+        )).then(function (recentRows) {
+          document.querySelector('#pos-recent tbody').innerHTML = recentRows.map(function (o) {
+            return '<tr><td><strong>' + esc(o.order_id) + '</strong></td><td>' +
+              esc((o.created_at || '').slice(0, 16).replace('T', ' ')) + '</td><td>' +
+              esc(o.store_name) + '</td><td>' + esc(o.customer_name) +
+              (o.staff_name ? '<div class="muted">by ' + esc(o.staff_name) + '</div>' : '') +
+              '</td><td>' +
+              esc((o.payment_method || '').toUpperCase()) + '</td><td>' + money(o.total) +
+              '</td><td class="pos-recent-actions">' +
+              '<button class="btn btn-sm btn-dark pos-print-bill" type="button" data-order="' + esc(o.order_id) + '">Print Bill</button> ' +
+              '<a class="btn btn-sm btn-outline" target="_blank" href="/api/admin/orders/' +
+              encodeURIComponent(o.order_id) + '/invoice">PDF</a></td></tr>';
+          }).join('') || '<tr><td colspan="7">No in-store bills yet for this store.</td></tr>';
+          document.querySelectorAll('.pos-print-bill').forEach(function (btn) {
+            btn.onclick = function () {
+              var orderId = btn.getAttribute('data-order');
+              if (global.ThermalReceipt && global.ThermalReceipt.printByUrl) {
+                global.ThermalReceipt.printByUrl('/api/admin/orders/' + encodeURIComponent(orderId) + '/receipt?auto=1');
+              }
+            };
+          });
+        }).catch(function () { /* ignore */ });
+        apiSilent('/api/admin/badges').then(function (b) {
+          var ob = document.getElementById('badge-orders');
+          var ib = document.getElementById('badge-inventory');
+          if (ob) { ob.textContent = b.orders; ob.classList.toggle('hidden', !b.orders); }
+          if (ib) { ib.textContent = b.inventory; ib.classList.toggle('hidden', !b.inventory); }
+        }).catch(function () { /* ignore */ });
       } catch (e) {
         error.textContent = e.message || 'Could not complete sale.';
       } finally {
