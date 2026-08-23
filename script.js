@@ -1090,7 +1090,11 @@
     fetch('/api/coupons/validate', {
       method: 'POST',
       headers: famCsrfHeaders(),
-      body: JSON.stringify({ code: code, subtotal: cartSubtotal() })
+      body: JSON.stringify({
+        code: code,
+        subtotal: cartSubtotal(),
+        phone: (document.getElementById('checkout-phone') || {}).value || ''
+      })
     }).then(function (r) { return r.json().then(function (d) { return { ok: r.ok, d: d }; }); })
       .then(function (res) {
         if (res.ok && res.d.valid) {
@@ -1632,6 +1636,55 @@
     return 'badge';
   }
 
+  /* ---- PROMO STRIP ---- */
+  function initPromoStrip() {
+    var PROMO_KEY = 'fam_promo_welcome20_dismissed';
+    try {
+      if (sessionStorage.getItem(PROMO_KEY) === '1') {
+        document.documentElement.classList.add('promo-dismissed');
+        document.body.classList.add('promo-dismissed');
+      }
+    } catch (e) { /* ignore */ }
+
+    var closeBtn = document.getElementById('promo-close');
+    if (closeBtn) {
+      closeBtn.addEventListener('click', function () {
+        document.documentElement.classList.add('promo-dismissed');
+        document.body.classList.add('promo-dismissed');
+        try { sessionStorage.setItem(PROMO_KEY, '1'); } catch (e) { /* ignore */ }
+      });
+    }
+
+    var shopBtn = document.getElementById('promo-shop');
+    if (shopBtn) {
+      shopBtn.addEventListener('click', function () {
+        navigate('catalog', { category: 'all' });
+      });
+    }
+
+    var codeBtn = document.getElementById('promo-code-btn');
+    if (codeBtn) {
+      codeBtn.addEventListener('click', function () {
+        var code = 'WELCOME20';
+        var done = function () {
+          codeBtn.classList.add('is-copied');
+          codeBtn.textContent = 'COPIED';
+          setTimeout(function () {
+            codeBtn.classList.remove('is-copied');
+            codeBtn.textContent = code;
+          }, 1400);
+        };
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(code).then(done).catch(function () {
+            done();
+          });
+        } else {
+          done();
+        }
+      });
+    }
+  }
+
   /* ---- HEADER ---- */
   function renderHeader() {
     var count = cartCount();
@@ -1682,6 +1735,8 @@
     document.getElementById('footer-account').addEventListener('click', function () { navigate('account'); });
     document.getElementById('footer-cart').addEventListener('click', function () { navigate('cart'); });
     document.getElementById('footer-locations').addEventListener('click', goToLocations);
+
+    initPromoStrip();
 
     renderHeader();
     restoreCustomerSession();

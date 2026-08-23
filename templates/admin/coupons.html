@@ -10,7 +10,7 @@
   <div class="table-wrap">
     <table class="data-table" id="coupons-table">
       <thead>
-        <tr><th>Code</th><th>Type</th><th>Value</th><th>Min Order</th><th>Expires</th><th>Status</th><th></th></tr>
+        <tr><th>Code</th><th>Type</th><th>Value</th><th>Min Order</th><th>Rules</th><th>Expires</th><th>Status</th><th></th></tr>
       </thead>
       <tbody></tbody>
     </table>
@@ -32,6 +32,9 @@
       <div class="field"><label>Expires (YYYY-MM-DD, optional)</label><input id="cpn-expiry" placeholder="2026-12-31" /></div>
       <div class="field"><label>Status</label>
         <select id="cpn-active"><option value="true">Active</option><option value="false">Inactive</option></select>
+      </div>
+      <div class="field full">
+        <label><input type="checkbox" id="cpn-first-order" /> First order only (same phone / customer cannot reuse)</label>
       </div>
     </div>
     <div class="modal-actions">

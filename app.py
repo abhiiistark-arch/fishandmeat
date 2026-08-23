@@ -2334,6 +2334,36 @@ def ensure_frozen_gst():
             })
 
 
+def ensure_welcome_coupon():
+    """Ensure WELCOME20 exists as a first-order-only 20% offer."""
+    existing = db_find_one('coupons', {'code': 'WELCOME20'})
+    desired = {
+        'type': 'percent',
+        'value': 20,
+        'max_discount': None,
+        'min_subtotal': 0,
+        'first_order_only': True,
+        'active': True,
+        'updated_at': now_iso(),
+    }
+    if existing:
+        updates = {}
+        for key, value in desired.items():
+            if existing.get(key) != value:
+                updates[key] = value
+        if updates:
+            db_update('coupons', {'id': existing['id']}, updates)
+        return
+    db_insert('coupons', {
+        'id': new_id('cpn_'),
+        'code': 'WELCOME20',
+        'expires_at': '',
+        'created_at': now_iso(),
+        **desired,
+    })
+    print('[db] Created WELCOME20 first-order coupon (20% off)')
+
+
 def ensure_media_assets():
     """Attach existing design/upload images to records that still have empty image fields."""
     hero_url = '/assets/hero.webp'
@@ -2393,6 +2423,7 @@ if _use_mongo:
     seed_if_empty()
     ensure_default_parameters()
     ensure_frozen_gst()
+    ensure_welcome_coupon()
     ensure_media_assets()
     sync_local_uploads_to_media()
     ensure_admin_users()
@@ -3136,25 +3167,6 @@ def robots_txt():
     return app.response_class(txt, mimetype='text/plain')
 
 
-@app.route('/api/coupons/validate', methods=['POST'])
-def api_validate_coupon():
-    data = parse_json()
-    code = (data.get('code') or '').strip().upper()
-    subtotal = float(data.get('subtotal') or 0)
-    if not code:
-        return jsonify({'valid': False, 'error': 'Enter a coupon code'}), 400
-    coupon = db_find_one('coupons', {'code': code})
-    if not coupon or not coupon.get('active'):
-        return jsonify({'valid': False, 'error': 'Invalid coupon code'}), 404
-    if coupon.get('expires_at') and coupon['expires_at'] < now_iso():
-        return jsonify({'valid': False, 'error': 'Coupon has expired'}), 400
-    if subtotal < coupon.get('min_subtotal', 0):
-        return jsonify({'valid': False,
-                        'error': f"Minimum order ₹{coupon.get('min_subtotal', 0)} for this coupon"}), 400
-    discount = _coupon_discount(coupon, subtotal)
-    return jsonify({'valid': True, 'coupon': coupon, 'discount': discount})
-
-
 def _coupon_discount(coupon, subtotal):
     if coupon.get('type') == 'percent':
         discount = subtotal * float(coupon.get('value', 0)) / 100.0
@@ -3164,6 +3176,161 @@ def _coupon_discount(coupon, subtotal):
     else:
         discount = float(coupon.get('value', 0))
     return round(min(discount, subtotal), 2)
+
+
+def _coupon_phone_digits(phone):
+    digits = re.sub(r'\D', '', str(phone or ''))
+    if len(digits) > 10:
+        digits = digits[-10:]
+    return digits
+
+
+def _normalize_customer_phone(phone):
+    """Canonical 10-digit Indian mobile for website + in-store merge."""
+    return _coupon_phone_digits(phone)
+
+
+def _find_customer_by_phone(phone):
+    """Find one customer by phone across common stored formats."""
+    digits = _normalize_customer_phone(phone)
+    if len(digits) != 10:
+        return None
+    for candidate in (digits, f'+91{digits}', f'91{digits}', f'0{digits}'):
+        found = db_find_one('customers', {'phone': candidate})
+        if found:
+            return found
+    return db_find_one('customers', {'phone': {'$regex': re.escape(digits)}})
+
+
+def _lookup_customer_profile_by_phone(phone):
+    """Return customer profile for POS autofill (customers table, else last order)."""
+    digits = _normalize_customer_phone(phone)
+    if len(digits) != 10:
+        return None
+    customer = _find_customer_by_phone(digits)
+    if customer:
+        return {
+            'id': customer.get('id') or '',
+            'name': (customer.get('name') or '').strip(),
+            'phone': digits,
+            'address': (customer.get('address') or '').strip(),
+            'source': 'customer',
+        }
+    order = None
+    rows = db_find(
+        'orders',
+        {
+            'customer_phone': {'$regex': re.escape(digits)},
+            'status': {'$nin': ['cancelled', 'canceled']},
+        },
+        sort=[('created_at', -1)],
+        limit=1,
+        projection={
+            'customer_name': 1,
+            'customer_phone': 1,
+            'address': 1,
+            'customer_id': 1,
+        },
+    )
+    if rows:
+        order = rows[0]
+    if not order:
+        return None
+    return {
+        'id': order.get('customer_id') or '',
+        'name': (order.get('customer_name') or '').strip(),
+        'phone': digits,
+        'address': (order.get('address') or '').strip(),
+        'source': 'order',
+    }
+
+
+def _customer_has_prior_orders(phone=None, customer_id=None):
+    """True if this customer already placed a non-cancelled website/store order."""
+    phone_digits = _coupon_phone_digits(phone)
+    clauses = []
+    if customer_id:
+        clauses.append({'customer_id': customer_id})
+    if phone_digits:
+        # Match common stored formats: 10-digit, +91…, spaced.
+        phone_regex = re.escape(phone_digits)
+        clauses.append({'customer_phone': phone_digits})
+        clauses.append({'customer_phone': {'$regex': phone_regex}})
+    if not clauses:
+        return False
+    query = {
+        '$and': [
+            {'$or': clauses},
+            {'status': {'$nin': ['cancelled', 'canceled']}},
+        ]
+    }
+    return bool(db_find_one('orders', query))
+
+
+def _coupon_first_order_error(coupon, phone=None, customer_id=None):
+    """Return an error message if a first-order coupon cannot be used."""
+    if not coupon or not coupon.get('first_order_only'):
+        return None
+    phone_digits = _coupon_phone_digits(phone)
+    if not phone_digits and not customer_id:
+        return 'Enter your phone number to use this first-order offer'
+    if len(phone_digits) != 10 and not customer_id:
+        return 'Enter a valid 10-digit phone number to use this first-order offer'
+    if _customer_has_prior_orders(phone=phone_digits or phone, customer_id=customer_id):
+        return 'This welcome offer is only for your first order'
+    return None
+
+
+def _apply_coupon_for_checkout(coupon_code, subtotal, phone=None, customer_id=None):
+    """Validate coupon + first-order rules. Returns (discount, error_or_None, coupon_or_None)."""
+    code = (coupon_code or '').strip().upper()
+    if not code:
+        return 0, None, None
+    coupon = db_find_one('coupons', {'code': code})
+    if not coupon or not coupon.get('active'):
+        return 0, 'Invalid coupon code', None
+    if coupon.get('expires_at') and coupon['expires_at'] < now_iso():
+        return 0, 'Coupon has expired', None
+    if subtotal < float(coupon.get('min_subtotal', 0) or 0):
+        return 0, f"Minimum order ₹{coupon.get('min_subtotal', 0)} for this coupon", None
+    first_err = _coupon_first_order_error(coupon, phone=phone, customer_id=customer_id)
+    if first_err:
+        return 0, first_err, None
+    return _coupon_discount(coupon, subtotal), None, coupon
+
+
+@app.route('/api/coupons/validate', methods=['POST'])
+def api_validate_coupon():
+    data = parse_json()
+    code = (data.get('code') or '').strip().upper()
+    try:
+        subtotal = float(data.get('subtotal') or 0)
+    except (TypeError, ValueError):
+        subtotal = 0
+    if not code:
+        return jsonify({'valid': False, 'error': 'Enter a coupon code'}), 400
+    phone = data.get('phone') or ''
+    customer_id = session.get('customer_id') or data.get('customer_id') or ''
+    if not phone and customer_id:
+        cust = db_find_one('customers', {'id': customer_id})
+        if cust:
+            phone = cust.get('phone') or ''
+    discount, error, coupon = _apply_coupon_for_checkout(
+        code, subtotal, phone=phone, customer_id=customer_id
+    )
+    if error:
+        status = 404 if error == 'Invalid coupon code' else 400
+        return jsonify({'valid': False, 'error': error}), status
+    return jsonify({
+        'valid': True,
+        'coupon': {
+            'code': coupon.get('code'),
+            'type': coupon.get('type'),
+            'value': coupon.get('value'),
+            'first_order_only': bool(coupon.get('first_order_only')),
+        },
+        'discount': discount,
+    })
 
 
 def log_activity(kind, text, meta=None):
@@ -3247,14 +3414,21 @@ def api_place_order():
     else:
         delivery = 0 if subtotal >= float(settings['free_delivery_above']) else float(settings['delivery_fee_below_min'])
 
-    # Coupon
+    # Coupon (re-validated server-side, including first-order-only rules)
     coupon_code = (data.get('coupon_code') or '').strip().upper()
     discount = 0
     if coupon_code:
-        coupon = db_find_one('coupons', {'code': coupon_code})
-        if coupon and coupon.get('active') and subtotal >= coupon.get('min_subtotal', 0) \
-                and not (coupon.get('expires_at') and coupon['expires_at'] < now_iso()):
-            discount = _coupon_discount(coupon, subtotal)
+        session_customer_id = session.get('customer_id') or ''
+        discount, coupon_error, _coupon = _apply_coupon_for_checkout(
+            coupon_code,
+            subtotal,
+            phone=data.get('phone'),
+            customer_id=session_customer_id,
+        )
+        if coupon_error:
+            return jsonify({'error': coupon_error}), 400
+        if not discount:
+            coupon_code = ''
 
     # GST (informational; prices are treated as inclusive)
     gst_amount = 0
@@ -3279,16 +3453,19 @@ def api_place_order():
         reserved.append((line['inventory_id'], int(line['qty'])))
 
     # Upsert customer in MongoDB (never wipe password_hash / cart)
+    # Same phone merges website + in-store into one customer profile.
     customer = None
+    phone_digits = _normalize_customer_phone(data.get('phone'))
+    phone_store = phone_digits if len(phone_digits) == 10 else str(data.get('phone') or '').strip()
     if session.get('customer_id'):
         customer = db_find_one('customers', {'id': session.get('customer_id')})
-    if not customer:
-        customer = db_find_one('customers', {'phone': str(data['phone'])})
+    if not customer and phone_store:
+        customer = _find_customer_by_phone(phone_store) if len(phone_digits) == 10 else db_find_one('customers', {'phone': phone_store})
     if not customer:
         customer = {
             'id': new_id('cust_'),
             'name': data['name'],
-            'phone': str(data['phone']),
+            'phone': phone_store,
             'email': data.get('email', ''),
             'address': data.get('address', ''),
             'addresses': [],
@@ -3300,15 +3477,19 @@ def api_place_order():
         log_activity('customer', f"New customer {data['name']} registered")
         _remember_order_address(customer, data)
     else:
-        db_update('customers', {'id': customer['id']}, {
-            'name': data['name'],
-            'phone': str(data['phone']),
+        # Update contact fields but do not wipe account password / cart mid-edit beyond clearing cart after order
+        updates = {
+            'phone': phone_store or customer.get('phone', ''),
             'address': data.get('address', customer.get('address', '')),
             'email': data.get('email', customer.get('email', '')),
             'preferred_store_id': data.get('store_id', customer.get('preferred_store_id', '')),
             'cart': [],
             'updated_at': now_iso(),
-        })
+        }
+        # Website checkout can refresh name (shopper typed it); blank names fill from payload only
+        if (data.get('name') or '').strip():
+            updates['name'] = data['name']
+        db_update('customers', {'id': customer['id']}, updates)
         customer = db_find_one('customers', {'id': customer['id']})
         _remember_order_address(customer, data)
     # SECURITY: never auto-login from phone alone (account takeover via guest checkout).
@@ -3322,7 +3503,7 @@ def api_place_order():
         'id': new_id('ord_'),
         'order_id': order_id,
         'customer_id': customer['id'],
-        'customer_phone': str(data['phone']),
+        'customer_phone': phone_store or str(data['phone']),
         'customer_name': data['name'],
         'store_id': data['store_id'],
         'items': [{k: v for k, v in line.items() if k != 'inventory_id'} for line in lines],
@@ -5193,17 +5374,22 @@ def _create_pos_order(data, staff):
             return {'error': 'Stock changed while billing. Please refresh and try again.'}, 409
         deducted.append((inventory_id, qty))
 
-    phone = str(data.get('customer_phone') or '').strip()
+    phone = _normalize_customer_phone(data.get('customer_phone') or '')
     name = (data.get('customer_name') or '').strip() or 'Walk-in Customer'
     customer_id = ''
-    if phone:
-        customer = db_find_one('customers', {'phone': phone})
+    if phone and len(phone) == 10:
+        customer = _find_customer_by_phone(phone)
         if customer:
             customer_id = customer['id']
-            db_update('customers', {'id': customer_id}, {
-                'name': name,
-                'updated_at': now_iso(),
-            })
+            # Keep existing profile name — never override on repeat POS visits.
+            updates = {'updated_at': now_iso()}
+            if _normalize_customer_phone(customer.get('phone')) != phone:
+                updates['phone'] = phone
+            db_update('customers', {'id': customer_id}, updates)
+            # Prefer stored name on the bill when staff left name blank / walk-in default
+            stored_name = (customer.get('name') or '').strip()
+            if stored_name and name in ('', 'Walk-in Customer'):
+                name = stored_name
         else:
             customer_id = new_id('cust_')
             db_insert('customers', {
@@ -5214,6 +5400,9 @@ def _create_pos_order(data, staff):
                 'address': '',
                 'created_at': now_iso(),
             })
+    elif str(data.get('customer_phone') or '').strip():
+        # Invalid / incomplete phone — keep on the bill only, skip customer merge
+        phone = str(data.get('customer_phone') or '').strip()
 
     gst_amount = 0.0
     if get_settings().get('gst_enabled'):
@@ -5553,6 +5742,20 @@ def _build_invoice_pdf(order):
     doc.build(story)
     buf.seek(0)
     return buf
+
+
+@app.route('/api/admin/pos/customer-lookup', methods=['GET'])
+@admin_required
+def api_admin_pos_customer_lookup():
+    """Lookup returning customer by 10-digit phone for in-store billing autofill."""
+    phone = request.args.get('phone') or ''
+    digits = _normalize_customer_phone(phone)
+    if len(digits) != 10:
+        return jsonify({'found': False, 'error': 'Enter a valid 10-digit mobile number'}), 400
+    profile = _lookup_customer_profile_by_phone(digits)
+    if not profile or not profile.get('name'):
+        return jsonify({'found': False, 'phone': digits})
+    return jsonify({'found': True, 'customer': profile})
 
 
 @app.route('/api/admin/pos/catalog', methods=['GET'])
@@ -7138,6 +7341,7 @@ def api_admin_coupons():
         'max_discount': float(data.get('max_discount') or 0) or None,
         'min_subtotal': float(data.get('min_subtotal', 0) or 0),
         'expires_at': data.get('expires_at', ''),
+        'first_order_only': bool(data.get('first_order_only', False)),
         'active': bool(data.get('active', True)),
         'created_at': now_iso(),
     }
@@ -7154,12 +7358,14 @@ def api_admin_coupon_detail(coupon_id):
         db_delete('coupons', {'id': coupon_id})
         return jsonify({'ok': True})
     data = parse_json()
-    allowed = ['type', 'value', 'max_discount', 'min_subtotal', 'expires_at', 'active']
+    allowed = ['type', 'value', 'max_discount', 'min_subtotal', 'expires_at', 'active', 'first_order_only']
     updates = {k: data[k] for k in allowed if k in data}
     if 'value' in updates:
         updates['value'] = float(updates['value'] or 0)
     if 'min_subtotal' in updates:
         updates['min_subtotal'] = float(updates['min_subtotal'] or 0)
+    if 'first_order_only' in updates:
+        updates['first_order_only'] = bool(updates['first_order_only'])
     updates['updated_at'] = now_iso()
     db_update('coupons', {'id': coupon_id}, updates)
     return jsonify(db_find_one('coupons', {'id': coupon_id}))

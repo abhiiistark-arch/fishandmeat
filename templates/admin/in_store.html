@@ -24,8 +24,12 @@
     <div id="pos-cart" class="pos-cart"></div>
     <div class="pos-customer">
       <div class="form-grid">
-        <div class="field"><label>Customer Name</label><input id="pos-customer-name" placeholder="Walk-in Customer"></div>
-        <div class="field"><label>Phone (optional)</label><input id="pos-customer-phone" inputmode="numeric" placeholder="10-digit number"></div>
+        <div class="field"><label>Customer Name</label><input id="pos-customer-name" placeholder="Walk-in Customer" autocomplete="name"></div>
+        <div class="field">
+          <label>Phone (optional)</label>
+          <input id="pos-customer-phone" inputmode="numeric" maxlength="14" placeholder="10-digit number" autocomplete="tel">
+          <div class="muted" id="pos-customer-hint" style="font-size:12px;margin-top:4px;min-height:16px;"></div>
+        </div>
         <div class="field"><label>Billed By</label><input id="pos-staff-name" readonly value="{{ admin_user.name if admin_user else '' }}"></div>
         <div class="field"><label>Payment</label><select id="pos-payment"><option value="cash">Cash</option><option value="card">Card</option><option value="upi">UPI</option></select></div>
         <div class="field"><label>Discount (₹)</label><input id="pos-discount" type="number" min="0" step="1" value="0"></div>

@@ -2893,17 +2893,21 @@
         var value = c.type === 'percent'
           ? c.value + '%' + (c.max_discount ? ' (max ' + money(c.max_discount) + ')' : '')
           : money(c.value);
+        var rules = c.first_order_only
+          ? '<span class="badge gold">First order</span>'
+          : '<span class="muted">Any order</span>';
         return '<tr>' +
           '<td><strong>' + esc(c.code) + '</strong></td>' +
           '<td>' + (c.type === 'percent' ? 'Percent' : 'Flat') + '</td>' +
           '<td>' + value + '</td>' +
           '<td>' + money(c.min_subtotal || 0) + '</td>' +
+          '<td>' + rules + '</td>' +
           '<td>' + esc(c.expires_at || '—') + '</td>' +
           '<td>' + (c.active ? '<span class="badge green">Active</span>' : '<span class="badge red">Inactive</span>') + '</td>' +
           '<td><button class="btn btn-sm btn-outline" data-edit="' + c.id + '">Edit</button> ' +
           '<button class="btn btn-sm btn-outline" data-toggle="' + c.id + '">' + (c.active ? 'Deactivate' : 'Activate') + '</button> ' +
           '<button class="btn btn-sm btn-outline" data-del="' + c.id + '">Delete</button></td></tr>';
-      }).join('') || '<tr><td colspan="7">No coupons yet</td></tr>';
+      }).join('') || '<tr><td colspan="8">No coupons yet</td></tr>';
       tbody.querySelectorAll('[data-edit]').forEach(function (btn) {
         btn.onclick = function () {
           self.openForm(coupons.find(function (x) { return x.id === btn.getAttribute('data-edit'); }));
@@ -2939,6 +2943,7 @@
       document.getElementById('cpn-min').value = c.min_subtotal || 0;
       document.getElementById('cpn-expiry').value = c.expires_at || '';
       document.getElementById('cpn-active').value = String(c.active !== false);
+      document.getElementById('cpn-first-order').checked = !!c.first_order_only;
       openModal('coupon-modal');
     },
     save: async function () {
@@ -2950,6 +2955,7 @@
         max_discount: Number(document.getElementById('cpn-max').value || 0) || null,
         min_subtotal: Number(document.getElementById('cpn-min').value || 0),
         expires_at: document.getElementById('cpn-expiry').value,
+        first_order_only: document.getElementById('cpn-first-order').checked,
         active: document.getElementById('cpn-active').value === 'true'
       };
       if (id) await api('/api/admin/coupons/' + id, { method: 'PUT', body: JSON.stringify(body) });
@@ -3503,6 +3509,7 @@
     categories: [],
     products: [],
     cart: {},
+    lastLookupPhone: '',
     draftKey: function () {
       var store = document.getElementById('pos-store');
       var sid = store ? store.value : (AdminShell.storeId || 'default');
@@ -3537,6 +3544,61 @@
     },
     clearDraft: function () {
       try { sessionStorage.removeItem(this.draftKey()); } catch (e) { /* ignore */ }
+    },
+    phoneDigits: function (value) {
+      var digits = String(value || '').replace(/\D/g, '');
+      if (digits.length > 10) digits = digits.slice(-10);
+      return digits;
+    },
+    setCustomerHint: function (text, ok) {
+      var hint = document.getElementById('pos-customer-hint');
+      if (!hint) return;
+      hint.textContent = text || '';
+      hint.style.color = ok ? '#1E7A34' : '#6b6f66';
+    },
+    wireCustomerPhoneLookup: function () {
+      var self = this;
+      var phoneEl = document.getElementById('pos-customer-phone');
+      if (!phoneEl || phoneEl.dataset.lookupWired === '1') return;
+      phoneEl.dataset.lookupWired = '1';
+      phoneEl.addEventListener('input', function () {
+        var digits = self.phoneDigits(phoneEl.value);
+        if (digits.length < 10) {
+          self.lastLookupPhone = '';
+          self.setCustomerHint('');
+          return;
+        }
+        if (digits.length === 10 && digits !== self.lastLookupPhone) {
+          self.lookupCustomerByPhone(digits);
+        }
+      });
+    },
+    lookupCustomerByPhone: async function (digits) {
+      var self = this;
+      self.lastLookupPhone = digits;
+      var nameEl = document.getElementById('pos-customer-name');
+      var currentName = ((nameEl && nameEl.value) || '').trim();
+      var nameLocked = currentName && currentName.toLowerCase() !== 'walk-in customer';
+      try {
+        var res = await apiSilent('/api/admin/pos/customer-lookup?phone=' + encodeURIComponent(digits));
+        if (!res || !res.found || !res.customer) {
+          self.setCustomerHint('New customer — enter name if needed');
+          return;
+        }
+        var storedName = (res.customer.name || '').trim();
+        if (storedName && nameEl && !nameLocked) {
+          nameEl.value = storedName;
+          self.saveDraft();
+        }
+        self.setCustomerHint(
+          nameLocked
+            ? 'Known number on file (name left as typed)'
+            : ('Returning customer: ' + storedName),
+          true
+        );
+      } catch (e) {
+        self.setCustomerHint('');
+      }
     },
     init: async function () {
       var self = this;
@@ -3586,10 +3648,14 @@
         if (el) el.addEventListener('change', function () { self.saveDraft(); });
         if (el) el.addEventListener('input', function () { self.saveDraft(); });
       });
+      self.wireCustomerPhoneLookup();
       document.getElementById('pos-clear').onclick = function () {
         self.cart = {};
+        self.lastLookupPhone = '';
         document.getElementById('pos-customer-name').value = '';
         document.getElementById('pos-customer-phone').value = '';
+        var hint = document.getElementById('pos-customer-hint');
+        if (hint) hint.textContent = '';
         document.getElementById('pos-discount').value = 0;
         document.getElementById('pos-notes').value = '';
         self.clearDraft();
@@ -3817,6 +3883,9 @@
         document.getElementById('pos-discount').value = 0;
         document.getElementById('pos-customer-name').value = '';
         document.getElementById('pos-customer-phone').value = '';
+        self.lastLookupPhone = '';
+        var hintClear = document.getElementById('pos-customer-hint');
+        if (hintClear) hintClear.textContent = '';
         document.getElementById('pos-notes').value = '';
         document.getElementById('pos-success-copy').textContent =
           'Bill ' + order.order_id + ' · ' + money(order.total) + ' · ' +
