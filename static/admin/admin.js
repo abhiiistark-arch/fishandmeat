@@ -1680,6 +1680,7 @@
     rows: [],
     loadToken: 0,
     abortCtrl: null,
+    saving: false,
     init: async function () {
       var self = this;
       var initial = await loadCatalogBundle();
@@ -1692,6 +1693,8 @@
       }).join('');
       if (AdminShell.storeId && this.stores.some(function (s) { return s.id === AdminShell.storeId; })) {
         sel.value = AdminShell.storeId;
+      } else if (this.stores.length === 1) {
+        sel.value = this.stores[0].id;
       }
       sel.onchange = function () {
         AdminShell.applyStoreFilter(sel.value, { source: 'inventory', skipReload: true });
@@ -1703,7 +1706,13 @@
         e.preventDefault();
         self.addStock();
       };
-      document.getElementById('stock-store').onchange = function () { self.refreshStockProducts(); };
+      document.getElementById('stock-store').onchange = async function () {
+        var storeId = this.value;
+        try {
+          self.rows = await api('/api/admin/inventory' + (storeId ? ('?store_id=' + encodeURIComponent(storeId)) : ''));
+        } catch (e) { /* keep previous rows */ }
+        self.refreshStockProducts();
+      };
       document.getElementById('stock-product').onchange = function () {
         if (this.value === '__new__') {
           closeModal('stock-modal');
@@ -1723,14 +1732,31 @@
       document.getElementById('ip-category').onchange = function () { self.onProductCategoryChange(); };
       this.load();
     },
+    setBusy: function (busy, label) {
+      this.saving = !!busy;
+      var addBtn = document.getElementById('btn-add-stock');
+      var saveStock = document.querySelector('#stock-form button[type="submit"]');
+      if (addBtn) {
+        addBtn.disabled = !!busy;
+        if (label) addBtn.textContent = label;
+        else if (!busy) addBtn.textContent = '+ Add Stock';
+      }
+      if (saveStock) {
+        saveStock.disabled = !!busy;
+        saveStock.textContent = busy ? 'Saving…' : 'Add Stock';
+      }
+    },
     load: async function () {
       var self = this;
       var token = ++this.loadToken;
       if (this.abortCtrl) this.abortCtrl.abort();
       this.abortCtrl = typeof AbortController !== 'undefined' ? new AbortController() : null;
       var storeId = document.getElementById('inv-store-filter').value;
-      var url = '/api/admin/inventory' + (storeId ? ('?store_id=' + storeId) : '');
+      var url = '/api/admin/inventory' + (storeId ? ('?store_id=' + encodeURIComponent(storeId)) : '');
       var tbody = document.querySelector('#inv-table tbody');
+      if (tbody && !this.rows.length) {
+        tbody.innerHTML = '<tr><td colspan="7" class="muted">Loading inventory…</td></tr>';
+      }
       try {
         var rows = await api(url, { signal: this.abortCtrl ? this.abortCtrl.signal : undefined });
         if (token !== this.loadToken) return;
@@ -1749,16 +1775,35 @@
         }).join('') || '<tr><td colspan="7">No inventory rows</td></tr>';
         tbody.querySelectorAll('[data-save]').forEach(function (btn) {
           btn.onclick = async function () {
+            if (self.saving) return;
             var tr = btn.closest('tr');
             var price = tr.querySelector('[data-field="price"]').value;
             var stock = tr.querySelector('[data-field="stock"]').value;
-            await api('/api/admin/inventory/' + btn.getAttribute('data-save'), {
-              method: 'PUT',
-              body: JSON.stringify({ price: Number(price), stock: Number(stock) })
-            });
-            toast('Inventory updated');
-            await self.load();
-            AdminShell.refreshBadges();
+            var prev = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Saving…';
+            self.saving = true;
+            try {
+              var updated = await api('/api/admin/inventory/' + btn.getAttribute('data-save'), {
+                method: 'PUT',
+                body: JSON.stringify({ price: Number(price), stock: Number(stock) })
+              });
+              var row = self.rows.find(function (x) { return x.id === updated.id; });
+              if (row) {
+                row.price = updated.price;
+                row.stock = updated.stock;
+                row.low_stock = Number(updated.stock || 0) <= Number(row.low_stock_threshold || 10);
+              }
+              toast('Inventory updated');
+              await self.load();
+              AdminShell.refreshBadges();
+            } catch (err) {
+              toast((err && err.message) || 'Could not save inventory', true);
+            } finally {
+              self.saving = false;
+              btn.disabled = false;
+              btn.textContent = prev;
+            }
           };
         });
       } catch (e) {
@@ -1767,39 +1812,90 @@
       }
     },
     openStockForm: async function () {
-      this.rows = await api('/api/admin/inventory');
-      var selectedStore = document.getElementById('inv-store-filter').value;
-      var storeSel = document.getElementById('stock-store');
-      storeSel.innerHTML = this.stores.map(function (s) {
-        return '<option value="' + s.id + '"' + (s.id === selectedStore ? ' selected' : '') + '>' + esc(s.name) + '</option>';
-      }).join('');
-      document.getElementById('stock-quantity').value = 1;
-      this.refreshStockProducts();
-      openModal('stock-modal');
+      var self = this;
+      this.setBusy(true, 'Loading…');
+      try {
+        var bundle = await loadCatalogBundle(true);
+        this.stores = bundle.stores;
+        this.categories = bundle.categories;
+        this.products = bundle.products;
+        var selectedStore = document.getElementById('inv-store-filter').value;
+        if (!selectedStore && this.stores.length) selectedStore = this.stores[0].id;
+        var storeSel = document.getElementById('stock-store');
+        storeSel.innerHTML = this.stores.map(function (s) {
+          return '<option value="' + s.id + '"' + (s.id === selectedStore ? ' selected' : '') + '>' + esc(s.name) + '</option>';
+        }).join('');
+        // Load inventory for the chosen store only (not every store) — much faster.
+        var storeId = storeSel.value;
+        this.rows = await api('/api/admin/inventory' + (storeId ? ('?store_id=' + encodeURIComponent(storeId)) : ''));
+        document.getElementById('stock-quantity').value = 1;
+        this.refreshStockProducts();
+        openModal('stock-modal');
+      } catch (err) {
+        toast((err && err.message) || 'Could not open Add Stock', true);
+      } finally {
+        this.setBusy(false);
+      }
+    },
+    productsForStore: function (storeId) {
+      var self = this;
+      var byId = {};
+      this.products.forEach(function (p) {
+        if ((p.status || 'available') === 'disabled') return;
+        var avail = p.store_availability || [];
+        var inAvail = !avail.length || avail.indexOf(storeId) >= 0;
+        var inRows = self.rows.some(function (r) { return r.store_id === storeId && r.product_id === p.id; });
+        if (inAvail || inRows) byId[p.id] = p;
+      });
+      // Also include products that only exist via inventory rows (stale catalog edge case)
+      this.rows.forEach(function (r) {
+        if (r.store_id !== storeId || byId[r.product_id]) return;
+        byId[r.product_id] = {
+          id: r.product_id,
+          name: r.product_name || r.product_id,
+          sku: r.sku || '',
+          category_id: r.category_id || '',
+          images: []
+        };
+      });
+      return Object.keys(byId).map(function (id) { return byId[id]; })
+        .sort(function (a, b) { return String(a.name || '').localeCompare(String(b.name || '')); });
     },
     refreshStockProducts: function () {
       var storeId = document.getElementById('stock-store').value;
-      var availableIds = {};
-      this.rows.forEach(function (r) {
-        if (r.store_id === storeId) availableIds[r.product_id] = true;
-      });
+      var list = this.productsForStore(storeId);
       var options = ['<option value="">Select a product…</option>'];
-      options = options.concat(this.products.filter(function (p) { return availableIds[p.id]; }).map(function (p) {
-        return '<option value="' + p.id + '">' + esc(p.name) + ' · ' + esc(p.sku) + '</option>';
+      options = options.concat(list.map(function (p) {
+        return '<option value="' + p.id + '">' + esc(p.name) + (p.sku ? (' · ' + esc(p.sku)) : '') + '</option>';
       }));
       options.push('<option value="__new__">+ Add a new product…</option>');
       document.getElementById('stock-product').innerHTML = options.join('');
       this.refreshStockVariants();
     },
-    refreshStockVariants: function () {
+    refreshStockVariants: async function () {
+      var self = this;
       var storeId = document.getElementById('stock-store').value;
       var productId = document.getElementById('stock-product').value;
+      if (!productId || productId === '__new__') {
+        document.getElementById('stock-variant').innerHTML = '';
+        this.renderStockSummary();
+        return;
+      }
       var matching = this.rows.filter(function (r) {
         return r.store_id === storeId && r.product_id === productId;
       });
+      // Product assigned to store but inventory rows missing — reload once after ensure via store-scoped GET.
+      if (!matching.length) {
+        try {
+          this.rows = await api('/api/admin/inventory?store_id=' + encodeURIComponent(storeId));
+          matching = this.rows.filter(function (r) {
+            return r.store_id === storeId && r.product_id === productId;
+          });
+        } catch (e) { /* ignore */ }
+      }
       document.getElementById('stock-variant').innerHTML = matching.map(function (r) {
         return '<option value="' + r.id + '">' + esc(r.variant_label || 'Default') + ' · current stock ' + r.stock + '</option>';
-      }).join('');
+      }).join('') || '<option value="">No variants for this store</option>';
       this.renderStockSummary();
     },
     renderStockSummary: function () {
@@ -1808,29 +1904,38 @@
       var product = row && this.products.find(function (p) { return p.id === row.product_id; });
       var category = product && this.categories.find(function (c) { return c.id === product.category_id; });
       var host = document.getElementById('stock-product-summary');
-      if (!row || !product) {
+      if (!row) {
         host.innerHTML = '<span class="muted">Choose a product and variant.</span>';
         return;
       }
-      var image = product.images && product.images[0]
+      var image = product && product.images && product.images[0]
         ? '<img src="' + esc(product.images[0]) + '" alt="">'
         : '<div class="stock-summary-placeholder">No image</div>';
-      host.innerHTML = image + '<div><strong>' + esc(product.name) + '</strong>' +
-        '<span>' + esc((category && category.name) || '') + ' · ' + esc(row.variant_label) + '</span>' +
+      host.innerHTML = image + '<div><strong>' + esc((product && product.name) || row.product_name) + '</strong>' +
+        '<span>' + esc((category && category.name) || row.category_name || '') + ' · ' + esc(row.variant_label) + '</span>' +
         '<span>Price ' + money(row.price) + ' · Current stock <b>' + row.stock + '</b></span></div>';
     },
     addStock: async function () {
+      if (this.saving) return;
       var inventoryId = document.getElementById('stock-variant').value;
       if (!inventoryId) { toast('Choose a product variant', true); return; }
       var quantity = Number(document.getElementById('stock-quantity').value);
-      await api('/api/admin/inventory', {
-        method: 'POST',
-        body: JSON.stringify({ inventory_id: inventoryId, quantity: quantity })
-      });
-      closeModal('stock-modal');
-      toast(quantity + ' units added to stock');
-      await this.load();
-      AdminShell.refreshBadges();
+      if (!quantity || quantity < 1) { toast('Enter a valid quantity', true); return; }
+      this.setBusy(true);
+      try {
+        await api('/api/admin/inventory', {
+          method: 'POST',
+          body: JSON.stringify({ inventory_id: inventoryId, quantity: quantity })
+        });
+        closeModal('stock-modal');
+        toast(quantity + ' units added to stock');
+        await this.load();
+        AdminShell.refreshBadges();
+      } catch (err) {
+        toast((err && err.message) || 'Could not add stock', true);
+      } finally {
+        this.setBusy(false);
+      }
     },
     openProductForm: function () {
       document.getElementById('inventory-product-form').reset();
@@ -1863,72 +1968,84 @@
       return data;
     },
     createProduct: async function () {
-      var categoryId = document.getElementById('ip-category').value;
-      if (categoryId === '__new__') {
-        var categoryImage = await this.uploadImage(
-          '/api/admin/content-image',
-          document.getElementById('ip-cat-image').files[0]
-        );
-        var category = await api('/api/admin/categories', {
+      if (this.saving) return;
+      this.saving = true;
+      try {
+        var categoryId = document.getElementById('ip-category').value;
+        if (categoryId === '__new__') {
+          var categoryImage = await this.uploadImage(
+            '/api/admin/content-image',
+            document.getElementById('ip-cat-image').files[0]
+          );
+          var category = await api('/api/admin/categories', {
+            method: 'POST',
+            body: JSON.stringify({
+              name: document.getElementById('ip-cat-name').value,
+              slug: document.getElementById('ip-cat-slug').value,
+              sort_order: Number(document.getElementById('ip-cat-order').value || 99),
+              enabled: document.getElementById('ip-cat-enabled').value === 'true',
+              seo_title: document.getElementById('ip-cat-seo-title').value,
+              seo_description: document.getElementById('ip-cat-seo-desc').value,
+              banner: categoryImage ? categoryImage.url : '',
+              parameters: readParameters('ip-cat-parameters')
+            })
+          });
+          categoryId = category.id;
+          this.categories.push(category);
+        }
+        var variants = document.getElementById('ip-variants').value.split('\n').filter(Boolean).map(function (line, i) {
+          var parts = line.split('|').map(function (x) { return x.trim(); });
+          return {
+            id: 'v' + (i + 1),
+            label: parts[0] || ('Variant ' + (i + 1)),
+            unit: parts[1] || 'unit',
+            sku_suffix: (parts[0] || 'V').toUpperCase().replace(/\s+/g, '-').slice(0, 12)
+          };
+        });
+        var stores = Array.from(document.querySelectorAll('#ip-stores input:checked')).map(function (el) { return el.value; });
+        var product = await api('/api/admin/products', {
           method: 'POST',
           body: JSON.stringify({
-            name: document.getElementById('ip-cat-name').value,
-            slug: document.getElementById('ip-cat-slug').value,
-            sort_order: Number(document.getElementById('ip-cat-order').value || 99),
-            enabled: document.getElementById('ip-cat-enabled').value === 'true',
-            seo_title: document.getElementById('ip-cat-seo-title').value,
-            seo_description: document.getElementById('ip-cat-seo-desc').value,
-            banner: categoryImage ? categoryImage.url : '',
-            parameters: readParameters('ip-cat-parameters')
+            name: document.getElementById('ip-name').value,
+            sku: document.getElementById('ip-sku').value,
+            category_id: categoryId,
+            status: document.getElementById('ip-status').value,
+            description: document.getElementById('ip-desc').value,
+            parameters: readParameters('ip-parameters'),
+            gst_percent: Number(document.getElementById('ip-gst').value || 0),
+            featured: document.getElementById('ip-featured').value === 'true',
+            bestseller: document.getElementById('ip-bestseller').value === 'true',
+            expiry_info: document.getElementById('ip-expiry').value,
+            nutritional_info: document.getElementById('ip-nutrition').value,
+            variants: variants,
+            store_availability: stores,
+            default_price: Number(document.getElementById('ip-price').value || 0),
+            default_stock: Number(document.getElementById('ip-stock').value || 0)
           })
         });
-        categoryId = category.id;
-        this.categories.push(category);
+        var imageWarning = false;
+        try {
+          await this.uploadImage('/api/admin/products/' + product.id + '/image', document.getElementById('ip-image').files[0]);
+        } catch (e) {
+          imageWarning = true;
+        }
+        invalidateCatalogBundle();
+        var bundle = await loadCatalogBundle(true);
+        this.products = bundle.products;
+        this.categories = bundle.categories;
+        this.stores = bundle.stores;
+        closeModal('inventory-product-modal');
+        toast(
+          imageWarning ? 'Product and stock created, but the image upload failed' : 'Product, images and stock created',
+          imageWarning
+        );
+        await this.load();
+        AdminShell.refreshBadges();
+      } catch (err) {
+        toast((err && err.message) || 'Could not create product', true);
+      } finally {
+        this.saving = false;
       }
-      var variants = document.getElementById('ip-variants').value.split('\n').filter(Boolean).map(function (line, i) {
-        var parts = line.split('|').map(function (x) { return x.trim(); });
-        return {
-          id: 'v' + (i + 1),
-          label: parts[0] || ('Variant ' + (i + 1)),
-          unit: parts[1] || 'unit',
-          sku_suffix: (parts[0] || 'V').toUpperCase().replace(/\s+/g, '-').slice(0, 12)
-        };
-      });
-      var stores = Array.from(document.querySelectorAll('#ip-stores input:checked')).map(function (el) { return el.value; });
-      var product = await api('/api/admin/products', {
-        method: 'POST',
-        body: JSON.stringify({
-          name: document.getElementById('ip-name').value,
-          sku: document.getElementById('ip-sku').value,
-          category_id: categoryId,
-          status: document.getElementById('ip-status').value,
-          description: document.getElementById('ip-desc').value,
-          parameters: readParameters('ip-parameters'),
-          gst_percent: Number(document.getElementById('ip-gst').value || 0),
-          featured: document.getElementById('ip-featured').value === 'true',
-          bestseller: document.getElementById('ip-bestseller').value === 'true',
-          expiry_info: document.getElementById('ip-expiry').value,
-          nutritional_info: document.getElementById('ip-nutrition').value,
-          variants: variants,
-          store_availability: stores,
-          default_price: Number(document.getElementById('ip-price').value || 0),
-          default_stock: Number(document.getElementById('ip-stock').value || 0)
-        })
-      });
-      var imageWarning = false;
-      try {
-        await this.uploadImage('/api/admin/products/' + product.id + '/image', document.getElementById('ip-image').files[0]);
-      } catch (e) {
-        imageWarning = true;
-      }
-      this.products = await api('/api/admin/products');
-      closeModal('inventory-product-modal');
-      toast(
-        imageWarning ? 'Product and stock created, but the image upload failed' : 'Product, images and stock created',
-        imageWarning
-      );
-      await this.load();
-      AdminShell.refreshBadges();
     }
   };
 

@@ -860,8 +860,13 @@ def create_qr_units(product, store_id, variant_id, count, price=0, status='pendi
     return created
 
 
-def sync_qr_units_for_inventory_row(inv_row, product=None):
-    """Make in_stock unit count match inventory stock for this store×product×variant."""
+def sync_qr_units_for_inventory_row(inv_row, product=None, create_missing=False):
+    """Align in_stock QR count with inventory stock for this store×product×variant.
+
+    By default only voids excess in_stock units when stock drops.
+    Creating missing QR units is intentional only for explicit backfills —
+    Add Stock / Save must stay fast (QR units come from Generate QR + punch).
+    """
     if not inv_row:
         return 0
     product = product or db_find_one('products', {'id': inv_row.get('product_id')})
@@ -885,7 +890,7 @@ def sync_qr_units_for_inventory_row(inv_row, product=None):
     ]
     existing.sort(key=lambda u: u.get('created_at') or '')
     created_n = 0
-    if len(existing) < stock:
+    if len(existing) < stock and create_missing:
         created = create_qr_units(
             product, store_id, variant_id, stock - len(existing),
             price=inv_row.get('price') or 0,
@@ -893,11 +898,18 @@ def sync_qr_units_for_inventory_row(inv_row, product=None):
         )
         created_n = len(created)
     elif len(existing) > stock:
-        for unit in existing[stock:]:
-            db_update('qr_units', {'id': unit['id']}, {
-                'status': 'void',
-                'updated_at': now_iso(),
-            })
+        extra_ids = [u['id'] for u in existing[stock:] if u.get('id')]
+        if extra_ids and _use_mongo and _mongo_db is not None:
+            _mongo_db.qr_units.update_many(
+                {'id': {'$in': extra_ids}},
+                {'$set': {'status': 'void', 'updated_at': now_iso()}},
+            )
+        else:
+            for unit in existing[stock:]:
+                db_update('qr_units', {'id': unit['id']}, {
+                    'status': 'void',
+                    'updated_at': now_iso(),
+                })
     return created_n
 
 
@@ -910,7 +922,7 @@ def sync_all_qr_units_from_inventory():
         if not product:
             continue
         try:
-            created += sync_qr_units_for_inventory_row(inv, product=product)
+            created += sync_qr_units_for_inventory_row(inv, product=product, create_missing=True)
         except Exception as exc:  # noqa: BLE001
             print(f"[qr] sync skipped for inventory {inv.get('id')}: {exc}")
             continue
@@ -1024,7 +1036,7 @@ def claim_qr_units_for_sale(store_id, product_id, variant_id, qty, preferred_uni
                 'variant_id': variant_id,
             })
             if inv:
-                sync_qr_units_for_inventory_row(inv)
+                sync_qr_units_for_inventory_row(inv, create_missing=True)
         pool = db_find('qr_units', {
             'store_id': store_id,
             'product_id': product_id,
@@ -4295,6 +4307,7 @@ def api_admin_products():
             row['category_name'] = cat_names.get(p.get('category_id'), '')
             if lite:
                 # Fast dropdown / QR filters — skip heavy fields
+                images = row.get('images') or []
                 out.append({
                     'id': row.get('id'),
                     'name': row.get('name'),
@@ -4303,6 +4316,8 @@ def api_admin_products():
                     'category_name': row.get('category_name', ''),
                     'status': row.get('status', 'available'),
                     'variants': row.get('variants') or [],
+                    'store_availability': row.get('store_availability') or [],
+                    'images': images[:1],
                     'featured': bool(row.get('featured')),
                     'bestseller': bool(row.get('bestseller')),
                 })
@@ -4476,8 +4491,8 @@ def api_admin_inventory():
         if quantity < 1 or quantity > 1000000:
             return jsonify({'error': 'Quantity must be between 1 and 1,000,000'}), 400
         updated = db_increment('inventory', {'id': row['id']}, 'stock', quantity)
-        if updated:
-            sync_qr_units_for_inventory_row(updated)
+        # Do not sync/create QR units here — that made Add Stock extremely slow.
+        # Stock numbers update instantly; QR units come from Generate QR + punch.
         _badges_cache.clear()
         log_activity(
             'inventory',
@@ -4518,10 +4533,10 @@ def api_admin_inventory_update(inv_id):
     updates['updated_at'] = now_iso()
     db_update('inventory', {'id': inv_id}, updates)
     updated = db_find_one('inventory', {'id': inv_id})
-    if 'stock' in updates and updated:
-        sync_qr_units_for_inventory_row(updated)
+    # Fast inventory path: price/stock only. No QR mint/void here (POS billing untouched).
     _badges_cache.clear()
     return jsonify(updated)
+
 
 # --- Orders ---
 
@@ -5006,10 +5021,11 @@ def _pos_adjust_stock(inventory_id, quantity_delta, sync_qr=True):
         {'$inc': {'stock': quantity_delta}, '$set': {'updated_at': now_iso()}},
     )
     ok = result.modified_count == 1
+    # POS restore path only (positive delta) — unchanged from prior billing strategy.
     if ok and quantity_delta > 0 and sync_qr:
         inv = db_find_one('inventory', {'id': inventory_id})
         if inv:
-            sync_qr_units_for_inventory_row(inv)
+            sync_qr_units_for_inventory_row(inv, create_missing=True)
     return ok
 
 
@@ -5290,8 +5306,55 @@ def _list_pos_orders(store_id, limit=20):
     return orders
 
 
+def _ensure_store_inventory_coverage(store_id):
+    """Create any missing inventory rows for products assigned to this store (one pass)."""
+    if not store_id:
+        return 0
+    products = db_find(
+        'products',
+        {'store_availability': store_id, 'status': {'$ne': 'disabled'}},
+        projection={'id': 1, 'variants': 1, 'store_availability': 1},
+    )
+    existing = {
+        (row.get('product_id'), row.get('variant_id'))
+        for row in db_find(
+            'inventory',
+            {'store_id': store_id},
+            projection={'product_id': 1, 'variant_id': 1},
+        )
+    }
+    created = 0
+    now = now_iso()
+    for product in products:
+        product_id = product.get('id')
+        if not product_id:
+            continue
+        for var in product.get('variants') or []:
+            vid = var.get('id')
+            if not vid:
+                continue
+            key = (product_id, vid)
+            if key in existing:
+                continue
+            db_insert('inventory', {
+                'id': new_id('inv_'),
+                'store_id': store_id,
+                'product_id': product_id,
+                'variant_id': vid,
+                'price': 0,
+                'stock': 0,
+                'updated_at': now,
+            })
+            existing.add(key)
+            created += 1
+    return created
+
+
 def _enrich_inventory_rows(store_id):
     low_stock_threshold = int(get_settings().get('low_stock_threshold', 10))
+    # Keep product↔store inventory rows complete so Add Stock lists every assigned product.
+    if store_id:
+        _ensure_store_inventory_coverage(store_id)
     query = {'store_id': store_id} if store_id else {}
     rows = db_find('inventory', query)
     products_by_id = _cached_collection(
@@ -5305,19 +5368,22 @@ def _enrich_inventory_rows(store_id):
     enriched = []
     for r in rows:
         p = products_by_id.get(r.get('product_id'))
+        if not p:
+            continue
+        if (p.get('status') or 'available') == 'disabled':
+            continue
         s = stores_by_id.get(r.get('store_id'))
         variant_label = ''
-        if p:
-            for v in p.get('variants') or []:
-                if v.get('id') == r.get('variant_id'):
-                    variant_label = v.get('label', '')
-                    break
-        cat = categories_by_id.get((p or {}).get('category_id')) or {}
+        for v in p.get('variants') or []:
+            if v.get('id') == r.get('variant_id'):
+                variant_label = v.get('label', '')
+                break
+        cat = categories_by_id.get(p.get('category_id')) or {}
         enriched.append({
             **r,
-            'product_name': p['name'] if p else '',
-            'sku': p.get('sku', '') if p else '',
-            'category_id': (p or {}).get('category_id') or '',
+            'product_name': p.get('name') or '',
+            'sku': p.get('sku', '') or '',
+            'category_id': p.get('category_id') or '',
             'category_name': cat.get('name') or '',
             'variant_label': variant_label,
             'store_name': s['name'] if s else '',
@@ -6963,8 +7029,7 @@ def api_mobile_inventory():
         if quantity < 1 or quantity > 1000000:
             return jsonify({'error': 'Quantity must be between 1 and 1,000,000'}), 400
         updated = db_increment('inventory', {'id': row['id']}, 'stock', quantity)
-        if updated:
-            sync_qr_units_for_inventory_row(updated)
+        # Keep mobile Add Stock fast — no QR minting on quantity bumps.
         _badges_cache.clear()
         log_activity(
             'inventory',
@@ -7015,8 +7080,7 @@ def api_mobile_inventory_update(inv_id):
     updates['updated_at'] = now_iso()
     db_update('inventory', {'id': inv_id}, updates)
     updated = db_find_one('inventory', {'id': inv_id})
-    if 'stock' in updates and updated:
-        sync_qr_units_for_inventory_row(updated)
+    # Fast mobile inventory path — no QR mint/void (POS billing untouched).
     _badges_cache.clear()
     log_activity(
         'inventory',
