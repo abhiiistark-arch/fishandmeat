@@ -1,7 +1,8 @@
 # Fish and Meat — Dev Handoff
 
 **Repo:** https://github.com/abhiiistark-arch/fishandmeat  
-**Branch:** `main`
+**Branch:** `main`  
+**Latest commit:** `a0afe27` (25 Aug 2026)
 
 ---
 
@@ -16,105 +17,132 @@ After deploy, hard-refresh admin + website (`Ctrl+Shift+R`) so new JS/CSS loads.
 
 ---
 
-## 1. Top offer strip — now admin-configurable
+## Changes by date
 
-### Use case
-Client wants festival offers (e.g. **Eid**) without asking for a code deploy every time. Admin should turn the yellow top banner **on/off**, change message, code, and button text.
+### 25 Aug 2026 — Configurable top offer strip
 
-### What was already there
-- Hardcoded welcome strip (`WELCOME20` / “first order” text) on the website
-- Coupons admin (create codes separately)
-- Storefront Content CMS for homepage sections
+**Commit:** `a0afe27`
 
-### What was deployed / problem solved
+**Use case**  
+Client wants Eid / festival offers without a code deploy every time.
+
+**What was already there**  
+Hardcoded welcome banner (`WELCOME20`). Coupons admin existed separately. Storefront Content CMS covered homepage sections only.
+
+**What was deployed / problem solved**
+
 | Problem | Fix |
 |--------|-----|
 | Offer text locked in code | **Admin → Storefront Content → Top Offer Strip** |
-| Need deploy for Eid / festival copy | Save in admin → live on website |
+| Need deploy for festival copy | Save in admin → live on website |
 | Cannot hide banner | **Visible: On / Off** |
-| Code / CTA fixed | Editable: message, highlight, coupon code, button, dismiss X |
+| Code / CTA fixed | Editable message, highlight, coupon code, button, dismiss X |
 
-**Fields admin can edit:**
-- Visible (On/Off)
-- Offer Message
-- Highlight Phrase (shown in red)
-- Coupon Code (blank = hide code pill)
-- Code Label / Button Text
-- Allow Dismiss (X)
+**How to set an Eid offer**
+1. Admin → Coupons → create code e.g. `EID15`  
+2. Admin → Storefront Content → Top Offer Strip → message + code → Save  
+3. Website shows new offer  
 
-**Eid example:**
-1. Admin → Coupons → create `EID15` (or any code) with discount rules  
-2. Admin → Storefront Content → Top Offer Strip → set message + code `EID15` → Save  
-3. Website shows new offer immediately  
+**Note:** Banner text ≠ coupon rules. Create/edit the matching coupon under **Coupons**.
 
-**Note:** Strip text and coupon rules are separate. Changing the banner does **not** auto-create a coupon — create/edit coupon under **Coupons**.
-
-**Check:** Change message in Storefront Content → Save → open website → new text/code shows. Set Visible Off → strip hidden.
+**Check:** Change strip text → Save → website updates. Set Visible Off → strip hidden.
 
 ---
 
-## 2. First-order coupon rules
+### 24 Aug 2026 — Welcome offer + first-order rules + POS phone autofill
 
-### Use case
-`WELCOME20` (or any coupon marked first-order only) should work only for a customer’s **first** order.
+**Commit:** `49eecd0`
 
-### What was already there
-- Coupon validate + apply at checkout
-- No first-order phone check
+#### A) Welcome strip + first-order coupon
 
-### What was deployed / problem solved
+**Use case**  
+Show welcome discount on site; only allow it on a customer’s **first** order.
+
+**What was already there**  
+Checkout coupon field. No first-order phone check. No top promo strip.
+
+**What was deployed / problem solved**
+
 | Problem | Fix |
 |--------|-----|
-| “First order” only on banner text | Server checks prior orders by phone / customer |
-| Repeat customers reusing welcome code | Rejected: “only for your first order” |
-| Admin cannot mark other coupons the same way | Coupons form has **First order only** checkbox |
+| No visible welcome offer | Yellow top promo strip |
+| “First order” only text | Server checks prior orders by phone/customer |
+| Repeat use of welcome code | Rejected for returning customers |
+| Need first-order on other coupons | Coupons form → **First order only** checkbox |
+| Coupon missing in DB | `WELCOME20` seeded/synced on boot |
 
 **Check:** New phone + `WELCOME20` OK; same phone second order rejected.
 
----
+#### B) In-store billing — phone autofill
 
-## 3. In-store billing — phone autofill
-
-### Use case
+**Use case**  
 Staff types returning customer’s **10-digit mobile** → name fills automatically.
 
-### What was already there
-- Phone/name saved on POS bill into MongoDB
-- No lookup while typing
+**What was already there**  
+Phone/name saved on bill, but no lookup while typing.
 
-### What was deployed / problem solved
+**What was deployed / problem solved**
+
 | Problem | Fix |
 |--------|-----|
 | Phone saved but not reused | Lookup after **10 digits** → fill name |
-| Overwriting staff-typed name | Name field already filled → **no override** |
-| Overwriting DB name on repeat bill | Existing customer name in DB **not** overwritten |
+| Overwriting staff-typed name | Already filled name → **no override** |
+| Overwriting DB name on repeat bill | Existing customer name **not** overwritten |
 | Website vs POS split profiles | Same 10-digit phone = **one** customer |
 
 **Check:** In-Store Billing → known phone → name autofills + “Returning customer” hint.
 
 ---
 
-## 4. Related earlier fixes (also on `main`)
+### 23 Aug 2026 — Faster inventory stock-in
 
-| Problem | Fix |
-|--------|-----|
-| View Bill error / old PDF | Thermal receipt; Jinja `items` crash fixed |
-| Rate + Amount stuck on receipt | Column spacing on 80mm bill |
-| Print Bill not working | Thermal print via receipt API |
-| Wrong order time | Admin lists show **IST** |
-| Slow order delete | Stock restore without heavy QR sync |
-| Cart “undefined” on back/forward | Cart keeps name/price snapshot |
+**Commit:** `5a2d1e9`
+
+**Use case**  
+Admin stocking inventory should be fast; POS billing must stay untouched.
+
+**What was deployed / problem solved**  
+Inventory stock-in made much faster without changing POS billing behaviour.
 
 ---
 
-## Quick test checklist
+### 21 Aug 2026 — POS billing, receipts, time, cart
+
+**Commits:** `33c02d4`, `9095259`, `ee65aa2`
+
+| Problem | Fix |
+|--------|-----|
+| Bulk POS cart slow / “Request failed” | Faster checkout; skip heavy QR sync during bill |
+| **Print Bill** not working | Thermal print via receipt API |
+| PDF / View Bill old or broken | New thermal receipt; Jinja `items` crash fixed |
+| Rate + Amount stuck on receipt | Column spacing on 80mm bill |
+| Order time not India time | Admin lists show **IST** |
+| Order delete slow | Stock restore without heavy QR sync |
+| Website cart “undefined” on back/forward | Cart keeps name/price snapshot |
+
+**Check:** Punch a bill → Print / View Bill → time in IST → delete order from Orders (should be quick).
+
+---
+
+### 19 Aug 2026 — Thermal auto-print + storefront extras
+
+**Commit:** `0548807`
+
+| Problem | Fix |
+|--------|-----|
+| Need thermal receipt on POS | Auto-print / print again for Essae-style 80mm |
+| Variant picking UX | Card-style weight picker on storefront |
+| Frozen Food GST | 5% GST handling for frozen category |
+
+---
+
+## Quick test checklist (after latest pull)
 
 1. `git pull` + restart gunicorn  
-2. Admin → Storefront Content → Top Offer Strip → change to Eid text → Save → website updates  
-3. Turn strip Off → website hides it  
-4. Checkout: first-order coupon OK for new phone; blocked for old phone  
-5. In-Store Billing: 10-digit known phone → name autofills  
-6. Print / View Bill on a recent POS bill  
+2. **25 Aug:** Storefront Content → Top Offer Strip → Eid text → Save → website updates; Off hides strip  
+3. **24 Aug:** First-order coupon OK for new phone; blocked for old phone  
+4. **24 Aug:** In-Store Billing → 10-digit known phone → name autofills  
+5. **21 Aug:** Print / View Bill; bill time looks like India time  
 
 ---
 
