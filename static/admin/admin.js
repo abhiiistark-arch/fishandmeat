@@ -3331,6 +3331,15 @@
       set('cms-footer-description', c.footer.description);
       set('cms-footer-compliance', c.footer.compliance_text);
 
+      var promo = c.promo_strip || {};
+      set('cms-promo-enabled', String(promo.enabled !== false));
+      set('cms-promo-message', promo.message || '');
+      set('cms-promo-highlight', promo.highlight || '');
+      set('cms-promo-code', promo.code || '');
+      set('cms-promo-code-label', promo.code_label || 'Use Code:');
+      set('cms-promo-cta', promo.cta_text || 'SHOP NOW');
+      set('cms-promo-dismissible', String(promo.dismissible !== false));
+
       this.wireImagePicker(document.querySelector('[data-cms-section="hero"] .cms-image-picker'), c.hero.image);
       this.wireImagePicker(document.querySelector('[data-cms-section="why_us"] .cms-image-picker'), c.why_us.image);
 
@@ -3448,6 +3457,15 @@
       var body = {
         section_order: ordered.map(function (x) { return x.key; }),
         custom_sections: customSections,
+        promo_strip: {
+          enabled: document.getElementById('cms-promo-enabled').value === 'true',
+          message: val('cms-promo-message'),
+          highlight: val('cms-promo-highlight'),
+          code: val('cms-promo-code').toUpperCase(),
+          code_label: val('cms-promo-code-label') || 'Use Code:',
+          cta_text: val('cms-promo-cta') || 'SHOP NOW',
+          dismissible: document.getElementById('cms-promo-dismissible').value === 'true'
+        },
         hero: {
           enabled: enabled.hero, pill: val('cms-hero-pill'),
           title_line_1: val('cms-hero-line1'), title_accent: val('cms-hero-accent'),

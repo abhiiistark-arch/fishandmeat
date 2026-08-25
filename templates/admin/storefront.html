@@ -9,6 +9,34 @@
 <p class="muted panel-intro">Edit, show/hide, and reorder every homepage section. Product and category cards continue using live catalog and inventory data.</p>
 
 <form id="storefront-form">
+  <section class="panel cms-panel" id="cms-promo-panel">
+    <div class="panel-head">
+      <h2>Top Offer Strip</h2>
+      <div class="cms-controls">
+        <label>Visible
+          <select id="cms-promo-enabled">
+            <option value="true">On</option>
+            <option value="false">Off</option>
+          </select>
+        </label>
+      </div>
+    </div>
+    <p class="muted" style="margin:0 0 14px;">Yellow banner above the website header. Change text for Eid / festivals anytime — no code deploy needed. Create matching coupon under <a href="/admin/coupons" class="link">Coupons</a> if you show a code.</p>
+    <div class="form-grid">
+      <div class="field full"><label>Offer Message</label><input id="cms-promo-message" placeholder="EID SPECIAL — GET 15% OFF ON ALL ORDERS!"></div>
+      <div class="field"><label>Highlight Phrase (red)</label><input id="cms-promo-highlight" placeholder="15% OFF"></div>
+      <div class="field"><label>Coupon Code (blank = hide)</label><input id="cms-promo-code" placeholder="EID15" style="text-transform:uppercase;"></div>
+      <div class="field"><label>Code Label</label><input id="cms-promo-code-label" placeholder="Use Code:"></div>
+      <div class="field"><label>Button Text</label><input id="cms-promo-cta" placeholder="SHOP NOW"></div>
+      <div class="field"><label>Allow Dismiss (X)</label>
+        <select id="cms-promo-dismissible">
+          <option value="true">Yes</option>
+          <option value="false">No</option>
+        </select>
+      </div>
+    </div>
+  </section>
+
   <div class="cms-add-section-row">
     <button type="button" class="btn btn-outline" id="cms-add-section">+ Add Section</button>
   </div>

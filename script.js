@@ -162,6 +162,7 @@
         selectedStoreId = LOCATIONS[0].id;
       }
       API_LIVE = true;
+      applyPromoStrip();
       if (done) done();
     }).catch(function () {
       API_LIVE = false;
@@ -746,6 +747,7 @@
     setText('cta-shop', c.cta.button);
     setText('home-footer-description', c.footer.description);
     setText('home-footer-compliance', c.footer.compliance_text);
+    applyPromoStrip();
   }
 
   function renderHome() {
@@ -1636,22 +1638,96 @@
     return 'badge';
   }
 
-  /* ---- PROMO STRIP ---- */
-  function initPromoStrip() {
-    var PROMO_KEY = 'fam_promo_welcome20_dismissed';
-    try {
-      if (sessionStorage.getItem(PROMO_KEY) === '1') {
-        document.documentElement.classList.add('promo-dismissed');
-        document.body.classList.add('promo-dismissed');
-      }
-    } catch (e) { /* ignore */ }
+  /* ---- PROMO STRIP (configurable from Admin → Storefront Content) ---- */
+  var _promoWired = false;
+  var _promoCode = '';
+  var _promoDismissKey = '';
+
+  function promoDismissKey(promo) {
+    var id = String((promo && (promo.code || promo.message)) || 'default')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '_')
+      .replace(/^_|_$/g, '')
+      .slice(0, 48);
+    return 'fam_promo_dismissed_' + (id || 'default');
+  }
+
+  function formatPromoMessage(message, highlight) {
+    var msg = String(message || '');
+    var hi = String(highlight || '').trim();
+    if (!hi || msg.toLowerCase().indexOf(hi.toLowerCase()) === -1) {
+      return esc(msg);
+    }
+    var idx = msg.toLowerCase().indexOf(hi.toLowerCase());
+    return esc(msg.slice(0, idx)) +
+      '<strong class="promo-highlight">' + esc(msg.slice(idx, idx + hi.length)) + '</strong>' +
+      esc(msg.slice(idx + hi.length));
+  }
+
+  function applyPromoStrip() {
+    var strip = document.getElementById('promo-strip');
+    if (!strip) return;
+    var promo = (STOREFRONT_CONTENT && STOREFRONT_CONTENT.promo_strip) || null;
+    if (!promo || promo.enabled === false || !(promo.message || '').trim()) {
+      strip.classList.add('hidden');
+      document.documentElement.classList.add('promo-dismissed');
+      document.body.classList.add('promo-dismissed');
+      return;
+    }
+
+    _promoDismissKey = promoDismissKey(promo);
+    var dismissed = false;
+    try { dismissed = sessionStorage.getItem(_promoDismissKey) === '1'; } catch (e) { /* ignore */ }
+    if (dismissed) {
+      strip.classList.add('hidden');
+      document.documentElement.classList.add('promo-dismissed');
+      document.body.classList.add('promo-dismissed');
+      return;
+    }
+
+    document.documentElement.classList.remove('promo-dismissed');
+    document.body.classList.remove('promo-dismissed');
+    strip.classList.remove('hidden');
+
+    var textEl = document.getElementById('promo-text');
+    if (textEl) textEl.innerHTML = formatPromoMessage(promo.message, promo.highlight);
+
+    _promoCode = String(promo.code || '').trim().toUpperCase();
+    var codeWrap = document.getElementById('promo-code-wrap');
+    var codeBtn = document.getElementById('promo-code-btn');
+    var codeLabel = document.getElementById('promo-code-label');
+    if (codeWrap) codeWrap.classList.toggle('hidden', !_promoCode);
+    if (codeLabel) codeLabel.textContent = promo.code_label || 'Use Code:';
+    if (codeBtn && _promoCode) {
+      codeBtn.textContent = _promoCode;
+      codeBtn.title = 'Copy code ' + _promoCode;
+      codeBtn.setAttribute('aria-label', 'Copy coupon code ' + _promoCode);
+    }
+
+    var shopBtn = document.getElementById('promo-shop');
+    if (shopBtn) shopBtn.textContent = promo.cta_text || 'SHOP NOW';
+
+    var closeBtn = document.getElementById('promo-close');
+    if (closeBtn) {
+      closeBtn.classList.toggle('hidden', promo.dismissible === false);
+    }
+
+    wirePromoStripOnce();
+  }
+
+  function wirePromoStripOnce() {
+    if (_promoWired) return;
+    _promoWired = true;
 
     var closeBtn = document.getElementById('promo-close');
     if (closeBtn) {
       closeBtn.addEventListener('click', function () {
+        document.getElementById('promo-strip').classList.add('hidden');
         document.documentElement.classList.add('promo-dismissed');
         document.body.classList.add('promo-dismissed');
-        try { sessionStorage.setItem(PROMO_KEY, '1'); } catch (e) { /* ignore */ }
+        try {
+          if (_promoDismissKey) sessionStorage.setItem(_promoDismissKey, '1');
+        } catch (e) { /* ignore */ }
       });
     }
 
@@ -1665,7 +1741,8 @@
     var codeBtn = document.getElementById('promo-code-btn');
     if (codeBtn) {
       codeBtn.addEventListener('click', function () {
-        var code = 'WELCOME20';
+        var code = _promoCode;
+        if (!code) return;
         var done = function () {
           codeBtn.classList.add('is-copied');
           codeBtn.textContent = 'COPIED';
@@ -1675,14 +1752,16 @@
           }, 1400);
         };
         if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(code).then(done).catch(function () {
-            done();
-          });
+          navigator.clipboard.writeText(code).then(done).catch(done);
         } else {
           done();
         }
       });
     }
+  }
+
+  function initPromoStrip() {
+    applyPromoStrip();
   }
 
   /* ---- HEADER ---- */

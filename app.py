@@ -1903,6 +1903,16 @@ DEFAULT_STOREFRONT_CONTENT = {
         'hero', 'trust', 'why_us', 'product_range', 'favourites',
         'promise', 'locations', 'cta',
     ],
+    # Site-wide top banner (not part of homepage section order)
+    'promo_strip': {
+        'enabled': True,
+        'message': 'WELCOME OFFER — GET 20% OFF YOUR FIRST ORDER!',
+        'highlight': '20% OFF',
+        'code': 'WELCOME20',
+        'code_label': 'Use Code:',
+        'cta_text': 'SHOP NOW',
+        'dismissible': True,
+    },
     'hero': {
         'enabled': True,
         'pill': 'NOW DELIVERING · ANDHERI · KHARGHAR · THANE · GHATKOPAR',

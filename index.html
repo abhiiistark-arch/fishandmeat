@@ -12,17 +12,14 @@
 <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap" />
 <link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" media="print" onload="this.media='all'" />
 <noscript><link href="https://fonts.googleapis.com/css2?family=Sora:wght@600;700;800&family=Work+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" /></noscript>
-<link rel="stylesheet" href="style.css?v=20260823-promo" />
+<link rel="stylesheet" href="style.css?v=20260825-promo-cms" />
 <link rel="preload" as="image" href="assets/hero.webp" type="image/webp" fetchpriority="high" />
 </head>
 <body>
-<script>
-  try { if (sessionStorage.getItem('fam_promo_welcome20_dismissed') === '1') document.documentElement.classList.add('promo-dismissed'); } catch (e) {}
-</script>
 
 <div class="site-top" id="site-top">
-  <!-- TOP PROMO STRIP -->
-  <div class="promo-strip" id="promo-strip" role="region" aria-label="Welcome offer">
+  <!-- TOP PROMO STRIP (content from Admin → Storefront Content) -->
+  <div class="promo-strip hidden" id="promo-strip" role="region" aria-label="Special offer">
     <div class="promo-strip-inner">
       <div class="promo-confetti" aria-hidden="true"></div>
       <div class="promo-copy">
@@ -35,11 +32,11 @@
             <path d="M12 8c2.2-3.2 5.5-2.8 5.5-.4S14.5 9.5 12 8z"></path>
           </svg>
         </span>
-        <span class="promo-text">WELCOME OFFER — GET <strong class="promo-highlight">20% OFF</strong> YOUR FIRST ORDER!</span>
+        <span class="promo-text" id="promo-text"></span>
       </div>
-      <div class="promo-code-wrap">
-        <span class="promo-code-label">Use Code:</span>
-        <button type="button" class="promo-code" id="promo-code-btn" title="Copy code WELCOME20" aria-label="Copy coupon code WELCOME20">WELCOME20</button>
+      <div class="promo-code-wrap" id="promo-code-wrap">
+        <span class="promo-code-label" id="promo-code-label">Use Code:</span>
+        <button type="button" class="promo-code" id="promo-code-btn"></button>
       </div>
       <div class="promo-actions">
         <button type="button" class="promo-shop" id="promo-shop">SHOP NOW</button>
