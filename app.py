@@ -5641,6 +5641,7 @@ def _build_receipt_data(order):
     return {
         'business_name': 'FISH AND MEAT',
         'title': 'TAX INVOICE',
+        'logo_url': '/assets/bill-logo.png?v=nb1',
         'address': store.get('address') or order.get('address') or '',
         'gstin': settings.get('gst_number') or '',
         'fssai': settings.get('fssai_number') or '',

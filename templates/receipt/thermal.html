@@ -23,6 +23,16 @@
     }
     .center { text-align: center; }
     .bold { font-weight: 700; }
+    .logo-wrap { text-align: center; margin: 0 0 1px; line-height: 0; }
+    .logo-wrap img {
+      display: block;
+      margin: 0 auto;
+      width: 26mm;
+      max-width: 26mm;
+      height: auto;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
     .title { font-size: 14px; letter-spacing: 0.5px; margin-bottom: 2px; }
     .subtitle { font-size: 11px; margin-bottom: 6px; }
     .address { font-size: 10px; margin-bottom: 4px; word-break: break-word; }
@@ -75,6 +85,9 @@
 </head>
 <body>
   <div class="receipt">
+    <div class="logo-wrap">
+      <img src="{{ receipt.logo_url or '/assets/bill-logo.png?v=nb1' }}" alt="{{ receipt.business_name }}" width="98" height="77" />
+    </div>
     <div class="center title bold">{{ receipt.business_name }}</div>
     <div class="center subtitle bold">{{ receipt.title }}</div>
     {% if receipt.address %}

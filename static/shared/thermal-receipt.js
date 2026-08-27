@@ -67,6 +67,7 @@
     return {
       business_name: meta.business_name || 'FISH AND MEAT',
       title: 'TAX INVOICE',
+      logo_url: meta.logo_url || order.logo_url || '/assets/bill-logo.png?v=nb1',
       address: meta.address || order.address || '',
       gstin: meta.gstin || '',
       fssai: meta.fssai || '',
@@ -118,6 +119,9 @@
       'font-family:"Courier New",Courier,monospace;font-size:11px;line-height:1.35}' +
       '.receipt{width:72mm;max-width:72mm;margin:0 auto;padding:4mm 2mm 6mm}' +
       '.center{text-align:center}.bold{font-weight:700}' +
+      '.logo-wrap{text-align:center;margin:0 0 1px;line-height:0}' +
+      '.logo-wrap img{display:block;margin:0 auto;width:26mm;max-width:26mm;height:auto;' +
+      '-webkit-print-color-adjust:exact;print-color-adjust:exact}' +
       '.title{font-size:14px;letter-spacing:.5px;margin-bottom:2px}' +
       '.subtitle{font-size:11px;margin-bottom:6px}' +
       '.address{font-size:10px;margin-bottom:4px;word-break:break-word}' +
@@ -146,6 +150,8 @@
       '.fine{font-size:9px;margin-top:6px;line-height:1.3}' +
       '@media print{@page{size:80mm auto;margin:2mm}html,body{width:80mm}.receipt{width:72mm;padding:0}}' +
       '</style></head><body><div class="receipt">' +
+      '<div class="logo-wrap"><img src="' + esc(receipt.logo_url || '/assets/bill-logo.png?v=nb1') +
+      '" alt="' + esc(receipt.business_name) + '" width="98" height="77" /></div>' +
       '<div class="center title bold">' + esc(receipt.business_name) + '</div>' +
       '<div class="center subtitle bold">' + esc(receipt.title) + '</div>' +
       (receipt.address ? '<div class="center address">' + esc(receipt.address) + '</div>' : '') +
@@ -182,6 +188,7 @@
     doc.write(html);
     doc.close();
     var done = false;
+    var printed = false;
     var cleanup = function () {
       if (done) return;
       done = true;
@@ -189,14 +196,38 @@
         if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
       }, 1500);
     };
-    iframe.onload = function () {
+    var doPrint = function () {
+      if (printed) return;
+      printed = true;
       try {
         iframe.contentWindow.focus();
         iframe.contentWindow.print();
       } catch (e) { /* ignore */ }
       cleanup();
     };
-    setTimeout(cleanup, 8000);
+    var waitForImagesThenPrint = function () {
+      var imgs = doc.images || [];
+      if (!imgs.length) {
+        doPrint();
+        return;
+      }
+      var pending = imgs.length;
+      var onOne = function () {
+        pending -= 1;
+        if (pending <= 0) doPrint();
+      };
+      for (var i = 0; i < imgs.length; i++) {
+        if (imgs[i].complete) onOne();
+        else {
+          imgs[i].onload = onOne;
+          imgs[i].onerror = onOne;
+        }
+      }
+    };
+    iframe.onload = waitForImagesThenPrint;
+    setTimeout(waitForImagesThenPrint, 250);
+    setTimeout(doPrint, 4000);
+    setTimeout(cleanup, 10000);
   }
 
   function printReceipt(receiptOrOrder, meta) {
