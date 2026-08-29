@@ -2,186 +2,150 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Receipt {{ receipt.invoice }}</title>
+  <title>Tax Invoice {{ receipt.invoice }}</title>
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
+    @page { size: 80mm auto; margin: 0; }
+    * { box-sizing: border-box; }
     html, body {
+      margin: 0;
+      padding: 0;
       width: 80mm;
-      max-width: 80mm;
-      margin: 0 auto;
       background: #fff;
-      color: #000;
-      font-family: "Courier New", Courier, monospace;
-      font-size: 11px;
-      line-height: 1.35;
     }
     .receipt {
       width: 72mm;
-      max-width: 72mm;
       margin: 0 auto;
-      padding: 4mm 2mm 6mm;
+      padding: 3mm 0 6mm;
+      color: #000;
+      font-family: "DejaVu Sans Mono", "Courier New", monospace;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.45;
+      -webkit-font-smoothing: none;
+      text-rendering: geometricPrecision;
     }
-    .center { text-align: center; }
-    .bold { font-weight: 700; }
-    .logo-wrap { text-align: center; margin: 0 0 1px; line-height: 0; }
-    .logo-wrap img {
+    .c { text-align: center; }
+    .r { text-align: right; }
+    .logo {
       display: block;
-      margin: 0 auto;
-      width: 26mm;
-      max-width: 26mm;
+      margin: 0 auto 3px;
+      width: 34mm;
+      max-width: 34mm;
       height: auto;
+      image-rendering: pixelated;
       -webkit-print-color-adjust: exact;
       print-color-adjust: exact;
     }
-    .title { font-size: 14px; letter-spacing: 0.5px; margin-bottom: 2px; }
-    .subtitle { font-size: 11px; margin-bottom: 6px; }
-    .address { font-size: 10px; margin-bottom: 4px; word-break: break-word; }
-    .meta-line { font-size: 10px; margin-bottom: 2px; }
-    .rule {
-      border: none;
-      border-top: 1px dashed #000;
-      margin: 6px 0;
-    }
-    .rule-thick {
-      border: none;
-      border-top: 2px solid #000;
-      margin: 6px 0;
-    }
-    .kv { width: 100%; font-size: 10px; margin-bottom: 2px; }
-    .kv td { vertical-align: top; padding: 1px 0; }
-    .kv .k { white-space: nowrap; padding-right: 6px; }
-    .kv .v { text-align: right; width: 100%; }
-    .items { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 10px; margin: 4px 0; }
-    .items col.col-item { width: 42%; }
-    .items col.col-qty { width: 10%; }
-    .items col.col-rate { width: 22%; }
-    .items col.col-amt { width: 26%; }
-    .items th {
-      text-align: left;
-      font-weight: 700;
-      padding: 2px 0;
-      border-bottom: 1px dashed #000;
-    }
-    .items th.num, .items td.num { text-align: right; white-space: nowrap; }
-    .items th.col-qty, .items td.col-qty { text-align: center; padding-left: 1mm; padding-right: 1mm; }
-    .items th.col-rate, .items td.col-rate { padding-left: 2mm; padding-right: 1mm; }
-    .items th.col-amt, .items td.col-amt { padding-left: 3mm; }
-    .items td { padding: 3px 0; vertical-align: top; }
-    .items .item-name { word-break: break-word; padding-right: 2mm; overflow-wrap: anywhere; }
-    .totals { width: 100%; font-size: 10px; margin-top: 4px; }
-    .totals td { padding: 2px 0; }
-    .totals .label { text-align: left; }
-    .totals .value { text-align: right; white-space: nowrap; }
-    .grand { font-size: 13px; font-weight: 700; }
-    .footer { font-size: 10px; margin-top: 8px; }
-    .footer p { margin-bottom: 4px; }
-    .fine { font-size: 9px; margin-top: 6px; line-height: 1.3; }
-    @media print {
-      @page { size: 80mm auto; margin: 2mm; }
-      html, body { width: 80mm; }
-      .receipt { width: 72mm; padding: 0; }
-    }
+    .shop { font-size: 21px; letter-spacing: 1px; margin-bottom: 2px; }
+    .tag { font-size: 9px; font-weight: 600; letter-spacing: 0.5px; }
+    .addr { font-size: 11px; font-weight: 600; }
+    .gstin { font-size: 12px; margin-top: 3px; }
+    .title { font-size: 15px; letter-spacing: 2px; margin: 3px 0; }
+    hr.solid { border: 0; border-top: 2px solid #000; margin: 5px 0; }
+    hr.dashed { border: 0; border-top: 2px dashed #000; margin: 5px 0; }
+    table { width: 100%; border-collapse: collapse; }
+    td { padding: 0; vertical-align: top; }
+    .meta td { font-size: 12px; font-weight: 600; }
+    .meta td:last-child { text-align: right; font-weight: 700; }
+    .item-name { font-size: 13px; margin-top: 4px; }
+    .item-sub { font-size: 10px; font-weight: 600; padding-left: 2mm; }
+    .item-line { font-size: 12px; padding-left: 2mm; }
+    .tot td { font-size: 12px; font-weight: 600; }
+    .tot td:last-child { text-align: right; font-weight: 700; }
+    .grand td { font-size: 19px; font-weight: 700; padding: 2px 0; }
+    .grand td:last-child { text-align: right; }
+    .foot { font-size: 10px; font-weight: 600; }
+    .ty { font-size: 13px; margin-top: 4px; }
   </style>
 </head>
 <body>
-  <div class="receipt">
-    <div class="logo-wrap">
-      <img src="{{ receipt.logo_url or '/assets/bill-logo.png?v=nb1' }}" alt="{{ receipt.business_name }}" width="98" height="77" />
-    </div>
-    <div class="center title bold">{{ receipt.business_name }}</div>
-    <div class="center subtitle bold">{{ receipt.title }}</div>
-    {% if receipt.address %}
-    <div class="center address">{{ receipt.address }}</div>
-    {% endif %}
-    {% if receipt.gstin %}
-    <div class="center meta-line">GSTIN: {{ receipt.gstin }}</div>
-    {% endif %}
-    {% if receipt.fssai %}
-    <div class="center meta-line">FSSAI: {{ receipt.fssai }}</div>
-    {% endif %}
-
-    <hr class="rule" />
-
-    <table class="kv">
-      <tr><td class="k">Invoice:</td><td class="v">{{ receipt.invoice }}</td></tr>
-      <tr><td class="k">Date:</td><td class="v">{{ receipt.date }}</td></tr>
-      <tr><td class="k">Customer:</td><td class="v">{{ receipt.customer }}</td></tr>
-      <tr><td class="k">Mobile:</td><td class="v">{{ receipt.mobile }}</td></tr>
-      <tr><td class="k">Order type:</td><td class="v">{{ receipt.order_type }}</td></tr>
-    </table>
-
-    <hr class="rule" />
-
-    <table class="items">
-      <colgroup>
-        <col class="col-item" />
-        <col class="col-qty" />
-        <col class="col-rate" />
-        <col class="col-amt" />
-      </colgroup>
-      <thead>
-        <tr>
-          <th>Item</th>
-          <th class="num col-qty">Qty</th>
-          <th class="num col-rate">Rate</th>
-          <th class="num col-amt">Amt</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for item in receipt['items'] %}
-        <tr>
-          <td class="item-name">{{ item.name }}</td>
-          <td class="num col-qty">{{ item.qty }}</td>
-          <td class="num col-rate">{{ item.rate }}</td>
-          <td class="num col-amt">{{ item.amount }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-
-    <hr class="rule" />
-
-    <table class="totals">
-      <tr><td class="label">Subtotal:</td><td class="value">{{ receipt.subtotal }}</td></tr>
-      {% if receipt.discount %}
-      <tr><td class="label">Discount:</td><td class="value">−{{ receipt.discount }}</td></tr>
-      {% endif %}
-      {% if receipt.cgst %}
-      <tr><td class="label">CGST:</td><td class="value">{{ receipt.cgst }}</td></tr>
-      <tr><td class="label">SGST:</td><td class="value">{{ receipt.sgst }}</td></tr>
-      {% endif %}
-      <tr><td class="label">Delivery:</td><td class="value">{{ receipt.delivery }}</td></tr>
-    </table>
-
-    <hr class="rule-thick" />
-
-    <table class="totals grand">
-      <tr><td class="label">TOTAL:</td><td class="value">{{ receipt.total }}</td></tr>
-    </table>
-
-    <hr class="rule" />
-
-    <div class="footer center">
-      <p class="bold">{{ receipt.payment_line }}</p>
-      {% for line in receipt.footer_lines %}
-      <p>{{ line }}</p>
-      {% endfor %}
-    </div>
-    <div class="center fine">
-      {% for line in receipt.fine_print %}
-      <div>{{ line }}</div>
-      {% endfor %}
-    </div>
-  </div>
-  {% if auto_print %}
-  <script>
-    window.addEventListener('load', function () {
-      setTimeout(function () {
-        window.focus();
-        window.print();
-      }, 120);
-    });
-  </script>
+<div class="receipt">
+  <img class="logo" alt="{{ receipt.business_name }}" src="{{ receipt.logo_url }}" width="128" height="90" />
+  <div class="c shop">{{ receipt.business_name }}</div>
+  {% if receipt.tagline %}
+  <div class="c tag">{{ receipt.tagline }}</div>
   {% endif %}
+  {% for line in receipt.address_lines or [] %}
+  <div class="c addr">{% if not loop.last %}{{ line }},{% else %}{{ line }}{% endif %}</div>
+  {% endfor %}
+  {% if receipt.phone_line %}
+  <div class="c addr">Ph: {{ receipt.phone_line }}</div>
+  {% endif %}
+  {% if receipt.gstin %}
+  <div class="c gstin">GSTIN: {{ receipt.gstin }}</div>
+  {% endif %}
+
+  <hr class="solid" />
+  <div class="c title">{{ receipt.title }}</div>
+  <hr class="dashed" />
+
+  <table class="meta">
+    <tr><td>Invoice No.</td><td>{{ receipt.invoice }}</td></tr>
+    <tr><td>Date</td><td>{{ receipt.date }}</td></tr>
+    <tr><td>Customer</td><td>{{ receipt.customer }}</td></tr>
+    <tr><td>Mobile</td><td>{{ receipt.mobile }}</td></tr>
+    <tr><td>Order Type</td><td>{{ receipt.order_type }}</td></tr>
+    <tr><td>Place of Supply</td><td>{{ receipt.place_of_supply }}</td></tr>
+  </table>
+
+  <hr class="dashed" />
+  <table class="meta">
+    <tr><td>ITEM / QTY x RATE</td><td>AMOUNT</td></tr>
+  </table>
+  <hr class="dashed" />
+
+  {% for item in receipt['items'] %}
+  <div class="item-name">{{ item.name }}</div>
+  {% if item.detail %}
+  <div class="item-sub">{{ item.detail }}</div>
+  {% endif %}
+  <table><tr>
+    <td class="item-line">{{ item.qty_rate }}</td>
+    <td class="r item-line">{{ item.amount }}</td>
+  </tr></table>
+  {% endfor %}
+
+  <hr class="dashed" />
+
+  <table class="tot">
+    {% for row in receipt.tax_rows or [] %}
+    <tr><td>{{ row.label }}</td><td>{{ row.value }}</td></tr>
+    {% endfor %}
+  </table>
+
+  <hr class="solid" />
+  <table class="grand">
+    <tr><td>TOTAL</td><td>{{ receipt.total }}</td></tr>
+  </table>
+  <hr class="solid" />
+
+  <table class="meta">
+    <tr><td>Paid by</td><td>{{ receipt.paid_by }}</td></tr>
+  </table>
+  {% if receipt.total_gst_note %}
+  <div class="c foot">{{ receipt.total_gst_note }}</div>
+  {% endif %}
+
+  <hr class="dashed" />
+  <div class="c foot">
+    {% for line in receipt.fine_print or [] %}
+    {{ line }}{% if not loop.last %}<br>{% endif %}
+    {% endfor %}
+  </div>
+  <div class="c ty">{{ receipt.thanks }}</div>
+  {% if receipt.website %}
+  <div class="c foot">{{ receipt.website }}</div>
+  {% endif %}
+</div>
+{% if auto_print %}
+<script>
+  window.addEventListener('load', function () {
+    setTimeout(function () {
+      window.focus();
+      window.print();
+    }, 120);
+  });
+</script>
+{% endif %}
 </body>
 </html>

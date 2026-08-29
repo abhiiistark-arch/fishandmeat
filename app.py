@@ -1836,12 +1836,13 @@ DEFAULT_SETTINGS = {
     # Marketing tracking
     'ga_measurement_id': '',
     'meta_pixel_id': '',
-    'whatsapp_number': '',
+    'whatsapp_number': '8655472898',
+    'billing_phone_2': '7208086212',
     'whatsapp_click_tracking': False,
     # Legal & compliance
-    'gst_number': '',
+    'gst_number': '27AHPSS3376E1ZD',
     'gst_enabled': True,
-    'fssai_number': '',
+    'fssai_number': '11526034000552',
     'halal_certified': True,
     'privacy_policy': '',
     'terms_conditions': '',
@@ -2095,7 +2096,13 @@ def seed_if_empty():
     stores = [
         {
             'id': 'store_andheri', 'name': 'Andheri', 'tag': 'Flagship Store',
-            'address': 'Andheri West, Mumbai', 'contact': '+91 98765 43210',
+            'address': (
+                'Shop No.9, Maulana Chawl, Indira Nagar,\n'
+                'Behram Baug, Jogeshwari (W),\n'
+                'Mumbai - 400102'
+            ),
+            'contact': '8655472898',
+            'phone': '7208086212',
             'hours': '7 AM – 10 PM', 'status': 'active',
             'created_at': now_iso()
         },
@@ -5615,21 +5622,37 @@ def _format_receipt_datetime(iso_str):
         return str(iso_str)[:16].replace('T', ' ')
 
 
+def _format_receipt_money(value):
+    return f"{float(value or 0):.2f}"
+
+
 def _receipt_item_label(item):
-    name = item.get('name') or ''
-    variant = (item.get('variant_label') or '').strip()
-    if variant and variant not in name:
-        return f'{name} ({variant})'
-    return name
+    """Product title only — weight/variant goes on the detail line."""
+    return (item.get('name') or '').strip() or 'Item'
+
+
+def _receipt_default_hsn(product, gst_percent):
+    if not product:
+        return ''
+    hsn = str(product.get('hsn') or product.get('hsn_code') or '').strip()
+    if hsn:
+        return hsn
+    # Sensible defaults when HSN is not set on the product yet
+    if float(gst_percent or 0) > 0:
+        return '1602'
+    cat = (product.get('category_id') or '').lower()
+    name = (product.get('name') or '').lower()
+    if 'fish' in cat or 'fish' in name or 'prawn' in name:
+        return '0304'
+    return '0207'
 
 
 def _build_receipt_data(order):
-    """Structured payload for 80mm thermal receipts (Essae PR-55 and similar)."""
+    """80mm thermal receipt payload matching client FishAndMeat_Sample_Bill format."""
     settings = get_settings()
     store = db_find_one('stores', {'id': order.get('store_id')}) or {}
-    gst_amount = float(order.get('gst_amount') or 0)
-    half_gst = round(gst_amount / 2, 2) if gst_amount else 0.0
     discount = float(order.get('discount') or 0)
+    delivery = float(order.get('delivery_fee') or 0)
     payment = (order.get('payment_method') or 'cash').lower()
     payment_labels = {
         'cash': 'Cash',
@@ -5638,36 +5661,162 @@ def _build_receipt_data(order):
         'cod': 'Cash on Delivery',
     }
     channel = order.get('channel') or order.get('delivery_mode') or ''
+
+    # Prefetch products for HSN / clean names
+    product_ids = list({
+        it.get('product_id') for it in (order.get('items') or []) if it.get('product_id')
+    })
+    products_by_id = {}
+    if product_ids:
+        for p in db_find('products', {'id': {'$in': product_ids}}):
+            products_by_id[p['id']] = p
+
+    items_out = []
+    taxable_by_rate = {}  # rate -> taxable sum
+    gst_by_rate = {}      # rate -> gst sum
+
+    for it in (order.get('items') or []):
+        product = products_by_id.get(it.get('product_id')) or {}
+        qty = float(it.get('qty') or 0)
+        rate = float(it.get('price') or 0)
+        gross = float(it.get('line_total') or (rate * qty) or 0)
+        gst_pct = float(it.get('gst_percent') if it.get('gst_percent') is not None else effective_gst_percent(product) or 0)
+        if gst_pct > 0:
+            taxable = round(gross / (1 + gst_pct / 100.0), 2)
+            line_gst = round(gross - taxable, 2)
+        else:
+            taxable = round(gross, 2)
+            line_gst = 0.0
+        taxable_by_rate[gst_pct] = round(taxable_by_rate.get(gst_pct, 0) + taxable, 2)
+        gst_by_rate[gst_pct] = round(gst_by_rate.get(gst_pct, 0) + line_gst, 2)
+
+        variant = (it.get('variant_label') or '').strip()
+        hsn = _receipt_default_hsn(product, gst_pct)
+        detail_parts = []
+        if variant:
+            detail_parts.append(variant)
+        detail_parts.append(f"GST {gst_pct:g}%")
+        if hsn:
+            detail_parts.append(f"HSN {hsn}")
+        items_out.append({
+            'name': _receipt_item_label(it),
+            'detail': ' | '.join(detail_parts),
+            'qty_rate': f"{int(qty) if qty == int(qty) else qty} x {_format_receipt_money(rate)}",
+            'amount': _format_receipt_money(gross),
+        })
+
+    total_gst = round(sum(gst_by_rate.values()), 2)
+    cgst = round(total_gst / 2.0, 2) if total_gst else 0.0
+    sgst = round(total_gst - cgst, 2) if total_gst else 0.0
+
+    tax_rows = []
+    for rate in sorted(taxable_by_rate.keys()):
+        tax_rows.append({
+            'label': f"Taxable Value ({rate:g}%)",
+            'value': _format_receipt_money(taxable_by_rate[rate]),
+        })
+    if discount > 0:
+        tax_rows.append({'label': 'Discount', 'value': f"-{_format_receipt_money(discount)}"})
+    if delivery > 0:
+        tax_rows.append({'label': 'Delivery', 'value': _format_receipt_money(delivery)})
+    if total_gst > 0:
+        # Show half-rate lines for the main GST slab (typically 5% → 2.5% + 2.5%)
+        half_rate = None
+        for rate in sorted(gst_by_rate.keys()):
+            if rate > 0:
+                half_rate = rate / 2.0
+                break
+        if half_rate is not None:
+            tax_rows.append({
+                'label': f"CGST @ {half_rate:g}%",
+                'value': _format_receipt_money(cgst),
+            })
+            tax_rows.append({
+                'label': f"SGST @ {half_rate:g}%",
+                'value': _format_receipt_money(sgst),
+            })
+        else:
+            tax_rows.append({'label': 'CGST', 'value': _format_receipt_money(cgst)})
+            tax_rows.append({'label': 'SGST', 'value': _format_receipt_money(sgst)})
+
+    bill_total = float(order.get('total') or 0)
+    pre_round = round(
+        sum(taxable_by_rate.values()) - discount + delivery + cgst + sgst,
+        2,
+    )
+    round_off = round(bill_total - pre_round, 2)
+    if abs(round_off) >= 0.005:
+        tax_rows.append({
+            'label': 'Round Off',
+            'value': _format_receipt_money(round_off) if round_off >= 0 else f"-{_format_receipt_money(abs(round_off))}",
+        })
+
+    address = (store.get('address') or order.get('address') or '').strip()
+    if address and '\n' in address:
+        address_lines = [ln.strip().rstrip(',') for ln in address.splitlines() if ln.strip()]
+    else:
+        parts = [p.strip() for p in address.split(',')] if address else []
+        parts = [p for p in parts if p]
+        if len(parts) <= 3:
+            address_lines = parts
+        elif parts:
+            address_lines = [', '.join(parts[:-2]), parts[-2], parts[-1]]
+        else:
+            address_lines = []
+
+    phones = []
+    for raw in (
+        store.get('contact'),
+        store.get('phone'),
+        settings.get('whatsapp_number'),
+        settings.get('billing_phone_2'),
+    ):
+        digits = _normalize_customer_phone(raw)
+        if len(digits) == 10 and digits not in phones:
+            phones.append(digits)
+    phone_line = ' / '.join(phones) if phones else ''
+
+    gstin = (settings.get('gst_number') or '').strip()
+
     return {
         'business_name': 'FISH AND MEAT',
+        'tagline': 'FRESHLY CUT . FRESHLY SERVED . EVERY DAY',
         'title': 'TAX INVOICE',
-        'logo_url': '/assets/bill-logo.png?v=nb1',
-        'address': store.get('address') or order.get('address') or '',
-        'gstin': settings.get('gst_number') or '',
-        'fssai': settings.get('fssai_number') or '',
+        'logo_url': '/assets/bill-logo-thermal.png?v=1',
+        'address_lines': address_lines,
+        'address': address,
+        'phone_line': phone_line,
+        'gstin': gstin,
+        'fssai': '',  # not printed on thermal bill
         'invoice': order.get('order_id') or order.get('id') or '',
         'date': _format_receipt_datetime(order.get('created_at')),
         'customer': order.get('customer_name') or 'Walk-in Customer',
         'mobile': _format_receipt_phone(order.get('customer_phone')),
         'order_type': 'In-Store' if channel == 'in_store' else 'Delivery',
-        'items': [{
-            'name': _receipt_item_label(it),
-            'qty': it.get('qty', 0),
-            'rate': f"{float(it.get('price', 0) or 0):,.2f}",
-            'amount': f"{float(it.get('line_total', 0) or (it.get('price', 0) * it.get('qty', 0))):,.2f}",
-        } for it in (order.get('items') or [])],
-        'subtotal': f"{float(order.get('subtotal', 0) or 0):,.2f}",
-        'discount': f"{discount:,.2f}" if discount else '',
-        'cgst': f"{half_gst:,.2f}" if half_gst else '',
-        'sgst': f"{half_gst:,.2f}" if half_gst else '',
-        'delivery': f"{float(order.get('delivery_fee', 0) or 0):,.2f}",
-        'total': f"{float(order.get('total', 0) or 0):,.2f}",
-        'payment_line': f"Paid by {payment_labels.get(payment, payment.upper())}",
-        'footer_lines': ['Thank you. Please visit again.'],
+        'place_of_supply': '27 - Maharashtra',
+        'items': items_out,
+        'tax_rows': tax_rows,
+        'total': _format_receipt_money(bill_total),
+        'paid_by': payment_labels.get(payment, payment.upper()),
+        'total_gst_note': (
+            f"Total GST on this bill: Rs {_format_receipt_money(total_gst)}"
+            if total_gst > 0 else ''
+        ),
         'fine_print': [
-            'Frozen items: keep at -18°C.',
+            'All prices inclusive of GST.',
+            'Frozen items: keep at -18 C.',
             'No return on perishable goods.',
         ],
+        'thanks': 'Thank you. Please visit again!',
+        'website': 'www.fishandmeat.co.in',
+        # Back-compat keys (older JS / PDF helpers)
+        'subtotal': _format_receipt_money(order.get('subtotal')),
+        'discount': _format_receipt_money(discount) if discount else '',
+        'cgst': _format_receipt_money(cgst) if cgst else '',
+        'sgst': _format_receipt_money(sgst) if sgst else '',
+        'delivery': _format_receipt_money(delivery),
+        'payment_line': f"Paid by {payment_labels.get(payment, payment.upper())}",
+        'footer_lines': ['Thank you. Please visit again!'],
     }
 
 
