@@ -24,11 +24,14 @@ body {
 body.fam-lagging {
   overflow: hidden;
 }
+/* Do not use CSS filter on the shell: a filtered ancestor of <select>
+   inside <dialog> freezes Chrome when the payment dropdown opens. */
 body.fam-lagging .admin-shell {
   pointer-events: none;
   user-select: none;
-  filter: blur(1.2px);
-  opacity: 0.6;
+}
+body.fam-lagging dialog.modal {
+  pointer-events: auto;
 }
 .fam-lag-loader {
   position: fixed;

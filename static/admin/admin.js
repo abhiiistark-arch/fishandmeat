@@ -2207,7 +2207,7 @@
       this.renderItems();
       openModal('order-modal');
       try {
-        this.storeProducts = await api('/api/products?store_id=' + encodeURIComponent(o.store_id));
+        this.storeProducts = await apiSilent('/api/products?store_id=' + encodeURIComponent(o.store_id));
       } catch (e) {
         this.storeProducts = [];
       }
@@ -2276,6 +2276,12 @@
     },
     save: async function () {
       var id = document.getElementById('order-edit-id').value;
+      var btn = document.getElementById('order-save');
+      if (btn && btn.disabled) return;
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Saving…';
+      }
       try {
         await api('/api/admin/orders/' + id, {
           method: 'PUT',
@@ -2297,6 +2303,11 @@
         AdminShell.refreshBadges();
       } catch (e) {
         toast(e.message || 'Could not update order', true);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = 'Save Changes';
+        }
       }
     },
     remove: async function () {

@@ -4866,7 +4866,6 @@ def api_admin_order_update(order_id):
         return jsonify({'error': 'Invalid order status'}), 400
 
     candidate = dict(order)
-    items_changed = 'items' in data
     try:
         normalized_items, required = _normalize_admin_order_items(
             order, data.get('items', order.get('items') or [])
@@ -4875,13 +4874,29 @@ def api_admin_order_update(order_id):
         return jsonify({'error': public_error(exc, 'Invalid order items')}), 400
     candidate['items'] = normalized_items
 
+    def _item_fingerprint(items):
+        rows = []
+        for it in items or []:
+            try:
+                qty = int(it.get('qty') or 0)
+            except (TypeError, ValueError):
+                qty = 0
+            try:
+                price = round(float(it.get('price') or 0), 2)
+            except (TypeError, ValueError):
+                price = 0.0
+            rows.append((it.get('product_id'), it.get('variant_id'), qty, price))
+        return rows
+
+    items_changed = _item_fingerprint(normalized_items) != _item_fingerprint(order.get('items') or [])
+
     active_statuses = {'confirmed', 'ready', 'out_for_delivery', 'delivered'}
     was_deducted = bool(order.get('inventory_deducted'))
     should_deduct = new_status in active_statuses
     inventory_rebalanced = items_changed or (was_deducted != should_deduct)
 
     if inventory_rebalanced and was_deducted:
-        if not _apply_inventory_delta(order, +1):
+        if not _apply_inventory_delta(order, +1, sync_qr_on_restore=False):
             return jsonify({'error': 'Could not restore previous stock. Try again.'}), 409
     if inventory_rebalanced and should_deduct:
         if not _apply_inventory_delta(candidate, -1):
