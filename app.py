@@ -144,9 +144,8 @@ app.config.update(
 )
 
 # Temporary full shutdown: storefront, admin, APIs, and mobile.
-# Bring it back by setting this to False and redeploying,
-# or set FAM_SITE_OFF=0 on the server and restart gunicorn.
-_SITE_OFF_DEFAULT = True
+# Set this to True and redeploy to suspend again, or set FAM_SITE_OFF=1 on the server.
+_SITE_OFF_DEFAULT = False
 
 
 def _site_temporarily_off():
