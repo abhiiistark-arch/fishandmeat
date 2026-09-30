@@ -143,6 +143,53 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
 )
 
+# Temporary full shutdown: storefront, admin, APIs, and mobile.
+# Bring it back by setting this to False and redeploying,
+# or set FAM_SITE_OFF=0 on the server and restart gunicorn.
+_SITE_OFF_DEFAULT = True
+
+
+def _site_temporarily_off():
+    raw = (os.getenv('FAM_SITE_OFF') or '').strip().lower()
+    if raw in ('0', 'false', 'no', 'off'):
+        return False
+    if raw in ('1', 'true', 'yes', 'on'):
+        return True
+    return _SITE_OFF_DEFAULT
+
+
+@app.before_request
+def _temporary_site_shutdown():
+    if not _site_temporarily_off():
+        return None
+    message = 'This service is temporarily unavailable. Please check back later.'
+    path = request.path or ''
+    wants_json = path.startswith('/api/') or 'application/json' in (request.headers.get('Accept') or '')
+    if wants_json:
+        resp = jsonify({'error': message})
+        resp.status_code = 503
+        resp.headers['Cache-Control'] = 'no-store'
+        resp.headers['Retry-After'] = '86400'
+        return resp
+    body = (
+        '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">'
+        '<title>Temporarily unavailable</title>'
+        '<style>'
+        'body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;'
+        'background:#f6f1e7;color:#1e3a22;font-family:Georgia,serif;padding:24px;text-align:center}'
+        'h1{font-size:28px;margin:0 0 12px}p{margin:0;font-size:18px;line-height:1.5;max-width:28rem}'
+        '</style></head><body><main><h1>Fish and Meat</h1><p>'
+        + message +
+        '</p></main></body></html>'
+    )
+    resp = make_response(body, 503)
+    resp.headers['Content-Type'] = 'text/html; charset=utf-8'
+    resp.headers['Cache-Control'] = 'no-store'
+    resp.headers['Retry-After'] = '86400'
+    return resp
+
+
 # Security layer (rate limit, CSRF, lockout, hashing helpers, token claims)
 from security import (  # noqa: E402
     register_security,
