@@ -7,7 +7,7 @@
 {% endblock %}
 {% block content %}
 <section class="panel">
-  <p class="muted panel-intro">Store-wise stock and pricing. Same product can have different prices across stores (e.g. Lokhandwala ₹299 · Kurla ₹279 · Thane ₹289).</p>
+  <p class="muted panel-intro">Weight products (500 gm, 1 kg) share one kg balance. Add 10 kg once, and every sale subtracts the pack weight. Piece items stay as quantity.</p>
   <div class="table-wrap">
     <table class="data-table" id="inv-table">
       <thead>
@@ -27,7 +27,13 @@
       <div class="field"><label>Store</label><select id="stock-store" required></select></div>
       <div class="field"><label>Product</label><select id="stock-product" required></select></div>
       <div class="field"><label>Variant</label><select id="stock-variant" required></select></div>
-      <div class="field"><label>Quantity to Add</label><input id="stock-quantity" type="number" min="1" step="1" value="1" required /></div>
+      <div class="field"><label id="stock-quantity-label">Amount</label><input id="stock-quantity" type="number" min="1" step="1" value="1" required /></div>
+      <div class="field"><label>Unit</label>
+        <select id="stock-entry-unit">
+          <option value="unit">Unit</option>
+          <option value="kg">Kg</option>
+        </select>
+      </div>
       <div class="field full"><div id="stock-product-summary" class="stock-product-summary"></div></div>
     </div>
     <div class="modal-actions">
@@ -59,7 +65,7 @@
       <div class="field full"><label>Variants (one per line: Label | unit)</label><textarea id="ip-variants" rows="3">500 gm | 500g&#10;1 kg | 1kg</textarea></div>
       <div class="field full"><label>Stores</label><div id="ip-stores" class="check-grid"></div></div>
       <div class="field"><label>Starting Price (₹)</label><input id="ip-price" type="number" min="0" step="1" value="0" /></div>
-      <div class="field"><label>Starting Stock per Variant</label><input id="ip-stock" type="number" min="0" step="1" value="0" /></div>
+      <div class="field"><label>Starting stock (kg for weight variants)</label><input id="ip-stock" type="number" min="0" step="0.001" value="0" /></div>
       <div class="field full"><label>Product Image</label><input id="ip-image" type="file" accept="image/*" /></div>
 
       <div class="field full hidden" id="ip-new-category">

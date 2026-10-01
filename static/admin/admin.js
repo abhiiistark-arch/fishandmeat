@@ -1722,6 +1722,8 @@
         self.refreshStockVariants();
       };
       document.getElementById('stock-variant').onchange = function () { self.renderStockSummary(); };
+      document.getElementById('stock-entry-unit').onchange = function () { self.renderStockSummary(); };
+      document.getElementById('stock-quantity').oninput = function () { self.renderStockSummary(); };
       document.getElementById('inventory-product-cancel').onclick = function () { closeModal('inventory-product-modal'); };
       document.getElementById('inventory-product-form').onsubmit = function (e) {
         e.preventDefault();
@@ -1770,7 +1772,9 @@
             '<td>' + esc(r.sku) + '</td>' +
             '<td>' + esc(r.store_name) + '</td>' +
             '<td><input class="inline-edit" type="number" data-field="price" value="' + r.price + '" /></td>' +
-            '<td><input class="inline-edit" type="number" data-field="stock" value="' + r.stock + '" /></td>' +
+            '<td><input class="inline-edit" type="number" data-field="stock" min="0" step="' +
+            (r.stock_unit === 'kg' ? '0.001' : '1') + '" value="' + r.stock + '">' +
+            (r.stock_unit === 'kg' ? ' <span class="muted">kg</span>' : '') + '</td>' +
             '<td><button class="btn btn-sm btn-dark" data-save="' + r.id + '">Save</button></td></tr>';
         }).join('') || '<tr><td colspan="7">No inventory rows</td></tr>';
         tbody.querySelectorAll('[data-save]').forEach(function (btn) {
@@ -1894,7 +1898,8 @@
         } catch (e) { /* ignore */ }
       }
       document.getElementById('stock-variant').innerHTML = matching.map(function (r) {
-        return '<option value="' + r.id + '">' + esc(r.variant_label || 'Default') + ' · current stock ' + r.stock + '</option>';
+        var onHand = r.stock_unit === 'kg' ? (r.stock + ' kg') : (r.stock + ' qty');
+        return '<option value="' + r.id + '">' + esc(r.variant_label || 'Default') + ' · ' + onHand + '</option>';
       }).join('') || '<option value="">No variants for this store</option>';
       this.renderStockSummary();
     },
@@ -1911,24 +1916,50 @@
       var image = product && product.images && product.images[0]
         ? '<img src="' + esc(product.images[0]) + '" alt="">'
         : '<div class="stock-summary-placeholder">No image</div>';
+      var qtyInput = document.getElementById('stock-quantity');
+      var unitSel = document.getElementById('stock-entry-unit');
+      var kgOption = unitSel.querySelector('option[value="kg"]');
+      var canKg = row.stock_unit === 'kg' && Number(row.unit_kg) > 0;
+      if (kgOption) kgOption.disabled = !canKg;
+      if (!canKg && unitSel.value === 'kg') unitSel.value = 'unit';
+      var asKg = unitSel.value === 'kg';
+      qtyInput.min = asKg ? '0.001' : '1';
+      qtyInput.step = asKg ? '0.001' : '1';
+      var amount = Number(qtyInput.value || 0);
+      var hint = '';
+      if (canKg && !asKg && amount > 0) {
+        var addedKg = Math.round(amount * Number(row.unit_kg) * 1000) / 1000;
+        hint = '<span>' + amount + ' units of ' + esc(row.variant_label || '') + ' = <b>' + addedKg + ' kg</b></span>';
+      } else if (canKg && asKg) {
+        hint = '<span>This adds <b>' + (amount || 0) + ' kg</b> to the product balance.</span>';
+      }
+      var onHand = row.stock_unit === 'kg' ? (row.stock + ' kg') : row.stock;
       host.innerHTML = image + '<div><strong>' + esc((product && product.name) || row.product_name) + '</strong>' +
         '<span>' + esc((category && category.name) || row.category_name || '') + ' · ' + esc(row.variant_label) + '</span>' +
-        '<span>Price ' + money(row.price) + ' · Current stock <b>' + row.stock + '</b></span></div>';
+        '<span>Price ' + money(row.price) + ' · Current stock <b>' + onHand + '</b></span>' +
+        hint +
+        '</div>';
     },
     addStock: async function () {
       if (this.saving) return;
       var inventoryId = document.getElementById('stock-variant').value;
       if (!inventoryId) { toast('Choose a product variant', true); return; }
+      var row = this.rows.find(function (r) { return r.id === inventoryId; });
       var quantity = Number(document.getElementById('stock-quantity').value);
-      if (!quantity || quantity < 1) { toast('Enter a valid quantity', true); return; }
+      var entryUnit = document.getElementById('stock-entry-unit').value || 'unit';
+      var byKg = entryUnit === 'kg';
+      if (!quantity || quantity <= 0 || (!byKg && quantity < 1)) {
+        toast(byKg ? 'Enter the kilograms to add' : 'Enter how many units to add', true);
+        return;
+      }
       this.setBusy(true);
       try {
-        await api('/api/admin/inventory', {
+        var saved = await api('/api/admin/inventory', {
           method: 'POST',
-          body: JSON.stringify({ inventory_id: inventoryId, quantity: quantity })
+          body: JSON.stringify({ inventory_id: inventoryId, quantity: quantity, unit: entryUnit })
         });
         closeModal('stock-modal');
-        toast(quantity + ' units added to stock');
+        toast((saved && saved.added_label) ? (saved.added_label + ' added') : 'Stock added');
         await this.load();
         AdminShell.refreshBadges();
       } catch (err) {
@@ -3726,9 +3757,30 @@
         var inv = (product.store_inventory || []).find(function (i) {
           return i.variant_id === row.variant_id;
         });
-        if (inv) inv.stock = Math.max(0, Number(inv.stock || 0) - Number(row.qty || 0));
+        if (!inv) return;
+        if (inv.stock_unit === 'kg') {
+          var cut = Number(row.qty || 0) * Number(inv.unit_kg || row.unit_kg || 0);
+          (product.store_inventory || []).forEach(function (sib) {
+            if (sib.stock_unit !== 'kg') return;
+            sib.stock = Math.max(0, Math.round((Number(sib.stock || 0) - cut) * 1000) / 1000);
+            var unit = Number(sib.unit_kg || 0);
+            sib.max_qty = unit > 0 ? Math.floor((sib.stock + 1e-9) / unit) : 0;
+          });
+        } else {
+          inv.stock = Math.max(0, Number(inv.stock || 0) - Number(row.qty || 0));
+          inv.max_qty = inv.stock;
+        }
       });
       this.renderProducts();
+    },
+    kgUsedInCart: function (productId, exceptKey) {
+      var self = this;
+      return Object.keys(this.cart).reduce(function (total, key) {
+        if (key === exceptKey) return total;
+        var line = self.cart[key];
+        if (!line || line.product_id !== productId || line.stock_unit !== 'kg') return total;
+        return total + Number(line.qty || 0) * Number(line.unit_kg || 0);
+      }, 0);
     },
     variantFor: function (product, variantId) {
       return (product.variants || []).find(function (v) { return v.id === variantId; }) || {};
@@ -3746,11 +3798,20 @@
       });
       var el = document.getElementById('pos-products');
       el.innerHTML = rows.map(function (p) {
-        var invs = (p.store_inventory || []).filter(function (i) { return i.stock > 0; });
+        var invs = (p.store_inventory || []).filter(function (i) {
+          if (i.stock_unit === 'kg') {
+            var left = Math.max(0, Number(i.stock || 0) - self.kgUsedInCart(p.id));
+            return left + 1e-9 >= Number(i.unit_kg || 0);
+          }
+          return Number(i.stock || 0) > 0;
+        });
         var options = invs.map(function (inv) {
           var v = self.variantFor(p, inv.variant_id);
+          var leftLabel = inv.stock_unit === 'kg'
+            ? (Math.max(0, Math.round((Number(inv.stock || 0) - self.kgUsedInCart(p.id)) * 1000) / 1000) + ' kg left')
+            : (inv.stock + ' left');
           return '<option value="' + inv.variant_id + '">' + esc(v.label || inv.variant_id) +
-            ' · ' + money(inv.price) + ' · ' + inv.stock + ' left</option>';
+            ' · ' + money(inv.price) + ' · ' + leftLabel + '</option>';
         }).join('');
         return '<article class="pos-product-card" data-product="' + p.id + '">' +
           '<div class="pos-product-name">' + esc(p.name) + '</div>' +
@@ -3778,7 +3839,16 @@
         toast('This unique unit is already on the bill', true);
         return;
       }
-      if (!inv || current >= inv.stock) {
+      if (inv && inv.stock_unit === 'kg' && !unitId) {
+        var pool = Number(inv.stock || 0);
+        var used = this.kgUsedInCart(product.id);
+        var unitKg = Number(inv.unit_kg || 0);
+        if (used + unitKg > pool + 1e-6) {
+          var left = Math.max(0, Math.round((pool - used) * 1000) / 1000);
+          toast('Only ' + left + ' kg left', true);
+          return;
+        }
+      } else if (!inv || current >= inv.stock) {
         toast('No more stock available', true);
         return;
       }
@@ -3788,7 +3858,9 @@
         name: product.name,
         variant_label: this.variantFor(product, variantId).label || '',
         price: inv.price,
-        stock: unitId ? 1 : inv.stock,
+        stock: unitId ? 1 : (inv.stock_unit === 'kg' ? (inv.max_qty || 0) : inv.stock),
+        stock_unit: inv.stock_unit || 'qty',
+        unit_kg: Number(inv.unit_kg || 0),
         qty: unitId ? 1 : (current + 1),
         unit_id: unitId || '',
         qr_code: opts.qr_code || product.qr_code || (this.cart[key] && this.cart[key].qr_code) || '',
@@ -3844,13 +3916,26 @@
         toast('Each unique unit QR is qty 1 — scan another unit to add more', true);
         return;
       }
+      if (delta > 0 && row.stock_unit === 'kg') {
+        var product = this.products.find(function (p) { return p.id === row.product_id; });
+        var poolInv = product && (product.store_inventory || []).find(function (i) { return i.stock_unit === 'kg'; });
+        var pool = poolInv ? Number(poolInv.stock || 0) : 0;
+        var used = this.kgUsedInCart(row.product_id);
+        if (used + Number(row.unit_kg || 0) > pool + 1e-6) {
+          var left = Math.max(0, Math.round((pool - used) * 1000) / 1000);
+          toast('Only ' + left + ' kg left', true);
+          this.renderProducts();
+          return;
+        }
+      }
       row.qty += delta;
       if (row.qty <= 0) delete this.cart[key];
-      else if (row.qty > row.stock) {
+      else if (row.stock_unit !== 'kg' && row.qty > row.stock) {
         row.qty = row.stock;
         toast('Maximum available stock reached', true);
       }
       this.renderCart();
+      this.renderProducts();
       this.saveDraft();
     },
     renderCart: function () {

@@ -914,7 +914,16 @@
           var i = Number(btn.getAttribute('data-bill-inc'));
           var line = state.billCart[i];
           if (!line || line.unit_id) return;
-          if (line.qty >= line.max_stock) {
+          if (line.stock_unit === 'kg') {
+            var usedKg = state.billCart.reduce(function (n, item) {
+              if (item.stock_unit !== 'kg' || item.product_id !== line.product_id) return n;
+              return n + Number(item.qty || 0) * Number(item.unit_kg || 0);
+            }, 0);
+            if (usedKg + Number(line.unit_kg || 0) > Number(line.stock_kg || 0) + 1e-6) {
+              toast('Only ' + line.stock_label + ' in stock', true);
+              return;
+            }
+          } else if (line.qty >= line.max_stock) {
             toast('Only ' + line.max_stock + ' in stock', true);
             return;
           }
@@ -953,7 +962,16 @@
         toast('This QR is already in the cart');
         return;
       }
-      if (existing.qty >= existing.max_stock) {
+      if (existing.stock_unit === 'kg') {
+        var usedKg = state.billCart.reduce(function (n, item) {
+          if (item.stock_unit !== 'kg' || item.product_id !== existing.product_id) return n;
+          return n + Number(item.qty || 0) * Number(item.unit_kg || 0);
+        }, 0);
+        if (usedKg + Number(existing.unit_kg || 0) > Number(existing.stock_kg || 0) + 1e-6) {
+          toast('Only ' + existing.stock_label + ' in stock', true);
+          return;
+        }
+      } else if (existing.qty >= existing.max_stock) {
         toast('Only ' + existing.max_stock + ' in stock', true);
         return;
       }
@@ -987,7 +1005,8 @@
         (p.variants || []).map(function (v) {
           return '<button type="button" class="btn btn-sm btn-outline bill-add-btn" ' +
             'data-pid="' + escapeHtml(p.id) + '" data-vid="' + escapeHtml(v.variant_id) + '">' +
-            escapeHtml(v.variant_label) + ' · ' + money(v.price) + ' · stock ' + v.stock +
+            escapeHtml(v.variant_label) + ' · ' + money(v.price) + ' · ' +
+            escapeHtml(v.stock_label || ('stock ' + v.stock)) +
             '</button>';
         }).join('') +
         '</div>';
@@ -1006,7 +1025,11 @@
           variant_label: variant.variant_label,
           price: variant.price,
           qty: 1,
-          max_stock: variant.stock,
+          max_stock: variant.max_qty != null ? variant.max_qty : variant.stock,
+          stock_unit: variant.stock_unit || 'qty',
+          unit_kg: Number(variant.unit_kg || 0),
+          stock_kg: variant.stock_kg != null ? Number(variant.stock_kg) : Number(variant.stock || 0),
+          stock_label: variant.stock_label || String(variant.stock || 0),
           unit_id: '',
           unit_serial: ''
         });
@@ -1335,7 +1358,7 @@
         (r.low_stock ? ' · LOW' : '') +
         '</div></div>' +
         '<div class="value">' + money(r.price) + '<div class="code">Stock ' +
-        escapeHtml(String(r.stock || 0)) + '</div></div></button>';
+        escapeHtml(r.stock_label || String(r.stock || 0)) + '</div></div></button>';
     }).join('');
     el.querySelectorAll('[data-inv]').forEach(function (btn) {
       btn.onclick = function () {
@@ -1355,6 +1378,13 @@
     $('inv-edit-price').value = String(row.price || 0);
     $('inv-edit-stock').value = String(row.stock || 0);
     $('inv-edit-add').value = '0';
+    var unitSel = $('inv-edit-unit');
+    if (unitSel) {
+      var kgOpt = unitSel.querySelector('option[value="kg"]');
+      var canKg = row.stock_unit === 'kg';
+      if (kgOpt) kgOpt.disabled = !canKg;
+      unitSel.value = 'unit';
+    }
     $('inv-edit-error').textContent = '';
     showScreen('inventory-edit');
   }
@@ -1377,7 +1407,11 @@
       if (addQty > 0) {
         await api('/api/mobile/inventory', {
           method: 'POST',
-          body: JSON.stringify({ inventory_id: state.editingInv.id, quantity: addQty })
+          body: JSON.stringify({
+            inventory_id: state.editingInv.id,
+            quantity: addQty,
+            unit: ($('inv-edit-unit') && $('inv-edit-unit').value) || 'unit'
+          })
         });
       }
       toast('Inventory updated');

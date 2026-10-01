@@ -436,8 +436,15 @@
             <input id="inv-edit-stock" type="number" min="0" step="1" />
           </label>
           <label class="field">
-            <span>Add quantity (optional)</span>
+            <span>Add amount (optional)</span>
             <input id="inv-edit-add" type="number" min="0" step="1" value="0" />
+          </label>
+          <label class="field">
+            <span>Unit</span>
+            <select id="inv-edit-unit">
+              <option value="unit">Unit</option>
+              <option value="kg">Kg</option>
+            </select>
           </label>
           <p id="inv-edit-error" class="error-text"></p>
           <button id="btn-inv-save" class="btn btn-gold full" type="button">Save</button>

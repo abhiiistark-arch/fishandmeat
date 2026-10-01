@@ -2726,9 +2726,11 @@ def api_products():
             'description': p.get('description') or '',
         }
         invs = inv_by_product.get(p['id'], [])
+        for store_key in {i.get('store_id') for i in invs}:
+            _ensure_product_kg_pool(store_key, p, invs)
         item['store_inventory'] = invs
         item['price'] = invs[0].get('price') if invs else None
-        item['stock'] = sum(i.get('stock', 0) for i in invs)
+        item['stock'] = _combined_on_hand(invs)
         item['categoryLabel'] = cat_names.get(p.get('category_id'), '')
         item['badge'] = 'Bestseller' if p.get('bestseller') else ('Featured' if p.get('featured') else (p.get('status') or 'Available').title())
         result.append(item)
@@ -2750,12 +2752,318 @@ def api_product_detail(product_id):
     return _public_cache_headers(jsonify(p), max_age=0)
 
 
+_WEIGHT_RE = re.compile(
+    r'(\d+(?:\.\d+)?)\s*(kg|kgs|kilogram|kilograms|g|gm|gms|gram|grams)\b',
+    re.IGNORECASE,
+)
+
+
+def _variant_by_id(product, variant_id):
+    for variant in (product or {}).get('variants') or []:
+        if variant.get('id') == variant_id:
+            return variant
+    return {}
+
+
+def _variant_weight_kg(variant):
+    """Pack weight in kg from a variant label/unit, or None when it is sold by piece."""
+    text = f"{(variant or {}).get('label') or ''} {(variant or {}).get('unit') or ''}"
+    match = _WEIGHT_RE.search(text)
+    if not match:
+        return None
+    value = float(match.group(1))
+    if value <= 0:
+        return None
+    unit = match.group(2).lower()
+    kg = value if unit.startswith('k') else value / 1000.0
+    return round(kg, 3)
+
+
+def _format_kg(value):
+    number = round(float(value or 0), 3)
+    if abs(number - round(number)) < 0.0005:
+        return f'{int(round(number))} kg'
+    text = f'{number:.3f}'.rstrip('0').rstrip('.')
+    return f'{text} kg'
+
+
+def _weight_inventory_rows(store_id, product, rows=None):
+    if rows is None:
+        rows = db_find('inventory', {
+            'store_id': store_id,
+            'product_id': (product or {}).get('id'),
+        })
+    weighted = []
+    for row in rows:
+        if row.get('store_id') != store_id or row.get('product_id') != (product or {}).get('id'):
+            continue
+        weight = _variant_weight_kg(_variant_by_id(product, row.get('variant_id')))
+        if weight:
+            weighted.append((row, weight))
+    return weighted
+
+
+def _ensure_product_kg_pool(store_id, product, rows=None):
+    """Turn per-pack counts into one shared kg balance for a product at a store.
+
+    Existing piece counts convert once: 10 packs of 500 gm + 4 packs of 1 kg = 9 kg.
+    Later inward and sales move that same kg balance.
+    """
+    weighted = _weight_inventory_rows(store_id, product, rows)
+    if not weighted:
+        return False
+    if all(row.get('stock_basis') == 'kg' for row, _weight in weighted):
+        return False
+    total_kg = 0.0
+    for row, weight in weighted:
+        if row.get('stock_basis') == 'kg':
+            total_kg = max(total_kg, float(row.get('stock') or 0))
+        else:
+            total_kg += float(row.get('stock') or 0) * weight
+    total_kg = round(total_kg, 3)
+    now = now_iso()
+    for row, _weight in weighted:
+        db_update('inventory', {'id': row['id']}, {
+            'stock': total_kg,
+            'stock_basis': 'kg',
+            'updated_at': now,
+        })
+        row['stock'] = total_kg
+        row['stock_basis'] = 'kg'
+    return True
+
+
+def _inc_shared_kg(rows, delta_kg):
+    """Add or remove kilograms on every weight row of one product. Rolls back on failure."""
+    delta_kg = round(float(delta_kg), 3)
+    if not rows or abs(delta_kg) < 0.0005:
+        return True
+    from pymongo import ReturnDocument
+    _require_mongo()
+    applied = []
+    for row in rows:
+        query = {'id': row['id']}
+        if delta_kg < 0:
+            query['stock'] = {'$gte': round(abs(delta_kg), 3) - 1e-6}
+        updated = _mongo_db.inventory.find_one_and_update(
+            query,
+            {'$inc': {'stock': delta_kg}, '$set': {'updated_at': now_iso(), 'stock_basis': 'kg'}},
+            projection={'_id': 0},
+            return_document=ReturnDocument.AFTER,
+        )
+        if not updated:
+            for inv_id in applied:
+                _mongo_db.inventory.update_one(
+                    {'id': inv_id},
+                    {'$inc': {'stock': -delta_kg}, '$set': {'updated_at': now_iso()}},
+                )
+            return False
+        rounded = round(max(0.0, float(updated.get('stock') or 0)), 3)
+        db_update('inventory', {'id': row['id']}, {'stock': rounded, 'stock_basis': 'kg'})
+        applied.append(row['id'])
+    return True
+
+
+def _set_shared_kg(rows, stock_kg):
+    stock_kg = round(max(0.0, float(stock_kg)), 3)
+    now = now_iso()
+    for row in rows:
+        db_update('inventory', {'id': row['id']}, {
+            'stock': stock_kg,
+            'stock_basis': 'kg',
+            'updated_at': now,
+        })
+    return stock_kg
+
+
+def _combined_on_hand(inv_rows):
+    """Sum piece rows, but count a shared kg pool once per store."""
+    seen_kg = set()
+    total = 0.0
+    for row in inv_rows or []:
+        stock = float(row.get('stock') or 0)
+        if row.get('stock_basis') == 'kg':
+            key = (row.get('store_id'), row.get('product_id'))
+            if key in seen_kg:
+                continue
+            seen_kg.add(key)
+        total += stock
+    return round(total, 3)
+
+
+def _catalog_stock_entry(product, row):
+    """One sellable variant. Hidden when even a single pack does not fit."""
+    variant = _variant_by_id(product, row.get('variant_id'))
+    weight = _variant_weight_kg(variant)
+    stock = float(row.get('stock') or 0)
+    if weight:
+        if stock + 1e-6 < weight:
+            return None
+        return {
+            'id': row.get('id'),
+            'variant_id': row.get('variant_id'),
+            'price': float(row.get('price') or 0),
+            'stock': round(stock, 3),
+            'stock_unit': 'kg',
+            'unit_kg': weight,
+            'max_qty': int(stock // weight),
+        }
+    pieces = int(stock)
+    if pieces < 1:
+        return None
+    return {
+        'id': row.get('id'),
+        'variant_id': row.get('variant_id'),
+        'price': float(row.get('price') or 0),
+        'stock': pieces,
+        'stock_unit': 'qty',
+        'unit_kg': None,
+        'max_qty': pieces,
+    }
+
+
+def _line_has_stock(store_id, product, variant_id, qty, inv):
+    need_kg = _line_kg_need(product, variant_id, qty)
+    if need_kg:
+        _ensure_product_kg_pool(store_id, product)
+        fresh = db_find_one('inventory', {'id': inv.get('id')}) or inv
+        return float(fresh.get('stock') or 0) + 1e-6 >= need_kg
+    return float(inv.get('stock') or 0) >= int(qty)
+
+
+def _line_kg_need(product, variant_id, qty):
+    weight = _variant_weight_kg(_variant_by_id(product, variant_id))
+    if not weight:
+        return None
+    return round(weight * int(qty), 3)
+
+
+def _reserve_line_stock(store_id, product, variant_id, qty, sign):
+    """Deduct (sign=-1) or restore (sign=+1) one sold line.
+
+    Weight variants move kilograms. Piece variants still move whole packs.
+    """
+    try:
+        qty = int(qty)
+    except (TypeError, ValueError):
+        return False
+    if qty < 1 or not product:
+        return False
+    need_kg = _line_kg_need(product, variant_id, qty)
+    if need_kg:
+        _ensure_product_kg_pool(store_id, product)
+        rows = [row for row, _weight in _weight_inventory_rows(store_id, product)]
+        if not rows:
+            return False
+        if sign < 0:
+            balance = min(float(row.get('stock') or 0) for row in rows)
+            if balance + 1e-6 < need_kg:
+                return False
+        return _inc_shared_kg(rows, sign * need_kg)
+    inv = db_find_one('inventory', {
+        'store_id': store_id,
+        'product_id': product.get('id'),
+        'variant_id': variant_id,
+    })
+    if not inv:
+        return False
+    return _pos_adjust_stock(inv['id'], sign * qty, sync_qr=False)
+
+
+def _add_inventory_amount(row, amount, entry_unit='unit'):
+    """Inward stock as packs (unit) or kilograms.
+
+    Weight products keep one shared kg balance. Choosing Unit converts
+    packs into kg using that variant's weight (10 units of 500 gm = 5 kg).
+    """
+    product = db_find_one('products', {'id': row.get('product_id')}) or {}
+    store_id = row.get('store_id')
+    chosen = str(entry_unit or 'unit').strip().lower()
+    if chosen in ('kg', 'kgs', 'kilogram', 'kilograms'):
+        chosen = 'kg'
+    elif chosen in ('unit', 'units', 'qty', 'piece', 'pcs'):
+        chosen = 'unit'
+    else:
+        raise ValueError('Choose Unit or Kg')
+    variant = _variant_by_id(product, row.get('variant_id'))
+    pack_kg = _variant_weight_kg(variant)
+    if pack_kg:
+        _ensure_product_kg_pool(store_id, product)
+        if chosen == 'unit':
+            try:
+                packs = int(amount)
+            except (TypeError, ValueError):
+                raise ValueError('Unit count must be a whole number') from None
+            if packs < 1 or packs > 1000000:
+                raise ValueError('Unit count must be between 1 and 1,000,000')
+            kg = round(packs * pack_kg, 3)
+            label = f'{packs} units ({_format_kg(kg)})'
+        else:
+            try:
+                kg = round(float(amount), 3)
+            except (TypeError, ValueError):
+                raise ValueError('Weight must be a number of kilograms') from None
+            if kg < 0.001 or kg > 100000:
+                raise ValueError('Weight must be between 0.001 kg and 100,000 kg')
+            label = _format_kg(kg)
+        rows = [item for item, _weight in _weight_inventory_rows(store_id, product)]
+        if not rows or not _inc_shared_kg(rows, kg):
+            raise ValueError('Could not add stock')
+        return db_find_one('inventory', {'id': row['id']}), chosen, kg, label
+    if chosen == 'kg':
+        raise ValueError('This item is sold by unit, not kg')
+    try:
+        quantity = int(amount)
+    except (TypeError, ValueError):
+        raise ValueError('Quantity must be a whole number') from None
+    if quantity < 1 or quantity > 1000000:
+        raise ValueError('Quantity must be between 1 and 1,000,000')
+    updated = db_increment('inventory', {'id': row['id']}, 'stock', quantity)
+    return updated, 'unit', quantity, f'{quantity} units'
+
+
+def _set_inventory_level(row, price=None, stock=None):
+    """Save price and/or stock. Weight stock is kilograms for the whole product."""
+    product = db_find_one('products', {'id': row.get('product_id')}) or {}
+    store_id = row.get('store_id')
+    updates = {'updated_at': now_iso()}
+    if price is not None:
+        price = float(price)
+        if price < 0:
+            raise ValueError('Price cannot be negative')
+        updates['price'] = price
+    if stock is not None:
+        if _line_kg_need(product, row.get('variant_id'), 1):
+            try:
+                stock_kg = round(float(stock), 3)
+            except (TypeError, ValueError):
+                raise ValueError('Stock must be a number of kilograms') from None
+            if stock_kg < 0:
+                raise ValueError('Stock cannot be negative')
+            _ensure_product_kg_pool(store_id, product)
+            rows = [item for item, _weight in _weight_inventory_rows(store_id, product)]
+            _set_shared_kg(rows, stock_kg)
+        else:
+            try:
+                stock_qty = int(stock)
+            except (TypeError, ValueError):
+                raise ValueError('Stock must be a whole number') from None
+            if stock_qty < 0:
+                raise ValueError('Stock cannot be negative')
+            updates['stock'] = stock_qty
+    if price is not None or (stock is not None and not _line_kg_need(product, row.get('variant_id'), 1)):
+        db_update('inventory', {'id': row['id']}, updates)
+    elif price is not None:
+        db_update('inventory', {'id': row['id']}, {'price': updates['price'], 'updated_at': updates['updated_at']})
+    return db_find_one('inventory', {'id': row['id']})
+
+
 def _apply_inventory_delta(order, sign, sync_qr_on_restore=True):
     """Atomic stock adjust for website orders. sign=-1 deducts, +1 restores.
 
-    Uses the same conditional $inc pattern as POS so concurrent customers
-    cannot oversell. Returns True if every line applied successfully.
+    Weight lines move kilograms. Piece lines still move whole packs.
     """
+    del sync_qr_on_restore  # QR units are not rebuilt on order edit; stock is.
     applied = []
     for line in order.get('items') or []:
         try:
@@ -2764,21 +3072,14 @@ def _apply_inventory_delta(order, sign, sync_qr_on_restore=True):
             qty = 0
         if qty < 1:
             continue
-        inv = db_find_one('inventory', {
-            'store_id': order['store_id'],
-            'product_id': line.get('product_id'),
-            'variant_id': line.get('variant_id'),
-        })
-        if not inv:
-            for inv_id, done_qty in applied:
-                _pos_adjust_stock(inv_id, -sign * done_qty, sync_qr=False)
+        product = db_find_one('products', {'id': line.get('product_id')})
+        if not product or not _reserve_line_stock(
+            order.get('store_id'), product, line.get('variant_id'), qty, sign
+        ):
+            for done_product, done_variant, done_qty in applied:
+                _reserve_line_stock(order.get('store_id'), done_product, done_variant, done_qty, -sign)
             return False
-        sync_qr = sync_qr_on_restore if sign > 0 else False
-        if not _pos_adjust_stock(inv['id'], sign * qty, sync_qr=sync_qr):
-            for inv_id, done_qty in applied:
-                _pos_adjust_stock(inv_id, -sign * done_qty, sync_qr=False)
-            return False
-        applied.append((inv['id'], qty))
+        applied.append((product, line.get('variant_id'), qty))
     return True
 
 
@@ -3447,7 +3748,7 @@ def api_place_order():
             inv = invs[0] if invs else None
             if inv:
                 vid = inv['variant_id']
-        if not inv or inv.get('stock', 0) < qty:
+        if not inv or not _line_has_stock(data['store_id'], product, vid, qty, inv):
             return jsonify({'error': f'Insufficient stock for {product["name"]}'}), 400
 
         price = inv['price']
@@ -3507,13 +3808,16 @@ def api_place_order():
     # Atomic stock reserve NOW — concurrent checkouts cannot oversell.
     reserved = []
     for line in lines:
-        if not _pos_adjust_stock(line['inventory_id'], -int(line['qty'])):
-            for inv_id, qty in reserved:
-                _pos_adjust_stock(inv_id, qty)
+        product = db_find_one('products', {'id': line['product_id']})
+        if not product or not _reserve_line_stock(
+            data['store_id'], product, line['variant_id'], line['qty'], -1
+        ):
+            for done_product, done_variant, done_qty in reserved:
+                _reserve_line_stock(data['store_id'], done_product, done_variant, done_qty, +1)
             return jsonify({
                 'error': f'Insufficient stock for {line["name"]} (just sold out)',
             }), 409
-        reserved.append((line['inventory_id'], int(line['qty'])))
+        reserved.append((product, line['variant_id'], int(line['qty'])))
 
     # Upsert customer in MongoDB (never wipe password_hash / cart)
     # Same phone merges website + in-store into one customer profile.
@@ -3872,13 +4176,15 @@ def _ensure_product_inventory_rows(product, default_price=0, default_stock=0):
             key = (sid, var.get('id'))
             if not key[1] or key in existing:
                 continue
+            weight = _variant_weight_kg(var)
             db_insert('inventory', {
                 'id': new_id('inv_'),
                 'store_id': sid,
                 'product_id': product_id,
                 'variant_id': var['id'],
                 'price': float(default_price or 0),
-                'stock': int(default_stock or 0),
+                'stock': round(float(default_stock or 0), 3) if weight else int(default_stock or 0),
+                'stock_basis': 'kg' if weight else 'qty',
                 'updated_at': now_iso(),
             })
             existing.add(key)
@@ -4257,9 +4563,15 @@ def api_admin_stats():
     max_stock = max((i.get('stock', 0) for i in inventory_rows), default=1) or 1
     low_stock = []
     prod_totals = {}
+    seen_kg = set()
     for inv in inventory_rows:
         stock = inv.get('stock', 0) or 0
         pid = inv.get('product_id')
+        if inv.get('stock_basis') == 'kg':
+            pool_key = (inv.get('store_id'), pid)
+            if pool_key in seen_kg:
+                continue
+            seen_kg.add(pool_key)
         prod_totals[pid] = prod_totals.get(pid, 0) + stock
         if stock <= threshold:
             p = products_by_id.get(pid)
@@ -4729,21 +5041,23 @@ def api_admin_inventory():
         if denied:
             return denied
         try:
-            quantity = int(data.get('quantity', 0))
-        except (TypeError, ValueError):
-            return jsonify({'error': 'Quantity must be a whole number'}), 400
-        if quantity < 1 or quantity > 1000000:
-            return jsonify({'error': 'Quantity must be between 1 and 1,000,000'}), 400
-        updated = db_increment('inventory', {'id': row['id']}, 'stock', quantity)
+            updated, basis, added, added_label = _add_inventory_amount(
+                row, data.get('quantity', 0), data.get('unit') or 'unit'
+            )
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
         # Do not sync/create QR units here — that made Add Stock extremely slow.
         # Stock numbers update instantly; QR units come from Generate QR + punch.
         _badges_cache.clear()
         log_activity(
             'inventory',
-            f"Added {quantity} units of stock",
+            f"Added {added_label} of stock",
             {'inventory_id': row['id'], 'store_id': row.get('store_id'),
-             'product_id': row.get('product_id'), 'quantity': quantity},
+             'product_id': row.get('product_id'), 'quantity': added, 'basis': basis},
         )
+        if isinstance(updated, dict):
+            updated = dict(updated)
+            updated['added_label'] = added_label
         return jsonify(updated)
 
     store_id = resolve_store_scope(request.args.get('store_id'))
@@ -4764,19 +5078,14 @@ def api_admin_inventory_update(inv_id):
     if denied:
         return denied
     data = parse_json()
-    updates = {}
     try:
-        if 'price' in data:
-            updates['price'] = float(data['price'])
-        if 'stock' in data:
-            updates['stock'] = int(data['stock'])
-    except (TypeError, ValueError):
-        return jsonify({'error': 'Price and stock must be valid numbers'}), 400
-    if updates.get('price', 0) < 0 or updates.get('stock', 0) < 0:
-        return jsonify({'error': 'Price and stock cannot be negative'}), 400
-    updates['updated_at'] = now_iso()
-    db_update('inventory', {'id': inv_id}, updates)
-    updated = db_find_one('inventory', {'id': inv_id})
+        updated = _set_inventory_level(
+            row,
+            price=data.get('price') if 'price' in data else None,
+            stock=data.get('stock') if 'stock' in data else None,
+        )
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     # Fast inventory path: price/stock only. No QR mint/void here (POS billing untouched).
     _badges_cache.clear()
     return jsonify(updated)
@@ -5305,17 +5614,13 @@ def _pos_catalog(store_id):
         if (p.get('status') or 'available') == 'disabled':
             continue
         related = inv_by_product.get(p.get('id')) or []
+        _ensure_product_kg_pool(store_id, p, related)
         store_inventory = []
         for r in related:
-            stock = int(r.get('stock') or 0)
-            if stock < 1:
+            entry = _catalog_stock_entry(p, r)
+            if not entry:
                 continue
-            store_inventory.append({
-                'id': r.get('id'),
-                'variant_id': r.get('variant_id'),
-                'price': float(r.get('price') or 0),
-                'stock': stock,
-            })
+            store_inventory.append(entry)
         if not store_inventory:
             continue
         catalog_products.append({
@@ -5389,7 +5694,13 @@ def _create_pos_order(data, staff):
         inv = inventory_by_key.get((product_id, variant_id))
         if not product or not inv:
             return {'error': 'Product or variant is unavailable at this store'}, 400
-        if inv.get('stock', 0) < qty:
+        if not _line_has_stock(store_id, product, variant_id, qty, inv):
+            need_kg = _line_kg_need(product, variant_id, qty)
+            if need_kg:
+                balance = float((db_find_one('inventory', {'id': inv['id']}) or inv).get('stock') or 0)
+                return {
+                    'error': f'Only {_format_kg(balance)} left for {product["name"]} (needs {_format_kg(need_kg)})'
+                }, 409
             return {
                 'error': f'Only {inv.get("stock", 0)} units available for {product["name"]}'
             }, 409
@@ -5445,12 +5756,15 @@ def _create_pos_order(data, staff):
     discount = round(max(0, min(discount, subtotal)), 2)
 
     deducted = []
-    for inventory_id, qty in deductions:
-        if not _pos_adjust_stock(inventory_id, -qty):
-            for completed_id, completed_qty in deducted:
-                _pos_adjust_stock(completed_id, completed_qty)
+    for line in lines:
+        line_product = products_by_id.get(line['product_id'])
+        if not line_product or not _reserve_line_stock(
+            store_id, line_product, line['variant_id'], line['qty'], -1
+        ):
+            for done_product, done_variant, done_qty in deducted:
+                _reserve_line_stock(store_id, done_product, done_variant, done_qty, +1)
             return {'error': 'Stock changed while billing. Please refresh and try again.'}, 409
-        deducted.append((inventory_id, qty))
+        deducted.append((line_product, line['variant_id'], line['qty']))
 
     phone = _normalize_customer_phone(data.get('customer_phone') or '')
     name = (data.get('customer_name') or '').strip() or 'Walk-in Customer'
@@ -5603,6 +5917,7 @@ def _ensure_store_inventory_coverage(store_id):
             key = (product_id, vid)
             if key in existing:
                 continue
+            weight = _variant_weight_kg(var)
             db_insert('inventory', {
                 'id': new_id('inv_'),
                 'store_id': store_id,
@@ -5610,6 +5925,7 @@ def _ensure_store_inventory_coverage(store_id):
                 'variant_id': vid,
                 'price': 0,
                 'stock': 0,
+                'stock_basis': 'kg' if weight else 'qty',
                 'updated_at': now,
             })
             existing.add(key)
@@ -5632,6 +5948,15 @@ def _enrich_inventory_rows(store_id):
         s['id']: s for s in _cached_collection('stores', lambda: db_find('stores'))
     }
     categories_by_id = {c['id']: c for c in db_find('categories')}
+    migrated = set()
+    for r in rows:
+        key = (r.get('store_id'), r.get('product_id'))
+        if key in migrated:
+            continue
+        migrated.add(key)
+        product = products_by_id.get(r.get('product_id'))
+        if product:
+            _ensure_product_kg_pool(r.get('store_id'), product, rows)
     enriched = []
     for r in rows:
         p = products_by_id.get(r.get('product_id'))
@@ -5640,14 +5965,18 @@ def _enrich_inventory_rows(store_id):
         if (p.get('status') or 'available') == 'disabled':
             continue
         s = stores_by_id.get(r.get('store_id'))
-        variant_label = ''
-        for v in p.get('variants') or []:
-            if v.get('id') == r.get('variant_id'):
-                variant_label = v.get('label', '')
-                break
+        variant = _variant_by_id(p, r.get('variant_id'))
+        variant_label = variant.get('label', '') if variant else ''
+        weight = _variant_weight_kg(variant)
+        stock_unit = 'kg' if weight or r.get('stock_basis') == 'kg' else 'qty'
+        stock_value = round(float(r.get('stock') or 0), 3) if stock_unit == 'kg' else int(float(r.get('stock') or 0))
         cat = categories_by_id.get(p.get('category_id')) or {}
         enriched.append({
             **r,
+            'stock': stock_value,
+            'stock_unit': stock_unit,
+            'unit_kg': weight,
+            'stock_label': _format_kg(stock_value) if stock_unit == 'kg' else str(stock_value),
             'product_name': p.get('name') or '',
             'sku': p.get('sku', '') or '',
             'category_id': p.get('category_id') or '',
@@ -5655,7 +5984,7 @@ def _enrich_inventory_rows(store_id):
             'variant_label': variant_label,
             'store_name': s['name'] if s else '',
             'inventory_model': p.get('inventory_model') if p else 'variant',
-            'low_stock': int(r.get('stock', 0) or 0) <= low_stock_threshold,
+            'low_stock': float(stock_value) <= low_stock_threshold,
             'low_stock_threshold': low_stock_threshold,
         })
     enriched.sort(key=lambda row: ((row.get('product_name') or '').lower(), row.get('variant_label') or ''))
@@ -6269,12 +6598,24 @@ def api_admin_qr_unit_delete(unit_id):
             'variant_id': unit.get('variant_id') or 'v1',
         })
         if inv:
-            stock_before = int(inv.get('stock') or 0)
-            if stock_before > 0:
-                updated = db_increment('inventory', {'id': inv['id']}, 'stock', -1)
-                stock_after = int((updated or {}).get('stock') or 0)
+            product = db_find_one('products', {'id': unit.get('product_id')}) or {}
+            weight = _variant_weight_kg(_variant_by_id(product, inv.get('variant_id')))
+            if weight:
+                _ensure_product_kg_pool(inv.get('store_id'), product)
+                rows = [item for item, _w in _weight_inventory_rows(inv.get('store_id'), product)]
+                stock_before = round(float((rows[0].get('stock') if rows else inv.get('stock')) or 0), 3)
+                cut = min(stock_before, weight)
+                if cut > 0 and rows:
+                    _inc_shared_kg(rows, -cut)
+                fresh = db_find_one('inventory', {'id': inv['id']}) or {}
+                stock_after = round(float(fresh.get('stock') or 0), 3)
             else:
-                stock_after = stock_before
+                stock_before = int(inv.get('stock') or 0)
+                if stock_before > 0:
+                    updated = db_increment('inventory', {'id': inv['id']}, 'stock', -1)
+                    stock_after = int((updated or {}).get('stock') or 0)
+                else:
+                    stock_after = stock_before
 
     deleted = db_delete('qr_units', {'id': unit_id})
     if not deleted:
@@ -7039,7 +7380,9 @@ def api_mobile_punch():
         }
         db_insert('inventory', inv)
 
-    before_stock = int(inv.get('stock') or 0)
+    variant = _variant_by_id(product, variant_id)
+    pack_kg = _variant_weight_kg(variant)
+    before_stock = round(float(inv.get('stock') or 0), 3) if pack_kg else int(inv.get('stock') or 0)
     # Claim pending unit (prevents double-punch). Empty status treated as pending.
     claim_status = status if status else 'pending'
     claim_updates = {
@@ -7057,7 +7400,15 @@ def api_mobile_punch():
     if not claimed:
         return jsonify({'error': 'Already in inventory — cannot punch again'}), 409
 
-    updated_row = db_increment('inventory', {'id': inv['id']}, 'stock', 1)
+    if pack_kg:
+        _ensure_product_kg_pool(store_id, product)
+        rows = [item for item, _w in _weight_inventory_rows(store_id, product)]
+        if not rows or not _inc_shared_kg(rows, pack_kg):
+            db_update('qr_units', {'id': unit['id']}, {'status': claim_status, 'updated_at': now_iso()})
+            return jsonify({'error': 'Could not add this pack weight to stock'}), 409
+        updated_row = db_find_one('inventory', {'id': inv['id']})
+    else:
+        updated_row = db_increment('inventory', {'id': inv['id']}, 'stock', 1)
     if unit.get('price') is not None and float(unit.get('price') or 0) > 0:
         db_update('inventory', {'id': inv['id']}, {
             'price': float(unit.get('price') or 0),
@@ -7074,9 +7425,13 @@ def api_mobile_punch():
         'product_id': product['id'],
         'product_name': product.get('name'),
         'variant_id': variant_id,
-        'qty_added': 1,
+        'qty_added': pack_kg or 1,
         'stock_before': before_stock,
-        'stock': int((updated_row or {}).get('stock', 0) or 0),
+        'stock': (
+            round(float((updated_row or {}).get('stock') or 0), 3)
+            if pack_kg else int((updated_row or {}).get('stock') or 0)
+        ),
+        'stock_unit': 'kg' if pack_kg else 'qty',
         'price': float((updated_row or {}).get('price', 0) or 0),
         'unit_serials': [unit.get('unit_serial')],
         'unit_ids': [unit.get('id')],
@@ -7338,22 +7693,24 @@ def api_mobile_pos_catalog():
         if (p.get('status') or 'available') == 'disabled':
             continue
         related = inv_by_product.get(p.get('id')) or []
+        _ensure_product_kg_pool(store_id, p, related)
         variants = []
         for r in related:
-            stock = int(r.get('stock') or 0)
-            if stock < 1:
+            entry = _catalog_stock_entry(p, r)
+            if not entry:
                 continue
-            variant_label = ''
-            for v in p.get('variants') or []:
-                if v.get('id') == r.get('variant_id'):
-                    variant_label = v.get('label') or ''
-                    break
+            variant = _variant_by_id(p, r.get('variant_id'))
             variants.append({
                 'inventory_id': r.get('id'),
                 'variant_id': r.get('variant_id'),
-                'variant_label': variant_label or '—',
-                'price': float(r.get('price') or 0),
-                'stock': stock,
+                'variant_label': (variant.get('label') if variant else '') or '—',
+                'price': entry['price'],
+                'stock': entry['max_qty'],
+                'stock_kg': entry['stock'] if entry['stock_unit'] == 'kg' else None,
+                'stock_unit': entry['stock_unit'],
+                'unit_kg': entry['unit_kg'],
+                'max_qty': entry['max_qty'],
+                'stock_label': _format_kg(entry['stock']) if entry['stock_unit'] == 'kg' else str(entry['stock']),
             })
         if not variants:
             continue
@@ -7447,22 +7804,22 @@ def api_mobile_inventory():
         if denied:
             return denied
         try:
-            quantity = int(data.get('quantity', 0))
-        except (TypeError, ValueError):
-            return jsonify({'error': 'Quantity must be a whole number'}), 400
-        if quantity < 1 or quantity > 1000000:
-            return jsonify({'error': 'Quantity must be between 1 and 1,000,000'}), 400
-        updated = db_increment('inventory', {'id': row['id']}, 'stock', quantity)
+            updated, basis, added, added_label = _add_inventory_amount(
+                row, data.get('quantity', 0), data.get('unit') or 'unit'
+            )
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
         # Keep mobile Add Stock fast — no QR minting on quantity bumps.
         _badges_cache.clear()
         log_activity(
             'inventory',
-            f"Mobile added {quantity} units of stock · {staff.get('name')}",
+            f"Mobile added {added_label} of stock · {staff.get('name')}",
             {
                 'inventory_id': row['id'],
                 'store_id': row.get('store_id'),
                 'product_id': row.get('product_id'),
-                'quantity': quantity,
+                'quantity': added,
+                'basis': basis,
                 'staff_id': staff.get('id'),
             },
         )
@@ -7491,25 +7848,20 @@ def api_mobile_inventory_update(inv_id):
     if denied:
         return denied
     data = parse_json()
-    updates = {}
     try:
-        if 'price' in data:
-            updates['price'] = float(data['price'])
-        if 'stock' in data:
-            updates['stock'] = int(data['stock'])
-    except (TypeError, ValueError):
-        return jsonify({'error': 'Price and stock must be valid numbers'}), 400
-    if updates.get('price', 0) < 0 or updates.get('stock', 0) < 0:
-        return jsonify({'error': 'Price and stock cannot be negative'}), 400
-    updates['updated_at'] = now_iso()
-    db_update('inventory', {'id': inv_id}, updates)
-    updated = db_find_one('inventory', {'id': inv_id})
+        updated = _set_inventory_level(
+            row,
+            price=data.get('price') if 'price' in data else None,
+            stock=data.get('stock') if 'stock' in data else None,
+        )
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     # Fast mobile inventory path — no QR mint/void (POS billing untouched).
     _badges_cache.clear()
     log_activity(
         'inventory',
         f"Mobile inventory update · {staff.get('name')}",
-        {'inventory_id': inv_id, 'updates': updates, 'staff_id': staff.get('id')},
+        {'inventory_id': inv_id, 'stock': (updated or {}).get('stock'), 'staff_id': staff.get('id')},
     )
     return jsonify(updated)
 
